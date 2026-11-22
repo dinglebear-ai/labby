@@ -3,10 +3,12 @@ use super::*;
 #[test]
 fn read_only_scope_can_run_without_granting_write_execution() {
     let unscoped_caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities::default(),
         sub: Some("unscoped".to_string()),
     };
     let read_caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             ..CodeModeCallerCapabilities::default()
@@ -112,6 +114,7 @@ fn large_result_warning_preserves_the_result() {
         24 * 1024,
         6000,
         4,
+        false,
     );
     let mut response = response_with_result(shaped.result.expect("shaped result"));
     response.result_shaping = Some(shaped.metadata);
@@ -175,6 +178,7 @@ fn oversized_response_drops_soft_warning_before_hard_truncation() {
         24 * 1024,
         6000,
         4,
+        false,
     );
     let mut response = response_with_result(shaped.result.expect("shaped result"));
     response.result_shaping = Some(shaped.metadata);

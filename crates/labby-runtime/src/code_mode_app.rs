@@ -32,6 +32,10 @@ impl CodeModeAppState {
         self.enabled.load(Ordering::Acquire)
     }
 
+    pub fn shares_state_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.enabled, &other.enabled)
+    }
+
     /// Set the gateway-wide state and return the previous value.
     pub fn set_enabled(&self, enabled: bool) -> bool {
         self.enabled.swap(enabled, Ordering::AcqRel)

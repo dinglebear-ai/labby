@@ -53,13 +53,26 @@ pub(crate) async fn dispatch_authorized_action(
         .iter()
         .any(|candidate| candidate.name == action)
     {
-        let operation = crate::dispatch::remote_control::operation("artifacts", action)
-            .ok_or_else(|| ToolError::UnknownAction {
-                message: format!("Unknown action: {action}"),
-                valid: Vec::new(),
-                hint: None,
-            })?;
-        let permission = crate::dispatch::artifact_control::operation_permission(operation);
+        let (mutation, permission) = if action == "artifacts.list_connections" {
+            (false, crate::access::Permission::AssetDiscover)
+        } else {
+            let operation = crate::dispatch::remote_control::operation("artifacts", action)
+                .ok_or_else(|| ToolError::UnknownAction {
+                    message: format!("Unknown action: {action}"),
+                    valid: Vec::new(),
+                    hint: None,
+                })?;
+            (
+                crate::dispatch::artifact_control::operation_is_mutation(operation),
+                crate::dispatch::artifact_control::operation_permission(operation),
+            )
+        };
+        // Remote actions pass the same transport gate as local ones: scope,
+        // audience, and product-credential binding to this Project. Without it
+        // a credential bound to Project A could act under Project B's remote
+        // authority through a header naming B.
+        super::auth::validate_transport_class(&caller, mutation)
+            .map_err(super::map_distribution_authorization_error)?;
         let authority = crate::dispatch::artifact_control::authorize_authority_context(
             access_runtime,
             caller.identity().clone(),
@@ -658,7 +671,7 @@ async fn acquire_distribution(
                     false,
                 );
             }
-            return Err(super::map_distribution_acquisition_error(error));
+            return Err(super::map_import_error(error));
         }
     };
     let actual_revision_id = acquisition.interchange.revision.id.clone();

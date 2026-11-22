@@ -3,19 +3,14 @@ use super::*;
 /// Budget auxiliary content against the complete MCP response, including its
 /// duplicated text/structured channels and failure envelope. Mandatory trace
 /// metadata keeps the existing best-effort behavior when it alone is over budget.
-pub(super) fn bound_upstream_content(
-    result: &mut CallToolResult,
-    max_bytes: usize,
-    max_tokens: usize,
-) {
+pub(super) fn bound_upstream_content(result: &mut CallToolResult, max_bytes: usize) {
     #[cfg(test)]
     ENVELOPE_ENCODES.with(|count| count.set(count.get() + 1));
     let Ok(encoded) = serde_json::to_string(result) else {
         return;
     };
-    let fits = |bytes: usize| bytes <= max_bytes && bytes.div_ceil(4) <= max_tokens;
     let mut bytes = encoded.len();
-    if fits(bytes) {
+    if bytes <= max_bytes {
         return;
     }
     let mut text = result
@@ -59,7 +54,7 @@ pub(super) fn bound_upstream_content(
         {
             bytes = replace_with_omission(content, bytes, true);
         }
-        if fits(bytes) {
+        if bytes <= max_bytes {
             break;
         }
     }
@@ -105,7 +100,7 @@ mod tests {
                     CallToolResult::success(vec![ContentBlock::text(trace.to_string())]);
                 result.structured_content = Some(trace);
                 ENVELOPE_ENCODES.with(|count| count.set(0));
-                bound_upstream_content(&mut result, 1, 1);
+                bound_upstream_content(&mut result, 1);
                 assert!(ENVELOPE_ENCODES.with(|count| count.get()) <= 2);
                 for (index, call) in result.structured_content.as_ref().unwrap()["calls"]
                     .as_array()
@@ -151,7 +146,7 @@ mod tests {
             (1, 1, true),
         ] {
             let mut result = original.clone();
-            bound_upstream_content(&mut result, bytes, tokens);
+            bound_upstream_content(&mut result, bytes.min(tokens.saturating_mul(4)));
             assert_eq!(result.is_error, Some(true));
             let text = &result.content[0].as_text().unwrap().text;
             assert_eq!(text, &envelope.to_string());
@@ -224,7 +219,7 @@ mod tests {
                         let mut expected = original.clone();
                         legacy_bound(&mut expected, bytes, tokens);
                         let mut actual = original.clone();
-                        bound_upstream_content(&mut actual, bytes, tokens);
+                        bound_upstream_content(&mut actual, bytes.min(tokens.saturating_mul(4)));
                         assert_eq!(
                             actual, expected,
                             "failed={failed}, cut={cut}, bytes={bytes}, tokens={tokens}"

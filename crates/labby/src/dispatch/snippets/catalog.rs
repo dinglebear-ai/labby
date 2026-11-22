@@ -331,7 +331,9 @@ pub const ACTIONS: &[ActionSpec] = &[
     ActionSpec {
         name: "snippets.create",
         description: "Create a user snippet under LABBY_HOME/snippets",
-        destructive: false,
+        // Destructive: with `force` it overwrites an existing user snippet, and
+        // any create installs code that later runs by name.
+        destructive: true,
         requires_admin: true,
         returns: "SnippetInfo",
         output_schema: Some(
@@ -367,6 +369,12 @@ pub const ACTIONS: &[ActionSpec] = &[
                 ty: "string",
                 required: false,
                 description: "Reject a stale edit unless the current user snippet has this content_digest",
+            },
+            ParamSpec {
+                name: "shadow_builtin",
+                ty: "boolean",
+                required: false,
+                description: "Allow creating a user snippet that shadows a built-in snippet",
             },
         ],
     },

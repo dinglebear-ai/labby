@@ -93,6 +93,9 @@ const ADD_MESSAGES: &str = "
         CHECK(session_messages IN (0,1));
 ";
 
+const ADD_CONVERSATION_OWNER: &str =
+    "ALTER TABLE agent_inboxes ADD COLUMN conversation_owner TEXT;";
+
 pub(super) fn migrate(db: &mut Connection) -> Result<(), NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -116,6 +119,9 @@ pub(super) fn migrate(db: &mut Connection) -> Result<(), NoticeError> {
         if version >= 3 {
             expected.execute_batch(ADD_MESSAGES)?;
         }
+        if version >= 4 {
+            expected.execute_batch(ADD_CONVERSATION_OWNER)?;
+        }
         if actual != schema_snapshot(&expected)? {
             return Err(validation_failure("schema_mismatch", None));
         }
@@ -126,6 +132,9 @@ pub(super) fn migrate(db: &mut Connection) -> Result<(), NoticeError> {
     }
     if version < 3 {
         tx.execute_batch(ADD_MESSAGES)?;
+    }
+    if version < 4 {
+        tx.execute_batch(ADD_CONVERSATION_OWNER)?;
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         check_integrity(&tx)?;
     }
@@ -184,7 +193,7 @@ mod tests {
         let inbox = format!("inbox_{}", ulid::Ulid::new());
         let pending = format!("notice_{}", ulid::Ulid::new());
         db.execute(
-            "INSERT INTO agent_inboxes VALUES(?1,?2,?3,?4)",
+            "INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES(?1,?2,?3,?4)",
             rusqlite::params![inbox, old.key().unwrap(), old.scope(), now + 60_000],
         )
         .unwrap();
@@ -257,7 +266,7 @@ mod tests {
             .unwrap();
         db.pragma_update(None, "user_version", 2).unwrap();
         db.execute_batch(
-            "INSERT INTO agent_inboxes VALUES('v2-inbox','v2-owner','authenticated_client',100000);
+            "INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES('v2-inbox','v2-owner','authenticated_client',100000);
              INSERT INTO agent_notices
                (id,inbox_id,producer,dedupe_key,payload,source,level,message,created,expires,
                 attempts,next_attempt,acknowledged,event_body,webhook_offered)
@@ -300,7 +309,7 @@ mod tests {
         assert_eq!(
             db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            3
+            SCHEMA_VERSION
         );
         assert_eq!(v2_rows(&db), before);
         assert!(
@@ -374,7 +383,7 @@ mod tests {
         db.execute_batch(
             "DELETE FROM agent_notices;
              UPDATE agent_inboxes SET expires=100;
-             INSERT INTO agent_inboxes VALUES('local','owner','stdio_connection',100);
+             INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES('local','owner','stdio_connection',100);
              INSERT INTO agent_message_sessions
                 (id,owner_key,binding_key,inbox_id,label,kind,last_seen,active_until,retained_until)
               VALUES('session','owner','binding','local','label','stdio',100,200,4000);",

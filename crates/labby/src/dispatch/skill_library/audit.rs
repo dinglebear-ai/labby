@@ -387,6 +387,7 @@ fn terminal_event(
 struct AuditState {
     order: VecDeque<SkillLibraryAuditKey>,
     keys: HashSet<SkillLibraryAuditKey>,
+    #[cfg(test)]
     events: VecDeque<SkillLibraryAuditEvent>,
     evictions: u64,
 }
@@ -411,12 +412,14 @@ impl SkillLibraryAuditSink {
             while state.order.len() >= MAX_AUDIT_EVENTS {
                 if let Some(expired) = state.order.pop_front() {
                     state.keys.remove(&expired);
+                    #[cfg(test)]
                     state.events.pop_front();
                     state.evictions = state.evictions.saturating_add(1);
                 }
             }
             state.keys.insert(event.key.clone());
             state.order.push_back(event.key.clone());
+            #[cfg(test)]
             state.events.push_back(event.clone());
             true
         };
@@ -426,6 +429,8 @@ impl SkillLibraryAuditSink {
             correlation_id = event.key.correlation_id.as_str(),
             action = event.action.as_str(),
             target_digest = event.target_digest,
+            tenant_id = event.tenant_id.as_ref().map(|id| id.as_str()),
+            actor_id = event.actor_id.as_ref().map(|id| id.as_str()),
             surface = event.surface.as_str(),
             outcome = ?event.outcome,
             stage = ?event.stage,
@@ -443,7 +448,7 @@ impl SkillLibraryAuditSink {
     }
 
     #[cfg(test)]
-    fn events(&self) -> Vec<SkillLibraryAuditEvent> {
+    pub(super) fn events(&self) -> Vec<SkillLibraryAuditEvent> {
         self.state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

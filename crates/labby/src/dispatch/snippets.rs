@@ -1,6 +1,7 @@
 pub mod catalog;
 pub mod dispatch;
 mod execution;
+pub(crate) use execution::execution_owner_key;
 mod fixtures;
 mod history;
 mod preview;

@@ -42,7 +42,7 @@ fn microsandbox_spawn() -> Result<(RunnerSpawn, Option<MicrosandboxSpawn>), Tool
 
     #[cfg(target_os = "linux")]
     {
-        let runner = RunnerSpawn::try_default()?;
+        let runner = RunnerSpawn::try_for_backend(true)?;
         let msb = required_absolute_executable(MSB_EXE_ENV)?;
         let image = required_nonempty(MSB_IMAGE_ENV)?;
         let image_digest = image

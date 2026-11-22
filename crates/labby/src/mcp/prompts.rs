@@ -32,7 +32,7 @@ fn native_prompts_publish_display_metadata() {
                 .as_deref()
                 .is_some_and(|title| !title.is_empty())
         );
-        assert!(prompt.icons.is_some_and(|icons| !icons.is_empty()));
+        assert!(prompt.icons.is_none());
     }
 }
 

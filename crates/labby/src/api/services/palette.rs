@@ -1014,7 +1014,7 @@ mod tests {
                 tool_name.to_string(),
                 UpstreamTool {
                     tool,
-                    input_schema,
+                    input_schema: input_schema.map(Arc::new),
                     output_schema: None,
                     upstream_name,
                     destructive: false,

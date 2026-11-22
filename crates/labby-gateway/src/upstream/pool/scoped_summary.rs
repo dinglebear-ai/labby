@@ -1,5 +1,7 @@
 //! Cache-only, identity-scoped operator projections. No peer acquisition or discovery.
-use std::sync::Arc;
+use crate::upstream::types::UpstreamTool;
+use std::collections::HashMap;
+use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
 use labby_runtime::gateway_config::UpstreamConfig;
@@ -17,13 +19,78 @@ pub(crate) struct SubjectOptionalCatalogs {
     /// Full resource rows listed over this subject connection. Shared, not
     /// cloned, on every cache hit.
     pub resources: Option<Arc<[Resource]>>,
+    /// Invalidates an in-flight list when this peer announces a new catalog.
+    pub resources_epoch: u64,
     /// Advances only when this peer publishes a successful tools/list.
     pub tools_revision: u64,
+    identity: OnceLock<super::ToolCatalogGeneration>,
+    /// Named projections share the raw catalog's publication and are sanitized on first use.
+    pub(super) routed: OnceLock<HashMap<String, (usize, OnceLock<UpstreamTool>)>>,
     /// When `resources` was listed; `RESOURCE_SNAPSHOT_MAX_AGE` bounds reuse.
     pub resources_listed_at: Option<Instant>,
     pub prompts: Option<Vec<String>>,
     pub resources_error: Option<String>,
     pub prompts_error: Option<String>,
+}
+
+impl UpstreamPool {
+    /// Identity and successful observation revision for the current subject's live tool inventories.
+    pub async fn subject_tool_list_revisions(
+        &self,
+        subject: &str,
+    ) -> Vec<(String, [u8; 8], u64, Option<[u64; 3]>)> {
+        let cache = self.subject_connections.read().await;
+        let mut revisions = cache
+            .iter()
+            .filter(|((_, owner), entry)| {
+                owner == subject
+                    && entry.last_used.elapsed() < SUBJECT_CONN_IDLE_TTL
+                    && !entry.peer.is_transport_closed()
+            })
+            .map(|((name, _), entry)| {
+                let catalogs = &entry.optional_catalogs;
+                (
+                    name.clone(),
+                    catalogs
+                        .identity
+                        .get_or_init(super::catalog_publication::next_generation)
+                        .fingerprint_bytes(),
+                    catalogs.tools_revision,
+                    self.oauth_lifecycle_epoch(name, subject)
+                        .map(|epoch| epoch.versions()),
+                )
+            })
+            .collect::<Vec<_>>();
+        revisions.sort_unstable_by(|left, right| left.0.cmp(&right.0));
+        revisions
+    }
+}
+
+impl super::SubjectScopedConnection {
+    pub(super) fn routed_tool(
+        &self,
+        upstream: &str,
+        name: &str,
+        observed: Option<&rmcp::model::Tool>,
+    ) -> Option<&UpstreamTool> {
+        let index = self.optional_catalogs.routed.get_or_init(|| {
+            let mut index = HashMap::with_capacity(self.tools.len());
+            for (offset, tool) in self.tools.iter().enumerate() {
+                index
+                    .entry(tool.name.to_string())
+                    .or_insert((offset, OnceLock::new()));
+            }
+            index
+        });
+        let (offset, cell) = index.get(name)?;
+        let raw = &self.tools[*offset];
+        if observed.is_some_and(|tool| !std::ptr::eq(tool, raw) && tool != raw) {
+            return None;
+        }
+        Some(cell.get_or_init(|| {
+            super::helpers::cached_upstream_tool(raw.clone(), &Arc::from(upstream)).1
+        }))
+    }
 }
 
 #[derive(Default)]
@@ -279,7 +346,7 @@ impl UpstreamPool {
         name: &str,
         subject: &str,
         peer: &Peer<RoleClient>,
-        resources: Option<Vec<Resource>>,
+        resources: Option<(u64, Vec<Resource>)>,
         prompts: Option<Vec<String>>,
     ) {
         // Handshake snapshots are unique to a peer. Reject an awaited reply from
@@ -299,7 +366,9 @@ impl UpstreamPool {
         {
             return;
         }
-        if let Some(resources) = resources {
+        if let Some((epoch, resources)) = resources
+            && epoch == entry.optional_catalogs.resources_epoch
+        {
             entry.optional_catalogs.resources_error = None;
             entry.optional_catalogs.resources = Some(resources.into());
             entry.optional_catalogs.resources_listed_at = Some(Instant::now());
@@ -317,9 +386,11 @@ impl UpstreamPool {
         let mut cache = self.subject_connections.write().await;
         let mut cleared = 0usize;
         for ((name, _), entry) in cache.iter_mut() {
-            if name == upstream && entry.optional_catalogs.resources.take().is_some() {
+            if name == upstream {
+                entry.optional_catalogs.resources_epoch =
+                    entry.optional_catalogs.resources_epoch.wrapping_add(1);
                 entry.optional_catalogs.resources_listed_at = None;
-                cleared += 1;
+                cleared += usize::from(entry.optional_catalogs.resources.take().is_some());
             }
         }
         cleared

@@ -6,7 +6,7 @@
 //! Owns the single definition of the Code Mode tool description renderer, plus
 //! `string_array_arg`.
 //!
-//! This branch logs via `tracing` directly (not `emit_dispatch_notification`)
+//! This branch logs via `tracing` directly (not `trace_dispatch_outcome`)
 //! and fires lightweight catalog-change detection around the broker call.
 
 use std::collections::{BTreeSet, HashMap};
@@ -80,37 +80,26 @@ fn code_mode_dedup_key(
     code_hash: &str,
     caller: &CodeModeCaller,
 ) -> String {
-    let context = match caller.without_authority() {
-        CodeModeCaller::ScopedPrivate { context_token, .. } => {
-            serde_json::json!({ "private": context_token })
-        }
-        CodeModeCaller::ScopedSkills {
-            skill_context_token,
-            ..
-        } => serde_json::json!({ "skills": skill_context_token }),
-        CodeModeCaller::ScopedHostProvider {
-            provider_token,
-            provider_request_id,
-            ..
-        } => serde_json::json!({ "provider": provider_token, "request": provider_request_id }),
-        CodeModeCaller::ScopedHostProviderSkills {
-            provider_token,
-            provider_request_id,
-            skill_context_token,
-            ..
-        } => serde_json::json!({
-            "provider": provider_token,
-            "request": provider_request_id,
-            "skills": skill_context_token,
-        }),
-        _ => Value::Null,
-    };
-    let context = if context.is_null() {
-        String::new()
-    } else {
-        hash_arguments(&context)
-    };
-    format!("{route}|{service}|{actor}|{capability_filter_fingerprint}|{code_hash}|{context}")
+    let context = caller.host_context().map(|context| {
+        serde_json::json!({
+            "private":context.upstream_private_token, "skills":context.skill_context_token,
+            "provider":caller.host_provider_token(), "request":caller.host_provider_request_id(),
+        })
+    });
+    hash_arguments(&serde_json::json!([
+        route,
+        service,
+        actor,
+        capability_filter_fingerprint,
+        code_hash,
+        context,
+        caller.subject(),
+        caller.authority_token(),
+        caller.can_read(),
+        caller.can_execute(),
+        caller.is_admin(),
+        caller.can_use_snippets(),
+    ]))
 }
 
 fn begin_code_mode_execution(key: String, execution_id: String) -> InflightCodeModeRole {
@@ -212,6 +201,7 @@ fn spawn_code_mode_persistence(
     manager: &Arc<GatewayManager>,
     execution_id: String,
     journal_owner: JournalOwner,
+    history_owner: [u8; 32],
     history: CodeModeHistoryEntry,
     source: Option<CodeModeExecutionSource>,
 ) {
@@ -220,7 +210,9 @@ fn spawn_code_mode_persistence(
         manager
             .flush_step_journal(&execution_id, &journal_owner)
             .await;
-        manager.record_code_mode_history(history).await;
+        manager
+            .record_code_mode_history(history_owner, history)
+            .await;
         if let Some(source) = source {
             manager.record_code_mode_source(source).await;
         }
@@ -426,7 +418,138 @@ fn route_scoped_capability_filter(
     Ok(filter)
 }
 
+pub(super) fn execution_caller_for_mcp(
+    scopes: Option<&[String]>,
+    sub: Option<String>,
+    host: Option<(&str, &str)>,
+    skills: Option<&str>,
+) -> CodeModeCaller {
+    let Some(scopes) = scopes else {
+        return CodeModeCaller::TrustedLocal;
+    };
+    let capabilities = code_mode_capabilities_for_scopes(scopes);
+    CodeModeCaller::Scoped {
+        sub,
+        capabilities,
+        host_context: labby_codemode::CodeModeHostContext {
+            skill_context_token: skills.map(ToOwned::to_owned),
+            provider: host.map(
+                |(token, request_id)| labby_codemode::CodeModeProviderContext {
+                    token: token.to_owned(),
+                    request_id: request_id.to_owned(),
+                },
+            ),
+            upstream_private_token: None,
+        },
+    }
+}
+
 impl LabMcpServer {
+    /// Retain request-bound grants until the native or saved Code Mode run has settled.
+    pub(super) async fn mcp_code_mode_caller(
+        &self,
+        context: &RequestContext<RoleServer>,
+        read_only: bool,
+        capability_filter: ToolScope,
+    ) -> (CodeModeCaller, ToolScope, impl Send + use<>) {
+        let auth = auth_context_from_extensions(&context.extensions);
+        #[cfg(feature = "skills")]
+        let code_mode_skill_context_guard = if self.route_scope.exposes_skills() {
+            match self.skill_registry_context(context).await {
+                Ok(skill_context) => Some(crate::skills::facade::register_code_mode_skill_context(
+                    skill_context,
+                )),
+                Err(error) => {
+                    tracing::warn!(
+                        surface = "mcp",
+                        service = CODE_MODE_SERVICE,
+                        action = "skills.context",
+                        error = %error,
+                        "Code Mode will omit request-bound Skills because the canonical context could not be captured"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        #[cfg(feature = "skills")]
+        let capability_filter = if auth.is_none() {
+            capability_filter.with_request_skill_context(
+                code_mode_skill_context_guard
+                    .as_ref()
+                    .map(|guard| guard.token()),
+            )
+        } else {
+            capability_filter
+        };
+
+        #[cfg(feature = "skills")]
+        let skill_token = code_mode_skill_context_guard
+            .as_ref()
+            .map(|guard| guard.token());
+        #[cfg(not(feature = "skills"))]
+        let skill_token = None;
+        let sub = self
+            .route_oauth_subject(
+                self.request_subject(context)
+                    .map(std::borrow::Cow::Borrowed),
+            )
+            .map(std::borrow::Cow::into_owned);
+        let host = self
+            .request_host_provider_token(context)
+            .zip(self.request_host_provider_request_id(context));
+        let caller =
+            execution_caller_for_mcp(auth.map(|a| a.scopes.as_slice()), sub, host, skill_token);
+        // Capture the real transport identity for first-party personal OAuth.
+        // Team-bound routes deliberately do not receive this context: their
+        // gateway credential subject is not the caller's personal identity.
+        let personal_authority = if !read_only && self.route_scope.bound_team_id().is_none() {
+            match (
+                auth,
+                crate::mcp::context::verified_identity_from_extensions(&context.extensions),
+            ) {
+                (Some(auth), Some(identity))
+                    if auth
+                        .scopes
+                        .iter()
+                        .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")) =>
+                {
+                    Some(
+                        crate::dispatch::code_mode_authority::register_personal_authority(
+                            Arc::clone(&self.access_runtime),
+                            identity.clone(),
+                            crate::access::AuthorityCeiling::from_auth_context(auth),
+                            auth.sub.clone(),
+                            self.route_scope.allowed_upstreams().cloned(),
+                        ),
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let caller = match personal_authority.as_ref() {
+            Some(authority) => CodeModeCaller::WithAuthority {
+                caller: Box::new(caller),
+                authority_token: authority.token().to_owned(),
+            },
+            None => caller,
+        };
+
+        (
+            caller,
+            capability_filter,
+            (
+                personal_authority,
+                #[cfg(feature = "skills")]
+                code_mode_skill_context_guard,
+            ),
+        )
+    }
+
     /// `codemode` gateway tool branch. Self-returns.
     pub(crate) async fn call_tool_codemode_impl(
         &self,
@@ -521,7 +644,7 @@ impl LabMcpServer {
         } else {
             config
         };
-        let notice_budget = (config.max_response_bytes, config.max_response_tokens);
+        let notice_budget = config.response_envelope_max_bytes();
         let max_source_bytes = config.max_source_bytes.min(MAX_SOURCE_BYTES);
         let code = match code_arg(args, max_source_bytes) {
             Ok(code) => code,
@@ -548,6 +671,8 @@ impl LabMcpServer {
                 return Ok(error_result_from_envelope(env));
             }
         };
+        let capability_filter =
+            capability_filter.with_resources_visible(self.route_scope.exposes_resources());
         let capability_filter = if read_only {
             capability_filter.read_only()
         } else {
@@ -580,128 +705,19 @@ impl LabMcpServer {
             "gateway codemode start"
         );
 
-        #[cfg(feature = "skills")]
-        let code_mode_skill_context_guard = if self.route_scope.exposes_skills() {
-            match self.skill_registry_context(context).await {
-                Ok(skill_context) => Some(crate::skills::facade::register_code_mode_skill_context(
-                    skill_context,
-                )),
-                Err(error) => {
-                    tracing::warn!(
-                        surface = "mcp",
-                        service = CODE_MODE_SERVICE,
-                        action = "skills.context",
-                        error = %error,
-                        "Code Mode will omit request-bound Skills because the canonical context could not be captured"
-                    );
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        let caller = match auth {
-            None => CodeModeCaller::TrustedLocal,
-            Some(auth) => {
-                let capabilities = code_mode_capabilities_for_scopes(&auth.scopes);
-                let sub = self
-                    .route_oauth_subject(
-                        self.request_subject(context)
-                            .map(std::borrow::Cow::Borrowed),
-                    )
-                    .map(std::borrow::Cow::into_owned);
-                if let (Some(provider_token), Some(provider_request_id)) = (
-                    self.request_host_provider_token(context),
-                    self.request_host_provider_request_id(context),
-                ) {
-                    #[cfg(feature = "skills")]
-                    if let Some(context_guard) = code_mode_skill_context_guard.as_ref() {
-                        CodeModeCaller::ScopedHostProviderSkills {
-                            capabilities,
-                            sub,
-                            provider_token: provider_token.to_string(),
-                            provider_request_id: provider_request_id.to_string(),
-                            skill_context_token: context_guard.token().to_string(),
-                        }
-                    } else {
-                        CodeModeCaller::ScopedHostProvider {
-                            capabilities,
-                            sub,
-                            provider_token: provider_token.to_string(),
-                            provider_request_id: provider_request_id.to_string(),
-                        }
-                    }
-                    #[cfg(not(feature = "skills"))]
-                    {
-                        CodeModeCaller::ScopedHostProvider {
-                            capabilities,
-                            sub,
-                            provider_token: provider_token.to_string(),
-                            provider_request_id: provider_request_id.to_string(),
-                        }
-                    }
-                } else {
-                    #[cfg(feature = "skills")]
-                    if let Some(context_guard) = code_mode_skill_context_guard.as_ref() {
-                        CodeModeCaller::ScopedSkills {
-                            capabilities,
-                            sub,
-                            skill_context_token: context_guard.token().to_string(),
-                        }
-                    } else {
-                        CodeModeCaller::Scoped { capabilities, sub }
-                    }
-                    #[cfg(not(feature = "skills"))]
-                    {
-                        CodeModeCaller::Scoped { capabilities, sub }
-                    }
-                }
-            }
-        };
-
-        // Capture the real transport identity for first-party personal OAuth.
-        // Team-bound routes deliberately do not receive this context: their
-        // gateway credential subject is not the caller's personal identity.
-        let personal_authority = if !read_only && self.route_scope.bound_team_id().is_none() {
-            match (
-                auth,
-                crate::mcp::context::verified_identity_from_extensions(&context.extensions),
-            ) {
-                (Some(auth), Some(identity))
-                    if auth
-                        .scopes
-                        .iter()
-                        .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")) =>
-                {
-                    Some(
-                        crate::mcp::code_mode_authority::register_personal_authority(
-                            Arc::clone(&self.access_runtime),
-                            identity.clone(),
-                            crate::access::AuthorityCeiling::from_auth_context(auth),
-                            auth.sub.clone(),
-                            self.route_scope.allowed_upstreams().cloned(),
-                        ),
-                    )
-                }
-                _ => None,
-            }
-        } else {
-            None
-        };
-        let caller = match personal_authority.as_ref() {
-            Some(authority) => CodeModeCaller::WithAuthority {
-                caller: Box::new(caller),
-                authority_token: authority.token().to_owned(),
-            },
-            None => caller,
-        };
+        let (caller, capability_filter, _request_grants) = self
+            .mcp_code_mode_caller(context, read_only, capability_filter)
+            .await;
 
         // Per-run caller identity stamped onto journal rows at the flush
         // boundary (captured once, not per step). Fingerprint is cloned here
         // because `capability_filter` is moved into `execute()` below.
         let journal_owner = JournalOwner {
-            actor_key: actor_key.map(ToOwned::to_owned),
+            actor_key: Some(crate::dispatch::snippets::execution_owner_key(
+                actor_key,
+                self.request_subject(context),
+                &caller,
+            )),
             route_scope: self.route_scope.label(),
             capability_filter_fingerprint: Some(capability_filter_fingerprint.clone()),
         };
@@ -715,16 +731,32 @@ impl LabMcpServer {
             }
         };
         let broker = CodeModeBroker::new(Some(manager.as_ref()));
-        let before = self.snapshot_tool_catalog_for_request(context).await;
+
         let dedup_key = code_mode_dedup_key(
             &self.route_scope.label(),
             service,
-            actor_key.unwrap_or(subject.as_str()),
+            &hex::encode(self.code_mode_history_owner(context)),
             &capability_filter_fingerprint,
             &code_hash,
             &caller,
         ) + &response_budget::dedup_suffix(response_budget);
-        let broker_result = match begin_code_mode_execution(dedup_key, execution_id.clone()) {
+        let role = begin_code_mode_execution(dedup_key, execution_id.clone());
+        let is_leader = matches!(&role, InflightCodeModeRole::Leader(_));
+        let execution_id = match &role {
+            InflightCodeModeRole::Follower(entry) => entry.leader_execution_id.clone(),
+            InflightCodeModeRole::Leader(_) => execution_id,
+        };
+        let cancellation_error = || {
+            CodeModeExecutionError::from(CodeModeToolError::contract(
+                "cancelled",
+                "Code Mode request cancelled",
+                Default::default(),
+                None,
+                None,
+                Some(labby_runtime::agent_error::AgentSideEffectRisk::Possible),
+            ))
+        };
+        let broker_result = match role {
             InflightCodeModeRole::Follower(entry) => {
                 tracing::info!(
                     surface = "mcp",
@@ -739,12 +771,16 @@ impl LabMcpServer {
                     leader_execution_id = %entry.leader_execution_id,
                     "joining identical in-flight Code Mode execution"
                 );
-                await_code_mode_execution(entry).await
+                tokio::select! {
+                    biased;
+                    () = context.ct.cancelled() => Err(Box::new(cancellation_error())),
+                    result = await_code_mode_execution(entry) => result,
+                }
             }
             InflightCodeModeRole::Leader(leader) => {
                 // Keep runner state out of the enclosing MCP dispatch future.
                 // The runner's catalog lookups share the same Tokio worker.
-                let result = Box::pin(broker.execute_with_trace_context(
+                let execution = Box::pin(broker.execute_with_trace_context(
                     code,
                     caller,
                     self.code_mode_surface(),
@@ -752,8 +788,12 @@ impl LabMcpServer {
                     capability_filter,
                     Some(Arc::<str>::from(execution_id.as_str())),
                     request_trace_context(&context.extensions),
-                ))
-                .await;
+                ));
+                let result = tokio::select! {
+                    biased;
+                    () = context.ct.cancelled() => Err(cancellation_error()),
+                    result = execution => result,
+                };
                 // Box before publishing: complete() shares the aliased
                 // SharedCodeModeResult with every waiter.
                 let result = result.map_err(Box::new);
@@ -761,17 +801,11 @@ impl LabMcpServer {
                 result
             }
         };
+        self.notify_possible_tool_change(SOURCE_MCP_CALL_CODEMODE)
+            .await;
         let mut response = match broker_result {
-            Ok(response) => {
-                let after = self.snapshot_tool_catalog_for_request(context).await;
-                self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
-                    .await;
-                response
-            }
+            Ok(response) => response,
             Err(err) => {
-                let after = self.snapshot_tool_catalog_for_request(context).await;
-                self.notify_catalog_changes(after.changes_since(&before), SOURCE_MCP_CALL_CODEMODE)
-                    .await;
                 let calls = err.calls().to_vec();
                 let code_mode_calls = code_mode_call_metrics_json(&calls);
                 let error_kind = err.kind().to_string();
@@ -795,25 +829,28 @@ impl LabMcpServer {
                     "gateway codemode failed"
                 );
                 let call_error = err.into_call_error();
-                spawn_code_mode_persistence(
-                    manager,
-                    execution_id.clone(),
-                    journal_owner.clone(),
-                    CodeModeHistoryEntry {
-                        execution_id: Some(execution_id.clone()),
-                        seq: 0,
-                        route_scope: self.route_scope.label(),
-                        kind: CodeModeHistoryKind::Execute,
-                        ok: false,
-                        elapsed_ms,
-                        input_tokens: Some(input_tokens),
-                        output_tokens: Some(0),
-                        error_kind: Some(error_kind.clone()),
-                        calls: calls.clone(),
-                        match_count: None,
-                    },
-                    None,
-                );
+                if is_leader {
+                    spawn_code_mode_persistence(
+                        manager,
+                        execution_id.clone(),
+                        journal_owner.clone(),
+                        self.code_mode_history_owner(context),
+                        CodeModeHistoryEntry {
+                            execution_id: Some(execution_id.clone()),
+                            seq: 0,
+                            route_scope: self.route_scope.label(),
+                            kind: CodeModeHistoryKind::Execute,
+                            ok: false,
+                            elapsed_ms,
+                            input_tokens: Some(input_tokens),
+                            output_tokens: Some(0),
+                            error_kind: Some(error_kind.clone()),
+                            calls: calls.clone(),
+                            match_count: None,
+                        },
+                        None,
+                    );
+                }
                 step_buffer_guard.disarm();
                 let env = code_mode_error_envelope(service, "call_tool", &call_error);
                 // Failures carry a structured trace too — otherwise the inline
@@ -838,10 +875,8 @@ impl LabMcpServer {
                 });
                 let mut result = CallToolResult::error(vec![ContentBlock::text(env.to_string())]);
                 result.structured_content = Some(structured);
-                bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
-                notice_control
-                    .attach(&mut result, notice_budget.0, notice_budget.1)
-                    .await;
+                bound_upstream_content(&mut result, notice_budget);
+                notice_control.attach(&mut result, notice_budget).await;
                 return Ok(result);
             }
         };
@@ -874,42 +909,45 @@ impl LabMcpServer {
         let output = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
         let output_tokens = estimate_tokens(&output);
         let is_admin = auth.is_none_or(|auth| auth.scopes.iter().any(|scope| scope == "lab:admin"));
-        let source = if is_admin && code.len() <= max_source_bytes {
-            Some(CodeModeExecutionSource {
-                execution_id: execution_id.clone(),
-                created_at_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|duration| duration.as_millis() as i64)
-                    .unwrap_or_default(),
-                actor_key: actor_key.map(ToOwned::to_owned),
-                is_admin,
-                route_scope: self.route_scope.label(),
-                surface: self.code_mode_surface(),
-                capability_filter_fingerprint,
-                code: code.to_string(),
-            })
-        } else {
-            None
-        };
-        spawn_code_mode_persistence(
-            manager,
-            execution_id.clone(),
-            journal_owner,
-            CodeModeHistoryEntry {
-                execution_id: Some(execution_id.clone()),
-                seq: 0,
-                route_scope: self.route_scope.label(),
-                kind: CodeModeHistoryKind::Execute,
-                ok: true,
-                elapsed_ms: started.elapsed().as_millis(),
-                input_tokens: Some(input_tokens),
-                output_tokens: Some(output_tokens),
-                error_kind: None,
-                calls: response.calls.clone(),
-                match_count: None,
-            },
-            source,
-        );
+        if is_leader {
+            let source = if is_admin && code.len() <= max_source_bytes {
+                Some(CodeModeExecutionSource {
+                    execution_id: execution_id.clone(),
+                    created_at_ms: std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|duration| duration.as_millis() as i64)
+                        .unwrap_or_default(),
+                    actor_key: actor_key.map(ToOwned::to_owned),
+                    is_admin,
+                    route_scope: self.route_scope.label(),
+                    surface: self.code_mode_surface(),
+                    capability_filter_fingerprint,
+                    code: code.to_string(),
+                })
+            } else {
+                None
+            };
+            spawn_code_mode_persistence(
+                manager,
+                execution_id.clone(),
+                journal_owner,
+                self.code_mode_history_owner(context),
+                CodeModeHistoryEntry {
+                    execution_id: Some(execution_id.clone()),
+                    seq: 0,
+                    route_scope: self.route_scope.label(),
+                    kind: CodeModeHistoryKind::Execute,
+                    ok: true,
+                    elapsed_ms: started.elapsed().as_millis(),
+                    input_tokens: Some(input_tokens),
+                    output_tokens: Some(output_tokens),
+                    error_kind: None,
+                    calls: response.calls.clone(),
+                    match_count: None,
+                },
+                source,
+            );
+        }
         let mut structured = code_mode_execute_trace(&response);
         if let Some(object) = structured.as_object_mut() {
             object.insert(
@@ -980,10 +1018,8 @@ impl LabMcpServer {
             self.route_scope.exposes_resources(),
         );
         response_budget::echo(&mut result, response_budget);
-        bound_upstream_content(&mut result, notice_budget.0, notice_budget.1);
-        notice_control
-            .attach(&mut result, notice_budget.0, notice_budget.1)
-            .await;
+        bound_upstream_content(&mut result, notice_budget);
+        notice_control.attach(&mut result, notice_budget).await;
         Ok(result)
     }
 }

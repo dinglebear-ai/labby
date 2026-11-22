@@ -349,11 +349,11 @@ cargo build -p labby-codemode --example snippet_harness
 python3 crates/labby-codemode/tests/snippet_harness_acceptance.py target/debug/examples/snippet_harness
 ```
 
-The product integration suite runs the v2 triage fixture matrix in CI as well.
+The Code Mode runner smoke job runs this offline acceptance matrix. The product integration suite also runs the v2 triage fixture matrix.
 
 Fixtures also support `absent`, a list of JSON Pointers that must not exist. A present field containing `null` fails this assertion.
 
-All ten shipped executable built-ins are covered by adjacent offline fixtures.
+All shipped executable built-ins are covered by adjacent offline fixtures.
 Run `cargo test -p labby --all-features --test builtin_snippet_fixtures` to enforce
 dependency declarations, fixture presence, production runner execution, input
 override precedence, and the synthetic artifact filesystem boundary.

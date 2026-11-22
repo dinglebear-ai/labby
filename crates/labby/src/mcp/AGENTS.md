@@ -15,10 +15,7 @@ Divergence between them is silent: the hash says the catalog changed when the
 wire content did not, or vice versa. Do not edit one site alone. Route descriptor
 construction through a shared per-tool builder and change that.
 
-Two asymmetries are deliberate and must be preserved: `list_tools_impl`
-paginates and can early-break (`tools.finished()`), while
-`visible_tool_descriptors` always builds the full list. Any equality assertion
-between them therefore only holds below the page cap.
+The wire handler orders the full visible descriptor set before paging it. Compare the peer contract against all pages collected from the same catalog generation.
 
 Note the visibility gates are spelled differently at the two sites
 (`server_logs_app_visible` vs `self.audience.admin_apps_visible`) but resolve to
@@ -108,6 +105,15 @@ Dispatcher-layer kinds:
 | `missing_param` | required param absent. Include `param` name. |
 | `invalid_param` | param present but wrong type/value. |
 | `unknown_instance` | multi-instance label not found. Include `valid: [...]`. |
+| `ambiguous_tool` | multiple visible tools match. Includes qualified candidates. |
+| `confirmation_required` | the requested operation requires confirmation. |
+| `conflict` | an operation conflicts with existing state. |
+| `forbidden` | the caller lacks a required grant or scope. |
+
+MCP also preserves policy kinds such as `route_scope_denied`, `app_disabled`,
+and `feature_not_compiled`, execution failures such as `tool_error`, and
+specific budget kinds. The shared classifier is documented in
+[the error contract](../../../../docs/dev/ERRORS.md).
 
 SDK-layer kinds pass through from `ApiError::kind()` via `From<SdkError> for ToolError`: `auth_failed`, `not_found`, `rate_limited`, `validation_failed`, `network_error`, `server_error`, `decode_error`, `internal_error`.
 
@@ -139,11 +145,7 @@ canonical action, normalized params, authenticated caller, transport/session,
 route, and action-catalog security metadata. Do not replace it with a custom
 parameter, header, or client-asserted confirmation token.
 
-When the MCP client does not support form elicitation, the dispatcher executes
-normally. Do not add a `params.confirm`, `--yes`, header, or any other fake
-destructive gate to the MCP path. Request params are payload, not
-authorization. A declined or invalid elicitation retry returns
-`confirmation_required`.
+A client without form elicitation receives `confirmation_required` before destructive dispatch. Declined or invalid retries also fail closed. An action-specific payload requirement such as `gateway.oauth.google_revoke`’s `confirm=true` still applies after MCP confirmation.
 
 ## Upstream MRTR forwarding
 
@@ -161,13 +163,7 @@ branch passes `subject = None`, while the OAuth branch forwards
 progress, and cancellation; it never fulfills client input inside Labby.
 
 Relay connections are cached per `(upstream, session_id, subject, capability_fingerprint)`; capability generations may coexist while requests remain in flight. `session_id`
-is minted once per `LabMcpServer` session (`next_relay_session_id()`) and passed
-into `call_tool_relayed`; because each session has exactly one downstream agent
-peer, it guarantees a cached relay connection is never reused across agents — so
-the first relayed call in a session pays the connect cost and subsequent calls
-reuse it, without risking misrouted elicitation. `subject` (the OAuth identity,
-`None` on the raw branch) is part of the key so a connection authenticated as
-one identity is never reused for a call made as another within the same session.
+is minted per `LabMcpServer`. A persistent stdio server can reuse a matching connection across calls. Stateless HTTP constructs a fresh server per request, giving each request a distinct relay session ID. The OAuth subject also participates in the cache key.
 Use the current request capability snapshot, including an honest empty snapshot when metadata is absent; never borrow capability history from an earlier request.
 
 **Deadline and cancellation.** A relayed request can block on a *human*
@@ -215,7 +211,7 @@ Resources are read-only. Do not use them for mutations.
 - `ui://lab/code-mode/*` — Lab's own Code Mode app resources, served locally
   from bundled HTML (`read_code_mode_app_resource_impl`). The app descriptors
   bind only to `codemode_ui`; disabling the app hides that tool and these
-  resources, and direct reads fail as unknown. Labby-owned app UIs are opt-in;
+  resources, and direct reads return `app_disabled`. Labby-owned app UIs are opt-in;
   a disabled surface must not remain reachable through a cached URI.
 - `ui://lab/apps/manage` — the opt-in UI for the always-available `mcp_app`
   control tool. Disabling this manager UI strips its tool metadata and resource

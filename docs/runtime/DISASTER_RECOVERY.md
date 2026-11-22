@@ -44,7 +44,8 @@ An export is a versioned directory containing `manifest.json` and private
 payload files. Manifest version 1 records the producing Labby version, exact
 installation root, original absolute path, file mode, size, and SHA-256 digest
 for every file. Export walks the entire installation root, including config,
-dotenv secrets, access/auth databases, snippets, gateway state, and other
+dotenv secrets, access/auth databases, snippets, gateway state,
+`code-mode-artifacts/`, `code-mode-workspaces/`, and other
 future state without relying on a maintained filename allowlist. It excludes
 `lifecycle.lock`, `browser/browser.db.lock`, and the restore transaction's
 `restore.journal.json`. Recovery also acquires the existing browser storage

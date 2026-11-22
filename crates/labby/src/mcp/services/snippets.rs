@@ -14,9 +14,8 @@ use serde_json::{Map, Value};
 
 use crate::mcp::context::auth_context_from_extensions;
 use crate::mcp::envelope::build_error;
-use crate::mcp::error::DispatchError;
 use crate::mcp::result_format::{
-    error_result_from_envelope, estimate_tokens_args, format_dispatch_result, tool_error_envelope,
+    error_result_from_envelope, estimate_tokens_args, format_dispatch_result,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -32,28 +31,7 @@ fn execution_scope_for_route(
             )
         })
         .unwrap_or_default()
-}
-
-fn execution_caller_for_mcp(
-    scopes: Option<&[String]>,
-    sub: Option<String>,
-    host_provider: Option<(&str, &str)>,
-) -> crate::dispatch::gateway::code_mode::CodeModeCaller {
-    let Some(scopes) = scopes else {
-        return crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal;
-    };
-    let capabilities = super::super::call_tool_codemode::code_mode_capabilities_for_scopes(scopes);
-    match host_provider {
-        Some((provider_token, provider_request_id)) => {
-            crate::dispatch::gateway::code_mode::CodeModeCaller::ScopedHostProvider {
-                capabilities,
-                sub,
-                provider_token: provider_token.to_string(),
-                provider_request_id: provider_request_id.to_string(),
-            }
-        }
-        None => crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped { capabilities, sub },
-    }
+        .with_resources_visible(route_scope.exposes_resources())
 }
 
 impl LabMcpServer {
@@ -93,17 +71,9 @@ impl LabMcpServer {
         let authenticated_principal = self.request_subject(context).map(ToOwned::to_owned);
         let execution_scope = execution_scope_for_route(&self.route_scope);
         let capability_filter_fingerprint = execution_scope.fingerprint();
-        let sub = self
-            .route_oauth_subject(
-                self.request_subject(context)
-                    .map(std::borrow::Cow::Borrowed),
-            )
-            .map(std::borrow::Cow::into_owned);
-        let host_provider = self
-            .request_host_provider_token(context)
-            .zip(self.request_host_provider_request_id(context));
-        let execution_caller =
-            execution_caller_for_mcp(auth.map(|auth| auth.scopes.as_slice()), sub, host_provider);
+        let (execution_caller, execution_scope, _request_grants) = self
+            .mcp_code_mode_caller(context, false, execution_scope)
+            .await;
         let dispatch_context = crate::dispatch::snippets::dispatch::SnippetDispatchContext {
             actor_key: actor_key.map(ToOwned::to_owned),
             authenticated_principal,
@@ -122,16 +92,10 @@ impl LabMcpServer {
             Some(dispatch_context),
         )
         .await;
-        // Keep receipt identity and refined recovery metadata before the legacy
-        // logging formatter erases ToolError's additive contract fields.
-        let error_envelope = result
-            .as_ref()
-            .err()
-            .map(|error| tool_error_envelope(service, action, error));
-        let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
+        let result = result.map_err(anyhow::Error::from);
         let elapsed_ms = start.elapsed().as_millis();
         let input_tokens = estimate_tokens_args(args);
-        let (mut result, outcome) = format_dispatch_result(
+        let (result, outcome) = format_dispatch_result(
             result,
             service,
             action,
@@ -140,11 +104,7 @@ impl LabMcpServer {
             actor_key,
             input_tokens,
         );
-        if let Some(envelope) = error_envelope {
-            result = error_result_from_envelope(envelope);
-        }
-        self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
-            .await;
+        self.trace_dispatch_outcome(context, service, action, elapsed_ms, outcome);
         Ok(result)
     }
 }
@@ -152,6 +112,7 @@ impl LabMcpServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp::call_tool_codemode::execution_caller_for_mcp;
     use crate::mcp::route_scope::McpRouteScope;
 
     #[test]
@@ -177,7 +138,7 @@ mod tests {
     #[test]
     fn authenticated_mcp_snippet_caller_preserves_identity_instead_of_becoming_trusted_local() {
         let scopes = vec!["lab:admin".to_string()];
-        let caller = execution_caller_for_mcp(Some(&scopes), Some("alice".to_string()), None);
+        let caller = execution_caller_for_mcp(Some(&scopes), Some("alice".to_string()), None, None);
 
         assert!(!matches!(
             caller,
@@ -194,6 +155,7 @@ mod tests {
             Some(&scopes),
             Some("alice".to_string()),
             Some(("provider-secret", "request-7")),
+            Some("scope-token"),
         );
 
         assert_eq!(caller.subject(), Some("alice"));

@@ -3,7 +3,6 @@ use super::dispatch::SnippetDispatchContext;
 use super::store::{builtin_snippet_dir, merge_snippet_input, resolve_snippet};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::dispatch::helpers::lab_home;
 use labby_codemode::snippet::harness::{FixtureCall, MAX_FIXTURE_BYTES, SnippetFixture};
 use labby_codemode::snippet::schemas::{FixtureSchemas, FixtureVariant, generate_response};
 use labby_codemode::{CodeModeCatalogKind, CodeModeHost};
@@ -84,7 +83,8 @@ pub(super) async fn generate(
     params: Value,
     context: Option<SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
-    let (params, context, snippet, input, scope, tools) = prepare(params, context)?;
+    let (params, context, snippet, input, scope, tools) =
+        super::dispatch::store_operation(move |home| prepare(home, params, context)).await?;
     let contracts = if let Some(schemas) = params.schemas {
         schemas
     } else if tools.is_empty() {
@@ -93,6 +93,11 @@ pub(super) async fn generate(
         let manager = manager.ok_or_else(|| {
             invalid("schema discovery requires a gateway; alternatively supply saved schemas")
         })?;
+        let (include_snippets, use_cache) = labby_codemode::discovery_render_params(
+            &context.execution_caller,
+            context.execution_surface,
+            &scope,
+        );
         let render = tokio::time::timeout(
             std::time::Duration::from_secs(10),
             CodeModeHost::list_tools(
@@ -100,8 +105,8 @@ pub(super) async fn generate(
                 &context.execution_caller,
                 context.execution_surface,
                 &scope,
-                false,
-                true,
+                include_snippets,
+                use_cache,
             ),
         )
         .await
@@ -147,7 +152,8 @@ pub(crate) async fn generate_remote(
     live: &crate::live_gateway::LiveGateway,
     params: Value,
 ) -> Result<Value, ToolError> {
-    let (params, _, snippet, input, _, tools) = prepare(params, None)?;
+    let (params, _, snippet, input, _, tools) =
+        super::dispatch::store_operation(move |home| prepare(home, params, None)).await?;
     if params.schemas.is_some() {
         return Err(invalid("remote discovery does not accept saved schemas"));
     }
@@ -171,7 +177,11 @@ type Prepared = (
     labby_codemode::ToolScope,
     Vec<String>,
 );
-fn prepare(params: Value, context: Option<SnippetDispatchContext>) -> Result<Prepared, ToolError> {
+fn prepare(
+    home: &std::path::Path,
+    params: Value,
+    context: Option<SnippetDispatchContext>,
+) -> Result<Prepared, ToolError> {
     if serde_json::to_vec(&params)
         .map_err(|_| invalid("invalid fixture generation parameters"))?
         .len()
@@ -186,7 +196,7 @@ fn prepare(params: Value, context: Option<SnippetDispatchContext>) -> Result<Pre
     if let Some(fixture) = &params.check {
         validate_check_fixture(fixture)?;
     }
-    let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), &params.name)?;
+    let snippet = resolve_snippet(home, &builtin_snippet_dir(), &params.name)?;
     let input = if params.check.is_some() {
         // Contract comparison neither executes the snippet nor consumes its inputs.
         Value::Null

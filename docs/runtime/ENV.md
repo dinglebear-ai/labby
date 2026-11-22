@@ -343,6 +343,32 @@ LABBY_CODE_MODE_MICROSANDBOX_HELPER_TIMEOUT_MS=5000
 The host must separately provide working KVM access plus compatible `msb` and
 `libkrunfw` installations. See [CODE_MODE.md](../dev/CODE_MODE.md#microsandbox-runner-isolation-opt-in).
 
+### Code Mode capacity and callbacks
+
+| Variable | Default and use |
+| --- | --- |
+| `LABBY_CODE_MODE_POOL_SIZE` | 2 reusable process runners. |
+| `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` | Up to 8 additional process runners during bursts. |
+| `LABBY_CODE_MODE_POOL_RECYCLE_AFTER` | Recycle a runner after 100 uses. |
+| `LABBY_CODE_MODE_RUNNER_EXE` | The current Labby executable starts the runner. Set an override to the absolute path of a runner from the same Labby build. The host and runner use a build-specific wire protocol and do not negotiate a version. |
+| `LABBY_CODE_MODE_GIT_EXE` | Workspace Git uses `/usr/bin/git` on Unix and `git.exe` on Windows. Use an absolute override for other installations. |
+| `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON` | Operator-supplied execution profile for sandbox workloads. Required when those workloads run. |
+| `LABBY_CODE_MODE_AUTO_ARTIFACT_THRESHOLD_BYTES` | Preserve eligible responses above 24 KiB as artifacts. Zero disables automatic preservation. |
+| `LABBY_CODE_MODE_ARTIFACT_MAX_MIB` | 8 MiB per artifact by default. |
+| `LABBY_CODE_MODE_ARTIFACT_MAX_STORE_MIB` | 4,096 MiB for retained payloads. Zero disables byte pruning. |
+| `LABBY_CODE_MODE_ARTIFACT_RETENTION_RUNS` | 200 run directories per owner. Zero disables count pruning. |
+| `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` | 512 calls per run by default, with a ceiling of 2,048. |
+| `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` | 8 MiB per returned call result by default. |
+| `LABBY_CODE_MODE_WIDGET_CALLBACKS` | Disabled by default. Enabling this permits known upstream tools to be called by name while Code Mode hides them from discovery. |
+
+Artifact quota accounting uses filesystem notifications on local ext4, XFS,
+Btrfs and tmpfs stores on Linux. A change made outside Labby updates the next
+admission. A lost notification triggers a full inventory. Other filesystems or
+an exhausted watch limit use file metadata checks on admission.
+
+For values with a `[code_mode]` configuration setting, the environment
+overrides the configured value.
+
 ### Agent execution provider
 
 Product Agents and Agent Tasks execute through one OpenAI-compatible provider

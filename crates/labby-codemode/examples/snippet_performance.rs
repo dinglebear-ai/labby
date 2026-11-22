@@ -1,4 +1,6 @@
 //! Reproducible, isolated listing + real QuickJS batch benchmark; JSON output.
+// This executable instantiates the same runner futures as the product binary.
+#![recursion_limit = "256"]
 #![allow(unknown_lints)]
 #![allow(clippy::unused_async_trait_impl)]
 use labby_codemode::error::ToolError;
@@ -222,7 +224,7 @@ async fn run(args: &[String]) -> Result<(), Box<dyn Error>> {
         return Err("runner must be an existing absolute binary path".into());
     }
     let samples = number(args, "--samples", 10, 30)?;
-    let snippets = number(args, "--snippets", 32, 128)?;
+    let snippets = number(args, "--snippets", 32, 1024)?;
     let calls = number(args, "--calls", 16, 64)?;
     let concurrency = number(args, "--concurrency", 8, 32)?.min(calls);
     let latency = number(args, "--latency-ms", 2, 10)?;

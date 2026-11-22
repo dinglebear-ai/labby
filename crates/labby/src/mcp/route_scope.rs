@@ -229,13 +229,6 @@ impl McpRouteScope {
         *authority_partition = hex::encode(digest.finalize());
     }
 
-    pub(crate) fn protected_history_label(&self) -> Option<String> {
-        match self {
-            Self::Root => None,
-            Self::ProtectedSubset { .. } => Some(self.label()),
-        }
-    }
-
     pub(crate) fn allows_service(&self, service: &str) -> bool {
         match self {
             Self::Root => !crate::dispatch::depot_publish::is_publish_service(service),

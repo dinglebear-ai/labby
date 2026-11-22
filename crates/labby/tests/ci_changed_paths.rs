@@ -405,8 +405,22 @@ fn shipped_plugin_markdown_routes_to_documentation_checks() {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["docs"], "true", "{path}");
         assert_eq!(out["docs_check"], "true", "{path}");
-        assert_eq!(out["rust_compile"], "false", "{path}");
-        assert_eq!(out["rust_test"], "false", "{path}");
+        let embedded = path.starts_with("plugins/labby/.apm/skills/");
+        assert_eq!(out["rust_compile"], embedded.to_string(), "{path}");
+        assert_eq!(out["rust_test"], embedded.to_string(), "{path}");
+    }
+}
+
+#[test]
+fn compiled_snippets_and_their_fixtures_route_to_rust_builds() {
+    for path in [
+        "docs/snippets/axon-fanout.md",
+        "docs/snippets/axon-fanout.test.json",
+        "docs/snippets/example.js",
+    ] {
+        let out = classify("pull_request", &[path]);
+        assert_eq!(out["rust_compile"], "true", "{path}");
+        assert_eq!(out["rust_test"], "true", "{path}");
     }
 }
 

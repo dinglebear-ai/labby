@@ -98,12 +98,14 @@ impl NoticeInput {
 /// only the controls, with the same ACK IDs, can settle them. Like any notice
 /// decoration, it is skipped (and the result left unchanged) when a field
 /// would collide or the response would exceed its budget.
-pub(crate) fn mark_unsettled(
-    result: &mut CallToolResult,
-    error: NoticeError,
-    max_bytes: usize,
-    max_tokens: usize,
-) {
+pub(crate) fn mark_unsettled(result: &mut CallToolResult, error: NoticeError, max_bytes: usize) {
+    let fields = unsettled_fields(error);
+    if let Some(candidate) = decorated(result, &fields, None, max_bytes) {
+        *result = candidate;
+    }
+}
+
+fn unsettled_fields(error: NoticeError) -> Map<String, Value> {
     let mut fields = Map::new();
     fields.insert(
         "notification_controls".into(),
@@ -113,9 +115,7 @@ pub(crate) fn mark_unsettled(
             "retryable": matches!(error, NoticeError::Busy | NoticeError::Deadline),
         }),
     );
-    if let Some(candidate) = decorated(result, &fields, None, max_bytes, max_tokens) {
-        *result = candidate;
-    }
+    fields
 }
 
 pub(crate) async fn prepare_for_recipient(
@@ -128,9 +128,17 @@ pub(crate) async fn prepare_for_recipient(
     let mut fields = Map::new();
     if register || ids.is_some() {
         let who = recipient.clone().ok_or(NoticeError::Identity)?;
-        let (inbox, acknowledged) = store
+        let (inbox, acknowledged) = match store
             .controls_for_recipients(who, alternate.clone(), register, ids)
-            .await?;
+            .await
+        {
+            Ok(receipts) => receipts,
+            Err(error @ (NoticeError::Busy | NoticeError::Deadline)) => {
+                fields = unsettled_fields(error);
+                (None, None)
+            }
+            Err(error) => return Err(error),
+        };
         if let Some(inbox) = inbox {
             fields.insert(
                 "notification_inbox".into(),
@@ -157,8 +165,8 @@ fn decorated(
     fields: &Map<String, Value>,
     batch: Option<&NoticeBatch>,
     max_bytes: usize,
-    max_tokens: usize,
 ) -> Option<CallToolResult> {
+    let has_controls = !fields.is_empty();
     let mut fields = fields.clone();
     if let Some(batch) = batch {
         let Value::Object(batch) = serde_json::to_value(batch).ok()? else {
@@ -184,29 +192,25 @@ fn decorated(
         return None;
     };
     block.text = serde_json::to_string(&text).ok()?;
+    if has_controls {
+        super::bound_upstream_content(&mut candidate, max_bytes);
+    }
     let encoded = serde_json::to_string(&candidate).ok()?;
-    if encoded.len() > max_bytes
-        || crate::mcp::result_format::estimate_tokens(&encoded) > max_tokens
-    {
+    if encoded.len() > max_bytes {
         return None;
     }
     Some(candidate)
 }
 
 impl NoticeControl {
-    pub(crate) async fn attach(
-        &self,
-        result: &mut CallToolResult,
-        max_bytes: usize,
-        max_tokens: usize,
-    ) {
+    pub(crate) async fn attach(&self, result: &mut CallToolResult, max_bytes: usize) {
         if let Some(who) = self.recipient.clone() {
             let original = result.clone();
             let fields = self.fields.clone();
             match self
                 .store
                 .deliver_for_recipients(who, self.alternate.clone(), move |batch| {
-                    decorated(&original, &fields, Some(batch), max_bytes, max_tokens)
+                    decorated(&original, &fields, Some(batch), max_bytes)
                 })
                 .await
             {
@@ -223,8 +227,20 @@ impl NoticeControl {
                 ),
             }
         }
-        if let Some(candidate) = decorated(result, &self.fields, None, max_bytes, max_tokens) {
-            *result = candidate;
+        if !self.fields.is_empty() {
+            if let Some(candidate) = decorated(result, &self.fields, None, max_bytes) {
+                *result = candidate;
+            } else {
+                tracing::warn!(
+                    max_bytes,
+                    "Code Mode notice control confirmations could not fit the result"
+                );
+                let fields =
+                    Map::from_iter([("notification_controls_omitted".into(), Value::Bool(true))]);
+                if let Some(candidate) = decorated(result, &fields, None, max_bytes) {
+                    *result = candidate;
+                }
+            }
         }
     }
 }

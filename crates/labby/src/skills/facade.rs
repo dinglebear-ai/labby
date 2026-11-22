@@ -73,6 +73,26 @@ pub(crate) fn code_mode_skill_context(token: &str) -> Option<Arc<SkillRegistryCo
         .map(|entry| entry.value().clone())
 }
 
+/// Resolve the caller's Skills authorization for Code Mode host operations.
+#[cfg(feature = "gateway")]
+pub(crate) fn code_mode_caller_skill_context(
+    caller: &labby_codemode::CodeModeCaller,
+    scope: &labby_codemode::ToolScope,
+) -> Option<Arc<SkillRegistryContext>> {
+    use labby_codemode::CodeModeCaller;
+    match caller.without_authority() {
+        CodeModeCaller::TrustedLocal => match scope.request_skill_context() {
+            Some(token) => token.and_then(code_mode_skill_context),
+            None => Some(Arc::new(SkillRegistryContext::first_party_only())),
+        },
+        CodeModeCaller::Scoped { host_context, .. } => host_context
+            .skill_context_token
+            .as_deref()
+            .and_then(code_mode_skill_context),
+        _ => None,
+    }
+}
+
 /// Caller-dependent inputs that affect which skills may be observed.
 ///
 /// None for allowed_upstreams means every configured upstream is route-visible.
@@ -468,6 +488,12 @@ pub(crate) async fn list_visible_skills_bounded(
     #[cfg(feature = "gateway")]
     {
         let proxied = proxied_skill_entries(context, provider_max_items).await;
+        if !proxied.origins.is_empty() {
+            listing.meta.get_or_insert_with(Default::default).insert(
+                aggregate::SKILL_ORIGINS_META_KEY.into(),
+                proxied.origins.into(),
+            );
+        }
         listing.absorb(
             proxied.entries,
             proxied.cache_scope.as_deref(),
@@ -502,16 +528,10 @@ pub(crate) fn search_first_party_skills(
 ) -> SkillsListResult {
     let limit = limit.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
     let mut listing = first_party_skill_listing(context);
-    let normalized = query.trim().to_ascii_lowercase();
-    listing.skills.retain(|entry| {
-        entry.uri.to_ascii_lowercase().contains(&normalized)
-            || entry
-                .frontmatter
-                .values()
-                .filter_map(serde_json::Value::as_str)
-                .any(|value| value.to_ascii_lowercase().contains(&normalized))
-    });
-    listing.skills.truncate(limit);
+    listing.skills = super::search::search_skill_entries(&listing.skills, query, limit)
+        .into_iter()
+        .map(|hit| hit.skill)
+        .collect();
 
     listing
 }
@@ -559,6 +579,12 @@ fn merge_skill_search(
             break;
         }
     }
+    if !proxied.origins.is_empty() {
+        listing.meta.get_or_insert_with(Default::default).insert(
+            aggregate::SKILL_ORIGINS_META_KEY.into(),
+            serde_json::Value::Object(proxied.origins.clone()),
+        );
+    }
     listing.absorb(Vec::new(), proxied.cache_scope.as_deref(), proxied.ttl_ms);
     if proxied.unreachable_upstreams > 0 {
         listing.note_incomplete(
@@ -586,8 +612,16 @@ pub(crate) async fn list_visible_skills_page(
     cursor: Option<&str>,
 ) -> Result<SkillsListResult, ToolError> {
     let snapshot = native_catalog_snapshot(context).await?;
-    let mut page =
-        paginate_visible_skills_with_digest(context, &snapshot.listing, cursor, &snapshot.digest)?;
+    let mut page = if snapshot.packed_pages.is_empty() {
+        snapshot.page(context, cursor)?
+    } else {
+        let snapshot = Arc::clone(&snapshot);
+        let context = context.clone();
+        let cursor = cursor.map(str::to_owned);
+        tokio::task::spawn_blocking(move || snapshot.page(&context, cursor.as_deref()))
+            .await
+            .map_err(catalog_codec_error)??
+    };
     page.ttl_ms = page.ttl_ms.map(|ttl| {
         ttl.saturating_sub(
             u64::try_from(snapshot.created.elapsed().as_millis()).unwrap_or(u64::MAX),
@@ -598,8 +632,117 @@ pub(crate) async fn list_visible_skills_page(
 
 struct NativeCatalogSnapshot {
     listing: SkillsListResult,
+    // Large catalogs retain independent compressed pages. Reading a continuation
+    // inflates only its page and never re-mints the upstream manifests.
+    packed_pages: Vec<Vec<u8>>,
+    entry_count: usize,
     digest: String,
     created: std::time::Instant,
+}
+
+impl NativeCatalogSnapshot {
+    fn new(
+        mut listing: SkillsListResult,
+        digest: String,
+        created: std::time::Instant,
+    ) -> Result<(Self, usize), ToolError> {
+        use flate2::{Compression, write::DeflateEncoder};
+        let entry_count = listing.skills.len();
+        let metadata_bytes = serde_json::to_vec(&listing.meta)
+            .map_err(catalog_codec_error)?
+            .len()
+            + 256;
+        let mut bytes = metadata_bytes;
+        let mut packed_pages = Vec::new();
+        for page in listing.skills.chunks(NATIVE_SKILLS_LIST_PAGE_SIZE) {
+            bytes =
+                bytes.saturating_add(serde_json::to_vec(page).map_err(catalog_codec_error)?.len());
+        }
+        if bytes > NATIVE_CATALOG_CACHE_BYTES / 4 || entry_count > NATIVE_CATALOG_CACHE_ENTRIES / 4
+        {
+            bytes = metadata_bytes;
+            for page in listing.skills.chunks(NATIVE_SKILLS_LIST_PAGE_SIZE) {
+                let mut encoder = DeflateEncoder::new(Vec::new(), Compression::fast());
+                serde_json::to_writer(&mut encoder, page).map_err(catalog_codec_error)?;
+                let packed = encoder.finish().map_err(catalog_codec_error)?;
+                bytes = bytes.saturating_add(packed.len() + size_of::<Vec<u8>>());
+                packed_pages.push(packed);
+            }
+            listing.skills = Vec::new();
+        }
+        Ok((
+            Self {
+                listing,
+                packed_pages,
+                entry_count,
+                digest,
+                created,
+            },
+            bytes,
+        ))
+    }
+
+    fn page(
+        &self,
+        context: &SkillRegistryContext,
+        cursor: Option<&str>,
+    ) -> Result<SkillsListResult, ToolError> {
+        if self.packed_pages.is_empty() {
+            return paginate_visible_skills_with_digest(
+                context,
+                &self.listing,
+                cursor,
+                &self.digest,
+            );
+        }
+        let offset = cursor
+            .map(|value| decode_list_cursor(context, &self.digest, value))
+            .transpose()?
+            .unwrap_or(0);
+        if offset >= self.entry_count || !offset.is_multiple_of(NATIVE_SKILLS_LIST_PAGE_SIZE) {
+            return Err(ToolError::InvalidParam {
+                param: "cursor".into(),
+                message: "skills/list cursor is outside the current catalog".into(),
+            });
+        }
+        let mut page = self.listing.clone();
+        page.skills = Self::unpack(&self.packed_pages[offset / NATIVE_SKILLS_LIST_PAGE_SIZE])?;
+        restrict_page_origins(&mut page);
+        let end = offset + page.skills.len();
+        page.next_cursor =
+            (end < self.entry_count).then(|| encode_list_cursor(context, &self.digest, end));
+        Ok(page)
+    }
+
+    fn unpack(bytes: &[u8]) -> Result<Vec<SkillEntry>, ToolError> {
+        serde_json::from_reader(flate2::read::DeflateDecoder::new(bytes))
+            .map_err(catalog_codec_error)
+    }
+}
+
+fn catalog_codec_error(_: impl std::fmt::Display) -> ToolError {
+    ToolError::Sdk {
+        sdk_kind: "serialization_error".into(),
+        message: "Skill catalog could not be serialized".into(),
+    }
+}
+
+pub(crate) async fn cached_skill_listing(
+    context: &SkillRegistryContext,
+) -> Result<SkillsListResult, ToolError> {
+    let snapshot = native_catalog_snapshot(context).await?;
+    if snapshot.packed_pages.is_empty() {
+        return Ok(snapshot.listing.clone());
+    }
+    tokio::task::spawn_blocking(move || {
+        let mut listing = snapshot.listing.clone();
+        for page in &snapshot.packed_pages {
+            listing.skills.extend(NativeCatalogSnapshot::unpack(page)?);
+        }
+        Ok(listing)
+    })
+    .await
+    .map_err(catalog_codec_error)?
 }
 
 struct NativeCatalogCacheEntry {
@@ -665,7 +808,8 @@ async fn native_catalog_identity(context: &SkillRegistryContext) -> Option<Nativ
                     async move {
                         let provider =
                             SepSkillProvider::new(Arc::clone(&pool), config.clone(), subject);
-                        let (revision, remaining) = provider.catalog_revision().await?;
+                        let (revision, remaining) =
+                            provider.catalog_revision().await.unwrap_or_default();
                         let origin =
                             origin_meta(&config.name, &pool, context.scope.tool_access()).await;
                         let config_digest =
@@ -708,13 +852,16 @@ async fn native_catalog_snapshot(
             entry.snapshot.created.elapsed().as_millis()
                 < u128::from(FIRST_PARTY_SKILLS_LIST_TTL_MS)
         });
-        if let Some(entry) = cache.iter().find(|entry| entry.key == identity.key) {
+        if let Some(index) = cache.iter().position(|entry| entry.key == identity.key) {
+            let entry = cache.remove(index).expect("located cache entry");
+            let snapshot = Arc::clone(&entry.snapshot);
+            cache.push_back(entry);
             tracing::debug!(
                 cache_hit = true,
                 elapsed_ms = started.elapsed().as_millis(),
                 "native Skill catalog page snapshot"
             );
-            return Ok(Arc::clone(&entry.snapshot));
+            return Ok(snapshot);
         }
     }
     let mut listing = list_visible_skills(context).await;
@@ -726,47 +873,31 @@ async fn native_catalog_snapshot(
                 .min(identity.ttl_ms),
         );
     }
-    let digest = catalog_digest(&listing)?;
-    let snapshot = Arc::new(NativeCatalogSnapshot {
-        listing,
-        digest,
-        created: started,
-    });
+    let (snapshot, bytes) = tokio::task::spawn_blocking(move || {
+        let digest = catalog_digest(&listing)?;
+        NativeCatalogSnapshot::new(listing, digest, started)
+    })
+    .await
+    .map_err(catalog_codec_error)??;
+    let snapshot = Arc::new(snapshot);
     // Recheck after assembly: a concurrent refresh must not publish a listing
     // under the revision of the previous immutable upstream catalog.
     if let Some(identity) = identity
         && native_catalog_identity(context)
             .await
             .is_some_and(|current| current.key == identity.key)
-        && snapshot.listing.meta.as_ref().is_none_or(|meta| {
-            meta.get("unreachableUpstreams")
-                .and_then(serde_json::Value::as_u64)
-                .unwrap_or(0)
-                == 0
-                && meta.get("truncated").and_then(serde_json::Value::as_bool) != Some(true)
-        })
     {
-        let bytes = serde_json::to_vec(&snapshot.listing).map_or(usize::MAX, |value| value.len());
-        if bytes <= NATIVE_CATALOG_CACHE_BYTES
-            && snapshot.listing.skills.len() <= NATIVE_CATALOG_CACHE_ENTRIES
-        {
+        if bytes <= NATIVE_CATALOG_CACHE_BYTES {
             let mut cache = NATIVE_CATALOG_CACHE
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             cache.retain(|entry| entry.key != identity.key);
-            while cache.len() >= 32
-                || cache
-                    .iter()
-                    .map(|entry| entry.bytes)
-                    .sum::<usize>()
-                    .saturating_add(bytes)
-                    > NATIVE_CATALOG_CACHE_BYTES
-                || cache
-                    .iter()
-                    .map(|entry| entry.snapshot.listing.skills.len())
-                    .sum::<usize>()
-                    .saturating_add(snapshot.listing.skills.len())
-                    > NATIVE_CATALOG_CACHE_ENTRIES
+            while cache
+                .iter()
+                .map(|entry| entry.bytes)
+                .sum::<usize>()
+                .saturating_add(bytes)
+                > NATIVE_CATALOG_CACHE_BYTES
             {
                 cache.pop_front();
             }
@@ -783,14 +914,21 @@ async fn native_catalog_snapshot(
     tracing::debug!(
         cache_hit = false,
         elapsed_ms = started.elapsed().as_millis(),
-        skills = snapshot.listing.skills.len(),
+        skills = snapshot.entry_count,
         "native Skill catalog page snapshot"
     );
     Ok(snapshot)
 }
 
 fn catalog_digest(listing: &SkillsListResult) -> Result<String, ToolError> {
-    labby_runtime::artifacts::canonical_json::digest(&listing.skills).map_err(|_| ToolError::Sdk {
+    labby_runtime::artifacts::canonical_json::digest(&(
+        &listing.skills,
+        listing
+            .meta
+            .as_ref()
+            .and_then(|m| m.get(aggregate::SKILL_ORIGINS_META_KEY)),
+    ))
+    .map_err(|_| ToolError::Sdk {
         sdk_kind: "serialization_error".to_owned(),
         message: "Skill catalog could not be serialized".to_owned(),
     })
@@ -826,14 +964,33 @@ fn paginate_visible_skills_with_digest(
         .saturating_add(NATIVE_SKILLS_LIST_PAGE_SIZE)
         .min(listing.skills.len());
     let total = listing.skills.len();
-    Ok(SkillsListResult {
+    let skills = listing.skills[offset..end].to_vec();
+    let mut page = SkillsListResult {
         result_type: listing.result_type,
-        skills: listing.skills[offset..end].to_vec(),
+        skills,
         next_cursor: (end < total).then(|| encode_list_cursor(context, digest, end)),
         ttl_ms: listing.ttl_ms,
         cache_scope: listing.cache_scope.clone(),
         meta: listing.meta.clone(),
-    })
+    };
+    restrict_page_origins(&mut page);
+    Ok(page)
+}
+
+fn restrict_page_origins(page: &mut SkillsListResult) {
+    if let Some(origins) = page
+        .meta
+        .as_mut()
+        .and_then(|m| m.get_mut(aggregate::SKILL_ORIGINS_META_KEY))
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        let labels = page
+            .skills
+            .iter()
+            .filter_map(SkillEntry::origin)
+            .collect::<BTreeSet<_>>();
+        origins.retain(|label, _| labels.contains(label));
+    }
 }
 
 fn encode_list_cursor(context: &SkillRegistryContext, digest: &str, offset: usize) -> String {
@@ -895,7 +1052,7 @@ pub(crate) async fn resolve_visible_skill(
         }
         let Some(manager) = context.manager.as_deref() else {
             return Err(ToolError::Sdk {
-                sdk_kind: "upstream_unavailable".into(),
+                sdk_kind: "runtime_unavailable".into(),
                 message: "gateway runtime is unavailable while resolving a skill".into(),
             });
         };
@@ -906,7 +1063,7 @@ pub(crate) async fn resolve_visible_skill(
             return Ok(None);
         }
         let pool = manager.current_pool().await.ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "upstream_unavailable".into(),
+            sdk_kind: "runtime_unavailable".into(),
             message: "gateway runtime is unavailable while resolving a skill".into(),
         })?;
         let provider = SepSkillProvider::new(
@@ -918,8 +1075,8 @@ pub(crate) async fn resolve_visible_skill(
             && labby_runtime::skills::parse_skill_resource_uri(&upstream_uri)
                 .is_ok_and(|uri| uri.skill_md_parts().is_some())
         {
-            let (fetched, discovered) = match provider
-                .get_with_catalog(&SkillGetRequest {
+            let fetched = match provider
+                .get(&SkillGetRequest {
                     id: SkillId::new(provider.id().clone(), upstream_uri),
                     deadline: SkillProviderDeadline::default(),
                 })
@@ -929,29 +1086,18 @@ pub(crate) async fn resolve_visible_skill(
                 Err(SkillProviderError::SkillNotFound) => return Ok(None),
                 Err(error) => return Err(provider_error_to_tool(error)),
             };
-            let validated = discovered
-                .skills
-                .into_iter()
-                .map(SkillProviderEntry::into_validated)
-                .collect::<Vec<_>>();
             let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
-            let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
-            if let Some(entry) = minted.entries.iter().find(|entry| entry.uri == uri) {
-                return Ok(Some(entry.clone()));
-            }
-            if minted.excludes_uri(uri) {
-                return Ok(None);
-            }
             let candidate =
                 aggregate::mint_proxied_entry(&config.name, fetched.skill.validated(), Some(&meta));
-            return Ok(candidate.filter(|entry| entry.uri == uri && !minted.conflicts_with(entry)));
+            return Ok(candidate.filter(|entry| entry.uri == uri));
         }
-        let discovered = provider
-            .discover(&SkillDiscoverRequest::default())
+        let Some(upstream_uri) = parsed.upstream_uri_for_origin(&origin) else {
+            return Ok(None);
+        };
+        let validated = provider
+            .listed_owners_for_resource(&upstream_uri)
             .await
-            .map_err(provider_error_to_tool)?;
-        let validated = discovered
-            .skills
+            .map_err(provider_error_to_tool)?
             .into_iter()
             .map(SkillProviderEntry::into_validated)
             .collect::<Vec<_>>();
@@ -967,9 +1113,17 @@ pub(crate) async fn resolve_visible_skill(
             return Ok(None);
         }
 
-        let Some(upstream_uri) = parsed.upstream_uri_for_origin(&config.name) else {
-            return Ok(None);
-        };
+        let mut listed_owners = minted.entries.iter().filter(|entry| {
+            entry
+                .resources
+                .iter()
+                .flatten()
+                .any(|resource| resource.uri == uri)
+        });
+        if let Some(owner) = listed_owners.next() {
+            return Ok(listed_owners.next().is_none().then(|| owner.clone()));
+        }
+
         if let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await {
             let Some(entry) =
                 aggregate::mint_proxied_entry(&config.name, cached.validated(), Some(&meta))
@@ -981,37 +1135,7 @@ pub(crate) async fn resolve_visible_skill(
             }
             return Ok(None);
         }
-        let upstream_skill_uri = labby_runtime::skills::parse_skill_resource_uri(&upstream_uri)
-            .map_err(|error| ToolError::InvalidParam {
-                message: error.to_string(),
-                param: "uri".to_string(),
-            })?;
-        if upstream_skill_uri.skill_md_parts().is_none() {
-            return Ok(None);
-        }
-        let fetched = match provider
-            .get(&SkillGetRequest {
-                id: SkillId::new(provider.id().clone(), upstream_uri),
-                deadline: SkillProviderDeadline::default(),
-            })
-            .await
-        {
-            Ok(result) => result.skill.into_validated(),
-            Err(SkillProviderError::SkillNotFound) => return Ok(None),
-            Err(error) => return Err(provider_error_to_tool(error)),
-        };
-        let Some(entry) = aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta)) else {
-            return Ok(None);
-        };
-        if minted.conflicts_with(&entry) {
-            tracing::warn!(
-                upstream = %config.name,
-                skill = %entry.uri,
-                "excluding unlisted skill whose manifest collides with published URI ownership"
-            );
-            return Ok(None);
-        }
-        return Ok(Some(entry));
+        return Ok(None);
     }
 
     #[cfg(not(feature = "gateway"))]
@@ -1092,7 +1216,7 @@ pub(crate) async fn read_visible_skill_file(
             .filter(|config| config.enabled && config.proxy_skills)
             .ok_or_else(|| unknown_file(uri))?;
         let pool = manager.current_pool().await.ok_or_else(|| ToolError::Sdk {
-            sdk_kind: "upstream_unavailable".to_string(),
+            sdk_kind: "runtime_unavailable".to_string(),
             message: "gateway runtime is unavailable while reading a skill file".to_string(),
         })?;
         let upstream_uri = parsed
@@ -1107,17 +1231,14 @@ pub(crate) async fn read_visible_skill_file(
         // Discover only the encoded origin. This is sufficient to establish
         // manifest ownership for listed supporting files and preserves the
         // existing collision checks without a gateway-wide fan-out.
-        let discovered = provider
-            .discover(&SkillDiscoverRequest::default())
+        let validated = provider
+            .listed_owners_for_resource(&upstream_uri)
             .await
-            .map_err(provider_error_to_tool)?;
-        let validated = discovered
-            .skills
+            .map_err(provider_error_to_tool)?
             .into_iter()
             .map(SkillProviderEntry::into_validated)
             .collect::<Vec<_>>();
-        let meta = origin_meta(&origin, &pool, context.scope.tool_access()).await;
-        let minted = aggregate::mint_proxied_entries(&config, &validated, Some(&meta));
+        let minted = aggregate::mint_proxied_entries(&config, &validated, None);
         if minted.excludes_uri(uri) {
             return Err(unknown_file(uri));
         }
@@ -1141,7 +1262,7 @@ pub(crate) async fn read_visible_skill_file(
         if owners.is_empty()
             && let Some(cached) = provider.cached_owner_for_resource(&upstream_uri).await
             && let Some(candidate) =
-                aggregate::mint_proxied_entry(&config.name, cached.validated(), Some(&meta))
+                aggregate::mint_proxied_entry(&config.name, cached.validated(), None)
             && !minted.conflicts_with(&candidate)
             && candidate
                 .resources
@@ -1168,8 +1289,7 @@ pub(crate) async fn read_visible_skill_file(
                     Err(SkillProviderError::SkillNotFound) => return Err(unknown_file(uri)),
                     Err(error) => return Err(provider_error_to_tool(error)),
                 };
-                if let Some(candidate) =
-                    aggregate::mint_proxied_entry(&config.name, &fetched, Some(&meta))
+                if let Some(candidate) = aggregate::mint_proxied_entry(&config.name, &fetched, None)
                     && !minted.conflicts_with(&candidate)
                     && candidate.resources.as_ref().is_some_and(|resources| {
                         resources.iter().any(|resource| resource.uri == uri)
@@ -1195,12 +1315,7 @@ pub(crate) async fn read_visible_skill_file(
         }) {
             return Err(stale_manifest(uri));
         }
-        let resource = entry
-            .resources
-            .as_ref()
-            .and_then(|resources| resources.iter().find(|resource| resource.uri == uri))
-            .cloned()
-            .ok_or_else(|| stale_manifest(uri))?;
+        let resource = expected_resource.clone();
         let skill_source_id = parse_skill_uri(&entry.uri)
             .ok()
             .and_then(|uri| uri.upstream_uri_for_origin(&origin))
@@ -1296,6 +1411,7 @@ fn stale_manifest(uri: &str) -> ToolError {
 #[derive(Debug, Default)]
 struct ProxiedSkills {
     entries: Vec<SkillEntry>,
+    origins: serde_json::Map<String, serde_json::Value>,
     excluded_uris: BTreeSet<String>,
     unreachable_upstreams: usize,
     excluded_count: usize,
@@ -1303,6 +1419,23 @@ struct ProxiedSkills {
     incomplete_search_upstreams: usize,
     cache_scope: Option<String>,
     ttl_ms: Option<u64>,
+}
+
+#[cfg(feature = "gateway")]
+impl ProxiedSkills {
+    fn take_origin_tools(
+        &mut self,
+        origin: &str,
+        meta: &mut serde_json::Map<String, serde_json::Value>,
+    ) {
+        if let Some(tools) = meta
+            .get_mut(aggregate::SKILL_ORIGIN_META_KEY)
+            .and_then(serde_json::Value::as_object_mut)
+            .and_then(|block| block.remove("reachableTools"))
+        {
+            self.origins.insert(origin.to_owned(), tools);
+        }
+    }
 }
 
 #[cfg(feature = "gateway")]
@@ -1378,7 +1511,8 @@ async fn proxied_skill_entries(
                     .ttl
                     .and_then(|ttl| u64::try_from(ttl.as_millis()).ok());
                 aggregated.ttl_ms = min_ttl(aggregated.ttl_ms, ttl_ms);
-                let meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                let mut meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                aggregated.take_origin_tools(&config.name, &mut meta);
                 let validated = discovered
                     .skills
                     .into_iter()
@@ -1445,7 +1579,8 @@ async fn proxied_skill_search(
         match result {
             Ok(entries) => {
                 aggregated.incomplete_search_upstreams += usize::from(entries.incomplete);
-                let meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                let mut meta = origin_meta(&config.name, &pool, context.scope.tool_access()).await;
+                aggregated.take_origin_tools(&config.name, &mut meta);
                 let validated = entries
                     .skills
                     .into_iter()
@@ -1508,6 +1643,57 @@ mod tests {
     use labby_runtime::artifacts::LibraryOwnership;
     use labby_runtime::skills::wire::SkillResource;
 
+    #[test]
+    fn emitted_provider_errors_have_registered_origins() {
+        use SkillProviderError as E;
+        use labby_runtime::agent_error::{AgentErrorOrigin, origin_for_kind};
+        for (error, origin) in [
+            (
+                E::InvalidRequest {
+                    field: "uri",
+                    reason: "invalid",
+                },
+                AgentErrorOrigin::Validation,
+            ),
+            (E::WrongProvider, AgentErrorOrigin::Validation),
+            (E::SkillNotFound, AgentErrorOrigin::Discovery),
+            (E::ResourceNotFound, AgentErrorOrigin::Discovery),
+            (E::ManifestStale, AgentErrorOrigin::Validation),
+            (
+                E::Integrity { reason: "digest" },
+                AgentErrorOrigin::Validation,
+            ),
+            (
+                E::LimitExceeded {
+                    what: "bytes",
+                    limit: 1,
+                },
+                AgentErrorOrigin::Budget,
+            ),
+            (E::DeadlineExceeded, AgentErrorOrigin::UpstreamTransport),
+            (
+                E::Unavailable {
+                    reason: "offline".into(),
+                },
+                AgentErrorOrigin::UpstreamTransport,
+            ),
+            (
+                E::Provider {
+                    reason: "failed".into(),
+                },
+                AgentErrorOrigin::UpstreamTransport,
+            ),
+        ] {
+            let local = first_party_provider_error_to_tool(error.clone());
+            assert_eq!(origin_for_kind(local.kind()), origin);
+            #[cfg(feature = "gateway")]
+            assert_eq!(
+                origin_for_kind(provider_error_to_tool(error).kind()),
+                origin
+            );
+        }
+    }
+
     #[tokio::test]
     async fn native_pages_reuse_immutable_catalog_without_rebuilding() {
         use crate::skills::registry::{FirstPartyGenerationManager, GenerationLimits};
@@ -1568,6 +1754,120 @@ mod tests {
         }
         assert_eq!(pages, 4);
         assert!(count >= 385);
+    }
+
+    #[test]
+    fn native_pages_from_oversized_catalog_only_inflate_the_requested_page() {
+        let context = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        for origins in [10, 100] {
+            let mut listing = first_party_skill_listing(&context);
+            let base = listing.skills.first().unwrap().clone();
+            listing.skills = (0..origins * 256)
+                .map(|i| {
+                    let mut entry = base.clone();
+                    entry.uri = format!("skill://origin-{}/skill-{i}/SKILL.md", i / 256);
+                    entry
+                        .frontmatter
+                        .insert("description".into(), "x".repeat(4000).into());
+                    entry
+                })
+                .collect();
+            let (snapshot, bytes) =
+                NativeCatalogSnapshot::new(listing, "oversized".into(), std::time::Instant::now())
+                    .unwrap();
+            assert!(bytes < NATIVE_CATALOG_CACHE_BYTES);
+            assert_eq!(snapshot.listing.skills.len(), 0);
+            let started = std::time::Instant::now();
+            let mut cursor = None;
+            let mut count = 0;
+            loop {
+                let page = snapshot.page(&context, cursor.as_deref()).unwrap();
+                assert_eq!(
+                    page.skills[0].uri,
+                    format!("skill://origin-{}/skill-{count}/SKILL.md", count / 256)
+                );
+                count += page.skills.len();
+                cursor = page.next_cursor;
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            assert_eq!(count, origins * 256);
+            eprintln!(
+                "{origins} origins, {count} rows, {bytes} retained bytes, traversal {:?}",
+                started.elapsed()
+            );
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn direct_page_serializes_reachable_tools_once_for_an_origin() {
+        let context = artifact_context(SkillVisibility::Private)
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let mut listing = first_party_skill_listing(&context);
+        let mut entry = listing.skills[0].clone();
+        entry.uri = "skill://origin/skill/SKILL.md".into();
+        let tools = (0..100)
+            .map(|i| format!("origin-tool-{i:03}"))
+            .collect::<Vec<_>>();
+        let mut meta = aggregate::origin_meta("origin", ToolAccess::Direct, &tools);
+        entry.meta = Some(meta.clone());
+        listing.skills = vec![entry.clone(); 256];
+        let before = serde_json::to_string(&listing).unwrap();
+        let mut proxied = ProxiedSkills::default();
+        proxied.take_origin_tools("origin", &mut meta);
+        entry.meta = Some(meta);
+        listing.skills.fill(entry);
+        listing.meta = Some(serde_json::Map::from_iter([(
+            aggregate::SKILL_ORIGINS_META_KEY.into(),
+            proxied.origins.into(),
+        )]));
+        let after = serde_json::to_string(&listing).unwrap();
+        assert_eq!(before.matches("origin-tool-099").count(), 256);
+        assert_eq!(after.matches("origin-tool-099").count(), 1);
+        let page = paginate_visible_skills(&context, listing, None).unwrap();
+        assert_eq!(
+            page.meta.unwrap()[aggregate::SKILL_ORIGINS_META_KEY]["origin"]
+                .as_array()
+                .unwrap()
+                .len(),
+            100
+        );
+        eprintln!(
+            "256 skills, 100 tools: {} bytes before and {} after",
+            before.len(),
+            after.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn native_page_cache_retains_more_than_32_small_caller_catalogs() {
+        let base = artifact_context(SkillVisibility::Private);
+        let owner = base
+            .clone()
+            .with_artifact_access(artifact_access("tenant-a", "owner", false));
+        let before = native_catalog_snapshot(&owner).await.unwrap();
+        for index in 0..40 {
+            let caller = base.clone().with_artifact_access(artifact_access(
+                "tenant-a",
+                &format!("other-{index}"),
+                false,
+            ));
+            let private = native_catalog_snapshot(&caller).await.unwrap();
+            assert!(
+                private
+                    .listing
+                    .skills
+                    .iter()
+                    .all(|skill| skill.uri != "skill://labby/artifact/SKILL.md")
+            );
+        }
+        assert!(Arc::ptr_eq(
+            &before,
+            &native_catalog_snapshot(&owner).await.unwrap()
+        ));
     }
 
     #[tokio::test]
@@ -1645,15 +1945,23 @@ mod tests {
             SkillCallerScope::root(Some("alice".to_string()), ToolAccess::Direct),
         );
         assert!(
-            native_catalog_identity(&context).await.is_none(),
-            "catalog revision probes must not discover a cold upstream"
+            native_catalog_identity(&context)
+                .await
+                .is_some_and(|identity| identity.ttl_ms == 0),
+            "cold origins have a bounded cache identity with zero downstream TTL"
         );
         let first = list_visible_skills_page(&context, None).await.unwrap();
         let cursor = first.next_cursor.unwrap();
+        let warm = native_catalog_snapshot(&context).await.unwrap();
         assert!(
             list_visible_skills_page(&context, Some(&cursor))
                 .await
                 .is_ok()
+        );
+        let reused = native_catalog_snapshot(&context).await.unwrap();
+        assert!(
+            Arc::ptr_eq(&warm, &reused),
+            "warm federated pages reuse the assembled snapshot"
         );
         pool.invalidate_upstream_skills("up").await;
         pool.insert_scripted_skills_server_for_tests(
@@ -1761,7 +2069,7 @@ mod tests {
         let unavailable = resolve_visible_skill(&root_context, "skill://remote/demo/SKILL.md")
             .await
             .expect_err("a missing gateway runtime is not reported as absence");
-        assert_eq!(unavailable.kind(), "upstream_unavailable");
+        assert_eq!(unavailable.kind(), "runtime_unavailable");
     }
 
     fn artifact_context(visibility: SkillVisibility) -> SkillRegistryContext {
@@ -1794,10 +2102,10 @@ mod tests {
                 ]),
                 meta: None,
             },
-            files: BTreeMap::from([
+            files: Arc::new(BTreeMap::from([
                 (manifest.to_owned(), body.to_owned()),
                 (support.to_owned(), notes.to_owned()),
-            ]),
+            ])),
         };
         let providers = FirstPartySkillProviders::from_artifact_skills([(
             skill,
@@ -1857,7 +2165,7 @@ mod tests {
                     "skill://private/demo/SKILL.md",
                     "demo",
                 )]),
-                Arc::from([]),
+                Default::default(),
                 None,
             )
             .await;
@@ -2142,10 +2450,10 @@ mod tests {
                     ]),
                     meta: None,
                 },
-                files: BTreeMap::from([
+                files: Arc::new(BTreeMap::from([
                     (manifest.to_owned(), body),
                     (shared_uri.to_owned(), shared.to_owned()),
-                ]),
+                ])),
             }
         };
         let ownership = |actor: &str| {
@@ -2287,6 +2595,7 @@ mod tests {
                     "frontmatter": { "name": "parent", "description": "parent skill" },
                     "resources": [
                         { "uri": parent_uri, "digest": ResourceDigest::of_bytes(parent_body.as_bytes()).to_wire(), "size": parent_body.len() },
+                        { "uri":"skill://native/parent/unique.txt", "digest":ResourceDigest::of_bytes(b"unique").to_wire(),"size":6 },
                         shared_resource.clone()
                     ]
                 },
@@ -2410,6 +2719,12 @@ mod tests {
                 .iter()
                 .any(|entry| entry.uri.ends_with("/parent/child/SKILL.md"))
         );
+        let listed_owner =
+            resolve_visible_skill(&context, "skill://up/skill/native/parent/unique.txt")
+                .await
+                .unwrap()
+                .expect("listed supporting file owner");
+        assert!(listed_owner.uri.ends_with("/parent/SKILL.md"));
         let reminted_shared_uri = "skill://up/skill/native/parent/child/shared.txt";
         let shared_file = read_visible_skill_file(&context, reminted_shared_uri)
             .await

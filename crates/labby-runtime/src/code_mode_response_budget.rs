@@ -129,6 +129,15 @@ pub fn requested_response_bytes(value: Option<&Value>) -> Result<Option<u64>, Re
 }
 
 impl CodeModeConfig {
+    /// Effective serialized envelope length under both configured response limits.
+    #[must_use]
+    pub fn response_envelope_max_bytes(&self) -> usize {
+        self.max_response_bytes.min(
+            self.max_response_tokens
+                .saturating_mul(self.token_estimate_divisor.max(1) as usize),
+        )
+    }
+
     /// Resolve the response budget for one execution.
     ///
     /// With no request, the configured `max_response_bytes` and
@@ -191,6 +200,19 @@ impl CodeModeConfig {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn envelope_byte_ceiling_honors_the_configured_token_divisor() {
+        let mut config = CodeModeConfig {
+            max_response_bytes: 100,
+            max_response_tokens: 10,
+            token_estimate_divisor: 2,
+            ..Default::default()
+        };
+        assert_eq!(config.response_envelope_max_bytes(), 20);
+        config.token_estimate_divisor = 16;
+        assert_eq!(config.response_envelope_max_bytes(), 100);
+    }
 
     #[test]
     fn absent_request_keeps_the_configured_agent_budget() {

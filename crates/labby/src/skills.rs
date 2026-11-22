@@ -61,6 +61,13 @@ const EMBEDDED_FILES: &[(&str, &str, &str)] = &[
     ),
     (
         "using-labby",
+        "references/microsandbox-upstream.md",
+        include_str!(
+            "../../../plugins/labby/.apm/skills/using-labby/references/microsandbox-upstream.md"
+        ),
+    ),
+    (
+        "using-labby",
         "references/service-catalog.md",
         include_str!(
             "../../../plugins/labby/.apm/skills/using-labby/references/service-catalog.md"
@@ -228,8 +235,7 @@ fn first_party_skills() -> &'static BTreeMap<String, FirstPartySkill> {
                     // Operator files are owned Strings; embedded ones are
                     // 'static. Leaking here is deliberate and bounded: the set
                     // is built once at startup and lives for the process.
-                    files: local
-                        .files
+                    files: std::sync::Arc::unwrap_or_clone(local.files)
                         .into_iter()
                         .map(|(uri, body)| (uri, &*Box::leak(body.into_boxed_str())))
                         .collect(),

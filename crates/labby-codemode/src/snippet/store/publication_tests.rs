@@ -1,5 +1,6 @@
 use super::*;
 use std::{
+    io::{BufRead, BufReader, Read, Write},
     process::{Child, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -25,11 +26,12 @@ fn external_lock_holder() {
         .open(dir.join(".snippet-write.lock"))
         .unwrap();
     file.lock().unwrap();
-    fs::write(dir.join("holder-ready"), b"ready").unwrap();
-    let start = Instant::now();
-    while !dir.join("release-holder").exists() && start.elapsed() < Duration::from_secs(8) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "holder-ready").unwrap();
+    stdout.flush().unwrap();
+    drop(stdout);
+    let mut release = [0; 1];
+    let _ = std::io::stdin().read(&mut release).unwrap();
     drop(file);
 }
 #[test]
@@ -40,20 +42,22 @@ fn contended_write_has_bounded_busy_error_no_changes_and_recovers() {
     let child = Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
+            "--nocapture",
             "snippet::store::publication_tests::external_lock_holder",
         ])
         .env("LABBY_TEST_LOCK_DIRECTORY", &dir)
-        .stdout(Stdio::null())
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
         .spawn()
         .unwrap();
     let mut child = ChildGuard(child);
-    let start = Instant::now();
-    while !dir.join("holder-ready").exists() && start.elapsed() < Duration::from_secs(3) {
-        std::thread::sleep(Duration::from_millis(10));
-    }
+    let stdout = child.0.stdout.as_mut().unwrap();
     assert!(
-        dir.join("holder-ready").exists(),
-        "child did not acquire genuine process lock"
+        BufReader::new(stdout)
+            .lines()
+            .map_while(Result::ok)
+            .any(|line| line.ends_with("holder-ready")),
+        "child exited before acquiring the lock"
     );
     let before = read_snippet_body(&original.path).unwrap();
     let start = Instant::now();
@@ -74,8 +78,8 @@ fn contended_write_has_bounded_busy_error_no_changes_and_recovers() {
     assert_eq!(envelope["side_effects"], "none_expected");
     assert_eq!(envelope["recovery"]["action"], "retry_later");
     assert_eq!(read_snippet_body(&original.path).unwrap(), before);
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 3); // snippet, persistent lock, ready marker; no temp write
-    fs::write(dir.join("release-holder"), b"release").unwrap();
+    assert_eq!(fs::read_dir(&dir).unwrap().count(), 2); // snippet and persistent lock
+    drop(child.0.stdin.take());
     assert!(child.0.wait().unwrap().success());
     create_user_snippet_checked(
         home.path(),

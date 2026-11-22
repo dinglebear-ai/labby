@@ -26,7 +26,7 @@ use super::audit::{
 };
 use super::auth::{
     SkillLibraryAction, SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError,
-    SkillLibraryCaller, SkillLibraryTarget, authorize_at_boundary,
+    SkillLibraryCaller, SkillLibraryTarget, authorize_at_boundary, authorize_transport,
 };
 use super::blocking::{
     BlockingError, BoundedBlockingExecutor, FaultInjector, FaultStage, InjectedFault,
@@ -129,7 +129,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
-        let acquisition = validate_owned_acquisition(acquisition)?;
         super::params::validate_idempotency_key(&idempotency_key).map_err(|reason| {
             ArtifactError::InvalidField {
                 field: "idempotency_key",
@@ -138,8 +137,18 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         })?;
         let target_id = acquisition.interchange.descriptor.id.clone();
         let target = CanonicalArtifactId::parse(target_id.clone())?;
+        authorize_at_boundary(
+            runtime,
+            caller.clone(),
+            project_id,
+            SkillLibraryAction::Import,
+            &target,
+            SkillLibraryTarget::CreateForCaller,
+            correlation_id,
+        )
+        .await?;
         let materialized = self
-            .blocking
+            .read_blocking
             .run("skill_artifact_import_prepare", move || {
                 labby_runtime::artifacts::materialize_acquired_skill_owned(acquisition)
             })
@@ -369,13 +378,32 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
     ) -> Result<Value, SkillLibraryDispatchError> {
         let receipt = outcome.receipt().clone();
         let replayed = outcome.is_replay();
-        let published_library_version = match self.publication.health() {
-            PublicationHealth::Ready { library_version } => library_version,
-            PublicationHealth::Degraded {
-                published_library_version,
-                ..
-            } => published_library_version,
-        };
+        if replayed
+            && matches!(self.publication.health(), PublicationHealth::Degraded { committed_library_version, .. } if committed_library_version == receipt.committed_version)
+        {
+            let store = Arc::clone(&self.store);
+            let publication = Arc::clone(&self.publication);
+            let projection = Arc::clone(&self.projection);
+            let committed = receipt.committed_version;
+            let repair = self
+                .read_blocking
+                .run("skill_library_reconcile_replay", move || {
+                    let snapshot = store.library_snapshot()?;
+                    if snapshot.version == committed {
+                        let generation = projection.prepare(&store, &snapshot, None)?;
+                        publication.reconcile(generation, committed);
+                    }
+                    Ok::<_, ArtifactError>(())
+                })
+                .await;
+            if repair.is_err() {
+                tracing::warn!(
+                    committed,
+                    "Could not restore the committed Skill Library generation on replay"
+                );
+            }
+        }
+        let published_library_version = published_version(&self.publication);
         if !replayed && let Err(error) = self.faults.check(FaultStage::AfterSwapBeforeResponse) {
             let mut terminal = receipt
                 .terminal_audit
@@ -394,33 +422,27 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 .map_err(map_blocking)?;
             return Err(error.into());
         }
-        let response = self
-            .blocking
-            .run("skill_library_receipt", move || {
-                let facts = receipt.response_facts.ok_or(ArtifactError::LibraryCorrupt(
-                    "missing_mutation_receipt_facts",
-                ))?;
-                Ok::<_, ArtifactError>(MutationReceipt {
-                    outcome: if replayed { "replayed" } else { "committed" }.to_owned(),
-                    artifact_id,
-                    active_revision_id: facts.active_revision_id,
-                    canonical_uri: facts.canonical_uri,
-                    old_generation: facts.old_generation,
-                    new_generation: facts.new_generation,
-                    committed_library_version: facts.committed_library_version,
-                    published_library_version,
-                    library_digest: facts.library_digest,
-                    rejected_entries: CursorPage {
-                        items: Vec::new(),
-                        next_cursor: None,
-                    },
-                    relist_required: facts.relist_required || relist_required,
-                    relist_guidance: RELIST_GUIDANCE,
-                    list_changed_notification: false,
-                })
-            })
-            .await
-            .map_err(map_blocking)?;
+        let facts = receipt.response_facts.ok_or(ArtifactError::LibraryCorrupt(
+            "missing_mutation_receipt_facts",
+        ))?;
+        let response = MutationReceipt {
+            outcome: if replayed { "replayed" } else { "committed" }.to_owned(),
+            artifact_id,
+            active_revision_id: facts.active_revision_id,
+            canonical_uri: facts.canonical_uri,
+            old_generation: facts.old_generation,
+            new_generation: facts.new_generation,
+            committed_library_version: facts.committed_library_version,
+            published_library_version,
+            library_digest: facts.library_digest,
+            rejected_entries: CursorPage {
+                items: Vec::new(),
+                next_cursor: None,
+            },
+            relist_required: facts.relist_required || relist_required,
+            relist_guidance: RELIST_GUIDANCE,
+            list_changed_notification: false,
+        };
         serde_json::to_value(response).map_err(|_| SkillLibraryDispatchError::Serialization)
     }
 
@@ -434,10 +456,21 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         idempotency_key: String,
         correlation_id: &SkillLibraryCorrelationId,
     ) -> Result<Value, SkillLibraryDispatchError> {
+        let root = CanonicalArtifactId::parse("library")?;
+        authorize_at_boundary(
+            runtime,
+            caller.clone(),
+            project_id,
+            SkillLibraryAction::Refresh,
+            &root,
+            SkillLibraryTarget::LibraryRoot,
+            correlation_id,
+        )
+        .await?;
         let store = Arc::clone(&self.store);
         let projection = Arc::clone(&self.projection);
         let (snapshot, mutation, candidate, now) = self
-            .blocking
+            .read_blocking
             .run("skill_library_refresh", move || {
                 let snapshot = store.library_snapshot()?;
                 if snapshot.version != expected_version {
@@ -466,10 +499,11 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             caller,
             project_id,
             SkillLibraryAction::Refresh,
-            &CanonicalArtifactId::parse("library")?,
+            &root,
             SkillLibraryTarget::LibraryRoot,
             correlation_id,
             Arc::clone(&self.store),
+            snapshot.version,
             snapshot.version,
             LibraryIdempotency {
                 key: idempotency_key,
@@ -528,26 +562,40 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             },
             _ => return Err(SkillLibraryDispatchError::InvalidParams),
         };
-        let preparation_store = Arc::clone(&self.store);
+        let target = CanonicalArtifactId::parse(artifact_id.clone())?;
+        authorize_transport(&caller, action, &target, correlation_id)?;
+        let store = Arc::clone(&self.store);
+        let snapshot = self
+            .read_blocking
+            .run("skill_library_mutation_target", move || {
+                store.library_snapshot()
+            })
+            .await
+            .map_err(map_target_lookup)?;
+        let ownership = snapshot
+            .records
+            .get(&artifact_id)
+            .ok_or(SkillLibraryAuthorizationError::Denied)?
+            .ownership
+            .clone();
+        authorize_at_boundary(
+            runtime,
+            caller.clone(),
+            project_id,
+            action,
+            &target,
+            SkillLibraryTarget::Mutation(&ownership),
+            correlation_id,
+        )
+        .await?;
+        let prepared_from_version = snapshot.version;
         let projection = Arc::clone(&self.projection);
-        let preparation_artifact_id = artifact_id.clone();
+        let store = Arc::clone(&self.store);
         let preparation_mutation = mutation.clone();
-        let (ownership, candidate) = self
-            .blocking
+        let candidate = self
+            .read_blocking
             .run("skill_library_mutation_prepare", move || {
-                let snapshot = preparation_store.library_snapshot()?;
-                let ownership = snapshot
-                    .records
-                    .get(&preparation_artifact_id)
-                    .ok_or(ArtifactError::NotFound("library_record"))?
-                    .ownership
-                    .clone();
-                let candidate = projection.prepare(
-                    &preparation_store,
-                    &snapshot,
-                    Some(&preparation_mutation),
-                )?;
-                Ok::<_, ArtifactError>((ownership, candidate))
+                projection.prepare(&store, &snapshot, Some(&preparation_mutation))
             })
             .await
             .map_err(map_target_lookup)?;
@@ -564,11 +612,12 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             caller,
             project_id,
             action,
-            &CanonicalArtifactId::parse(artifact_id.clone())?,
+            &target,
             SkillLibraryTarget::Mutation(&ownership),
             correlation_id,
             Arc::clone(&self.store),
             expected_library_version,
+            prepared_from_version,
             LibraryIdempotency {
                 key: idempotency_key,
                 request_digest,
@@ -590,10 +639,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         caller: SkillLibraryCaller,
         project_id: &str,
         name: String,
-        artifact_id: Option<String>,
+        existing: Option<(String, labby_runtime::artifacts::LibraryOwnership)>,
         expected_revision_id: Option<String>,
         files: Vec<super::types::LogicalFileInput>,
-        expected_library_version: u64,
+        expected_library_version: Option<u64>,
         idempotency_key: String,
         create_visibility: CreateVisibility,
         correlation_id: &SkillLibraryCorrelationId,
@@ -604,15 +653,29 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 reason,
             }
         })?;
+        let (artifact_id, target_ownership) = existing.unzip();
         let action = if artifact_id.is_some() {
             SkillLibraryAction::Save
         } else {
             SkillLibraryAction::Create
         };
-        let preparation_store = Arc::clone(&self.store);
-        let requested_artifact_id = artifact_id.clone();
-        let (mut candidate_artifact, target_ownership) = self
-            .blocking
+        let target_id = CanonicalArtifactId::parse(artifact_id.as_deref().unwrap_or("library"))?;
+        let target = target_ownership.as_ref().map_or(
+            SkillLibraryTarget::CreateForCaller,
+            SkillLibraryTarget::Mutation,
+        );
+        authorize_at_boundary(
+            runtime,
+            caller.clone(),
+            project_id,
+            action,
+            &target_id,
+            target,
+            correlation_id,
+        )
+        .await?;
+        let mut candidate_artifact = self
+            .read_blocking
             .run("skill_artifact_prepare", move || {
                 let logical = files
                     .into_iter()
@@ -620,23 +683,11 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         labby_runtime::artifacts::LogicalSkillFile::new(file.path, file.content)
                     })
                     .collect();
-                let candidate = labby_runtime::artifacts::materialize_logical_skill(
+                labby_runtime::artifacts::materialize_logical_skill(
                     &name,
                     logical,
                     Default::default(),
-                )?;
-                let ownership = requested_artifact_id
-                    .as_ref()
-                    .map(|id| {
-                        preparation_store
-                            .library_snapshot()?
-                            .records
-                            .get(id)
-                            .map(|record| record.ownership.clone())
-                            .ok_or(ArtifactError::NotFound("library_record"))
-                    })
-                    .transpose()?;
-                Ok::<_, ArtifactError>((candidate, ownership))
+                )
             })
             .await
             .map_err(map_target_lookup)?;
@@ -657,10 +708,15 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         let artifact_id = candidate_artifact.interchange.descriptor.id.clone();
         let revision_id = candidate_artifact.interchange.revision.id.clone();
         let now = LibraryTimestamp::parse(jiff::Timestamp::now().to_string())?;
-        let request_digest = labby_runtime::artifacts::canonical_json::digest(&json!({
+        let mut request = json!({
             "action":action.as_str(), "artifact_id":artifact_id, "revision_id":revision_id,
             "expected_library_version":expected_library_version, "idempotency_key":idempotency_key
-        }))?;
+        });
+        // Preserve the digest of existing version-guarded requests on replay.
+        if expected_library_version.is_none() {
+            request["expected_revision_id"] = json!(expected_revision_id);
+        }
+        let request_digest = labby_runtime::artifacts::canonical_json::digest(&request)?;
         let target_id = CanonicalArtifactId::parse(artifact_id.clone())?;
         let target = target_ownership.as_ref().map_or(
             SkillLibraryTarget::CreateForCaller,
@@ -744,25 +800,27 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     }
                 };
                 let audited_revision_id = revision_id.clone();
-                let committed_version = expected_library_version
-                    .checked_add(1)
-                    .ok_or(ArtifactError::Conflict("library_version_exhausted"))?;
-                let terminal = SkillLibraryTerminalAudit::new(
-                    SkillLibraryTerminalOutcome::Committed,
-                    SkillLibraryTerminalStage::Commit,
-                )
-                .with_revision_id(&audited_revision_id)
-                .with_versions(Some(committed_version), Some(committed_version));
-                let idempotency = LibraryIdempotency {
-                    key: idempotency_key,
-                    request_digest,
-                    terminal_audit: Some(runtime_durable_audit(durable_terminal_audit(
-                        &audit, terminal,
-                    )?)),
-                };
                 Ok(move || {
                     let result = (|| {
                         let snapshot = store.library_snapshot()?;
+                        let expected_library_version =
+                            expected_library_version.unwrap_or(snapshot.version);
+                        let committed_version = expected_library_version
+                            .checked_add(1)
+                            .ok_or(ArtifactError::Conflict("library_version_exhausted"))?;
+                        let terminal = SkillLibraryTerminalAudit::new(
+                            SkillLibraryTerminalOutcome::Committed,
+                            SkillLibraryTerminalStage::Commit,
+                        )
+                        .with_revision_id(&audited_revision_id)
+                        .with_versions(Some(committed_version), Some(committed_version));
+                        let idempotency = LibraryIdempotency {
+                            key: idempotency_key,
+                            request_digest,
+                            terminal_audit: Some(runtime_durable_audit(durable_terminal_audit(
+                                &audit, terminal,
+                            )?)),
+                        };
                         let generation = projection.prepare(&store, &snapshot, Some(&mutation))?;
                         publication.commit_library_outcome(
                             generation,
@@ -849,25 +907,27 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
         artifact_id: &str,
         archived: ArchivedRecordAccess,
         correlation_id: &SkillLibraryCorrelationId,
-    ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryDispatchError> {
+    ) -> Result<
+        (SkillLibraryAuthorizationDecision, SkillLibraryRecord, u64),
+        SkillLibraryDispatchError,
+    > {
         let target = CanonicalArtifactId::parse(artifact_id.to_owned())?;
         let store = Arc::clone(&self.store);
         let artifact_id = artifact_id.to_owned();
-        let record = self
+        let (record, version) = self
             .read_blocking
             .run(operation, move || {
-                store
-                    .library_snapshot()?
+                let mut snapshot = store.library_snapshot()?;
+                snapshot
                     .records
-                    .get(&artifact_id)
-                    .filter(|record| archived.target_visible(record))
-                    .cloned()
+                    .remove(&artifact_id)
+                    .map(|r| (r, snapshot.version))
                     .ok_or(ArtifactError::NotFound("library_record"))
             })
             .await
             .map_err(map_target_lookup)?;
         let policy_target = read_target(&record)?;
-        authorize_at_boundary(
+        let decision = authorize_at_boundary(
             runtime,
             caller,
             project_id,
@@ -876,8 +936,11 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             policy_target,
             correlation_id,
         )
-        .await
-        .map_err(Into::into)
+        .await?;
+        if !archived.visible(&record, &decision) {
+            return Err(SkillLibraryAuthorizationError::Denied.into());
+        }
+        Ok((decision, record, version))
     }
 
     pub(crate) async fn dispatch(
@@ -928,7 +991,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             }
             "artifacts.get" => {
                 let params: ArtifactParams = parse(params)?;
-                let decision = self
+                let (decision, record, library_version) = self
                     .authorize_existing_record(
                         runtime,
                         caller,
@@ -940,35 +1003,20 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                         correlation_id,
                     )
                     .await?;
-                let store = Arc::clone(&self.store);
-                let published_library_version = published_version(&self.publication);
-                let item = self
-                    .read_blocking
-                    .run("skill_library_get", move || {
-                        let snapshot = store.library_snapshot()?;
-                        let visible = visible_record(
-                            &snapshot,
-                            &params.artifact_id,
-                            &decision,
-                            ArchivedRecordAccess::PersonalOnly,
-                        )?;
-                        Ok(VersionedSkillLibrarySummary {
-                            library_version: snapshot.version,
-                            item: summary(
-                                visible,
-                                &decision,
-                                snapshot.version,
-                                published_library_version,
-                            ),
-                        })
-                    })
-                    .await
-                    .map_err(map_blocking)?;
+                let item = VersionedSkillLibrarySummary {
+                    library_version,
+                    item: summary(
+                        &record,
+                        &decision,
+                        library_version,
+                        published_version(&self.publication),
+                    ),
+                };
                 serde_json::to_value(item).map_err(|_| SkillLibraryDispatchError::Serialization)
             }
             "artifacts.read" => {
                 let params: ReadRevisionParams = parse(params)?;
-                let decision = self
+                let (decision, record, library_version) = self
                     .authorize_existing_record(
                         runtime,
                         caller,
@@ -984,25 +1032,18 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let artifact_id = params.artifact_id.clone();
                 let revision_id = params.revision_id.clone();
                 let path = params.path.clone();
-                let (library_version, bytes) = self
+                let bytes = self
                     .read_blocking
                     .run("skill_library_read", move || {
-                        let snapshot = store.library_snapshot()?;
-                        let current = visible_record(
-                            &snapshot,
-                            &artifact_id,
-                            &decision,
-                            ArchivedRecordAccess::PersonalOnly,
-                        )?;
-                        if current.visibility == SkillVisibility::Tenant
-                            && !decision.permits_personal(&current.ownership)
-                            && current.active_revision_id.as_deref() != Some(&revision_id)
+                        if record.visibility == SkillVisibility::Tenant
+                            && !decision.permits_personal(&record.ownership)
+                            && record.active_revision_id.as_deref() != Some(&revision_id)
                         {
                             return Err(ArtifactError::NotFound("library_record"));
                         }
                         let bytes =
                             store.read_skill_revision_file(&artifact_id, &revision_id, &path)?;
-                        Ok((snapshot.version, bytes))
+                        Ok(bytes)
                     })
                     .await
                     .map_err(map_blocking)?;
@@ -1021,7 +1062,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             }
             "artifacts.history" => {
                 let params: HistoryParams = parse(params)?;
-                let decision = self
+                let (decision, record, library_version) = self
                     .authorize_existing_record(
                         runtime,
                         caller,
@@ -1037,23 +1078,10 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                 let page = self
                     .read_blocking
                     .run("skill_library_history", move || {
-                        let snapshot = store.library_snapshot()?;
-                        let record = visible_record(
-                            &snapshot,
-                            &params.artifact_id,
-                            &decision,
-                            ArchivedRecordAccess::PersonalOnly,
-                        )?;
-                        let page = history_page(
-                            &store,
-                            record,
-                            &decision,
-                            snapshot.version,
-                            params.cursor,
-                            params.limit,
-                        )?;
+                        let page =
+                            history_page(&store, &record, &decision, params.cursor, params.limit)?;
                         Ok(VersionedRevisionPage {
-                            library_version: snapshot.version,
+                            library_version,
                             items: page.items,
                             next_cursor: page.next_cursor,
                         })
@@ -1164,7 +1192,7 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     None,
                     None,
                     params.files,
-                    params.expected_library_version,
+                    Some(params.expected_library_version),
                     params.idempotency_key,
                     params.visibility,
                     correlation_id,
@@ -1173,16 +1201,33 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
             }
             "artifacts.save" => {
                 let params: super::params::SaveParams = parse(params)?;
+                authorize_transport(
+                    &caller,
+                    SkillLibraryAction::Save,
+                    &CanonicalArtifactId::parse(params.artifact_id.clone())?,
+                    correlation_id,
+                )?;
+                if params.expected_revision_id.is_none()
+                    && params.expected_library_version.is_none()
+                {
+                    return Err(SkillLibraryDispatchError::InvalidParams);
+                }
                 let store = Arc::clone(&self.store);
                 let artifact_id = params.artifact_id.clone();
-                let name = self
-                    .blocking
+                let (name, ownership, head) = self
+                    .read_blocking
                     .run("skill_library_save_target", move || {
                         store
                             .library_snapshot()?
                             .records
                             .get(&artifact_id)
-                            .map(|record| record.name.clone())
+                            .map(|record| {
+                                (
+                                    record.name.clone(),
+                                    record.ownership.clone(),
+                                    record.latest_revision_id.clone(),
+                                )
+                            })
                             .ok_or(ArtifactError::NotFound("library_record"))
                     })
                     .await
@@ -1192,8 +1237,8 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
                     caller,
                     project_id,
                     name,
-                    Some(params.artifact_id),
-                    Some(params.expected_revision_id),
+                    Some((params.artifact_id, ownership)),
+                    Some(params.expected_revision_id.unwrap_or(head)),
                     params.files,
                     params.expected_library_version,
                     params.idempotency_key,
@@ -1233,16 +1278,6 @@ impl<G: Send + Sync + 'static> SkillLibraryService<G> {
     }
 }
 
-/// Validate a coordinator-owned payload without changing its allocation. Keeping this move-only
-/// seam separate makes it impossible to accidentally reintroduce a JSON/string conversion at the
-/// product boundary.
-pub(super) fn validate_owned_acquisition(
-    acquisition: labby_runtime::artifacts::ArtifactAcquisition,
-) -> Result<labby_runtime::artifacts::ArtifactAcquisition, ArtifactError> {
-    acquisition.validate()?;
-    Ok(acquisition)
-}
-
 fn parse<T: DeserializeOwned>(value: Value) -> Result<T, SkillLibraryDispatchError> {
     serde_json::from_value(value).map_err(|_| SkillLibraryDispatchError::InvalidParams)
 }
@@ -1266,12 +1301,6 @@ enum ArchivedRecordAccess {
 }
 
 impl ArchivedRecordAccess {
-    fn target_visible(self, _record: &SkillLibraryRecord) -> bool {
-        match self {
-            Self::PersonalOnly => true,
-        }
-    }
-
     fn visible(
         self,
         record: &SkillLibraryRecord,
@@ -1287,19 +1316,6 @@ impl ArchivedRecordAccess {
                 record.active_revision_id.is_some(),
             )
     }
-}
-
-fn visible_record<'a>(
-    snapshot: &'a LibrarySnapshot,
-    artifact_id: &str,
-    decision: &SkillLibraryAuthorizationDecision,
-    archived: ArchivedRecordAccess,
-) -> Result<&'a SkillLibraryRecord, ArtifactError> {
-    snapshot
-        .records
-        .get(artifact_id)
-        .filter(|record| archived.visible(record, decision))
-        .ok_or(ArtifactError::NotFound("library_record"))
 }
 
 fn map_blocking(error: BlockingError<ArtifactError>) -> SkillLibraryDispatchError {
@@ -1376,6 +1392,10 @@ fn summary(
     published_library_version: u64,
 ) -> SkillLibrarySummary {
     let personal = decision.permits_personal(&record.ownership);
+    let can_mutate = decision.permits_mutation(&record.ownership);
+    let show_latest = personal
+        || can_mutate
+        || record.active_revision_id.as_ref() == Some(&record.latest_revision_id);
     let materialized = record.materialized;
     let active = record.active_revision_id.is_some();
     SkillLibrarySummary {
@@ -1383,13 +1403,17 @@ fn summary(
         name: record.name.clone(),
         archived: record.archived,
         active_revision_id: record.active_revision_id.clone(),
-        latest_revision_id: record.latest_revision_id.clone(),
+        latest_revision_id: if show_latest {
+            Some(record.latest_revision_id.clone())
+        } else {
+            record.active_revision_id.clone()
+        },
         visibility: match record.visibility {
             SkillVisibility::Private => "private",
             SkillVisibility::Tenant => "shared",
         },
         access_label: if personal { "personal" } else { "shared" },
-        can_mutate: personal,
+        can_mutate,
         owner: OwnerSummary {
             relationship: if decision.owns(&record.ownership) {
                 "self"
@@ -1404,10 +1428,11 @@ fn summary(
         canonical_uri: active.then(|| format!("skill://labby/{}/SKILL.md", record.name)),
         current_generation,
         published_library_version,
-        allowed_actions: item_allowed_actions(personal, active),
+        allowed_actions: item_allowed_actions(can_mutate, active),
         latest_revision_files: record
             .latest_revision_files
             .iter()
+            .filter(|_| show_latest)
             .map(|component| RevisionFileSummary {
                 path: component.path.clone(),
                 digest: component.digest.clone(),
@@ -1490,7 +1515,7 @@ fn list_page_visible(
         field: "limit",
         reason,
     })?;
-    let cursor_binding = ListCursorBinding::new(decision, snapshot.version, query);
+    let cursor_binding = ListCursorBinding::new(decision, query);
     let cursor = cursor
         .map(|encoded| decode_list_cursor(&encoded, &cursor_binding))
         .transpose()?;
@@ -1541,9 +1566,19 @@ fn list_page_visible(
     Ok(VersionedSkillLibraryPage {
         library_version: snapshot.version,
         published_library_version,
-        can_create: true,
-        create_visibilities: vec!["private", "shared"],
-        allowed_actions: vec!["artifacts.validate", "artifacts.create", "artifacts.import"],
+        can_create: decision.can_create,
+        create_visibilities: if decision.permits_shared_create() {
+            vec!["private", "shared"]
+        } else if decision.can_create {
+            vec!["private"]
+        } else {
+            vec![]
+        },
+        allowed_actions: if decision.can_create {
+            vec!["artifacts.validate", "artifacts.create", "artifacts.import"]
+        } else {
+            vec!["artifacts.validate"]
+        },
         items,
         next_cursor,
     })
@@ -1553,17 +1588,12 @@ fn list_page_visible(
 struct ListCursorBinding {
     version: u8,
     context_digest: String,
-    library_version: u64,
     query_digest: Option<String>,
 }
 
 impl ListCursorBinding {
-    fn new(
-        decision: &SkillLibraryAuthorizationDecision,
-        library_version: u64,
-        query: Option<&str>,
-    ) -> Self {
-        let (tenant, principal, project, authority_generation) = decision.cursor_binding();
+    fn new(decision: &SkillLibraryAuthorizationDecision, query: Option<&str>) -> Self {
+        let (tenant, principal, project, visibility_flags) = decision.cursor_binding();
         let mut context = Sha256::new();
         for value in [tenant, principal, project] {
             context.update(value.len().to_be_bytes());
@@ -1573,11 +1603,10 @@ impl ListCursorBinding {
             context.update(team_id.len().to_be_bytes());
             context.update(team_id.as_bytes());
         }
-        context.update(authority_generation.to_be_bytes());
+        context.update(visibility_flags);
         Self {
-            version: 1,
+            version: 2,
             context_digest: hex::encode(context.finalize()),
-            library_version,
             query_digest: query.map(|value| hex::encode(Sha256::digest(value.as_bytes()))),
         }
     }
@@ -1598,7 +1627,7 @@ fn encode_list_cursor(
         binding: ListCursorBinding {
             version: binding.version,
             context_digest: binding.context_digest.clone(),
-            library_version: binding.library_version,
+
             query_digest: binding.query_digest.clone(),
         },
         artifact_id,
@@ -1721,7 +1750,6 @@ pub(crate) fn history_page(
     store: &ArtifactStore,
     record: &SkillLibraryRecord,
     decision: &SkillLibraryAuthorizationDecision,
-    library_version: u64,
     cursor: Option<String>,
     limit: Option<usize>,
 ) -> Result<CursorPage<RevisionSummary>, ArtifactError> {
@@ -1734,12 +1762,7 @@ pub(crate) fn history_page(
         reason,
     })?;
     let artifact = store.get(&record.artifact_id)?;
-    let binding = HistoryCursorBinding::new(
-        decision,
-        library_version,
-        &record.artifact_id,
-        &record.ownership,
-    );
+    let binding = HistoryCursorBinding::new(decision, &record.artifact_id, &record.ownership);
     let (page_start, end) =
         history_page_window(&artifact.revision_ids, cursor.as_deref(), limit, &binding)?;
     let ids = artifact.revision_ids[page_start..end]
@@ -1771,7 +1794,6 @@ pub(crate) fn history_page(
 struct HistoryCursorBinding {
     version: u8,
     context_digest: String,
-    library_version: u64,
     artifact_id: String,
     owner_kind: labby_runtime::artifacts::LibraryOwnerKind,
     owner_id: String,
@@ -1780,15 +1802,13 @@ struct HistoryCursorBinding {
 impl HistoryCursorBinding {
     fn new(
         decision: &SkillLibraryAuthorizationDecision,
-        library_version: u64,
         artifact_id: &str,
         ownership: &labby_runtime::artifacts::LibraryOwnership,
     ) -> Self {
-        let list = ListCursorBinding::new(decision, library_version, None);
+        let list = ListCursorBinding::new(decision, None);
         Self {
-            version: 1,
+            version: 2,
             context_digest: list.context_digest,
-            library_version,
             artifact_id: artifact_id.to_owned(),
             owner_kind: ownership.owner_kind(),
             owner_id: ownership.owner_id.as_str().to_owned(),
@@ -1829,7 +1849,6 @@ fn encode_history_cursor(
         binding: HistoryCursorBinding {
             version: binding.version,
             context_digest: binding.context_digest.clone(),
-            library_version: binding.library_version,
             artifact_id: binding.artifact_id.clone(),
             owner_kind: binding.owner_kind,
             owner_id: binding.owner_id.clone(),
@@ -2122,6 +2141,7 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
     correlation_id: &SkillLibraryCorrelationId,
     store: Arc<ArtifactStore>,
     expected_library_version: u64,
+    prepared_from_version: u64,
     mut idempotency: LibraryIdempotency,
     mutation: LibraryMutation,
     committed_at: LibraryTimestamp,
@@ -2171,10 +2191,11 @@ pub(crate) async fn commit_authorized_mutation<G: Send + Sync + 'static>(
                     faults.as_ref(),
                     || {
                         store
-                            .mutate_library_outcome(
+                            .mutate_library_outcome_prepared(
                                 &authorization,
                                 &ownership,
                                 expected_library_version,
+                                prepared_from_version,
                                 idempotency,
                                 mutation,
                                 committed_at,
@@ -2280,11 +2301,10 @@ mod tests {
     }
 
     #[test]
-    fn list_cursor_is_opaque_and_bound_to_authority_query_and_generation() {
+    fn list_cursor_is_opaque_and_bound_to_authority_and_query() {
         let binding = ListCursorBinding {
             version: 1,
             context_digest: "a".repeat(64),
-            library_version: 7,
             query_digest: Some("b".repeat(64)),
         };
         let encoded = encode_list_cursor(&binding, "artifact-1".to_owned()).unwrap();
@@ -2295,7 +2315,7 @@ mod tests {
         );
 
         let stale = ListCursorBinding {
-            library_version: 8,
+            query_digest: None,
             ..binding
         };
         assert!(matches!(
@@ -2356,7 +2376,6 @@ mod tests {
         let binding = HistoryCursorBinding {
             version: 1,
             context_digest: "authority-context".to_owned(),
-            library_version: 7,
             artifact_id: "artifact-1".to_owned(),
             owner_kind: labby_runtime::artifacts::LibraryOwnerKind::Team,
             owner_id: "team-1".to_owned(),
@@ -2386,31 +2405,13 @@ mod tests {
         assert!(history_page_window(&revisions, Some("rev-09900"), 100, &other).is_err());
     }
 
-    #[expect(
-        dead_code,
-        reason = "fault injector retained for targeted regression tests"
-    )]
-    struct OneStageFault(FaultStage);
-
-    impl FaultInjector for OneStageFault {
-        fn check(&self, stage: FaultStage) -> Result<(), InjectedFault> {
-            if stage == self.0 {
-                Err(InjectedFault { stage })
-            } else {
-                Ok(())
-            }
-        }
-    }
-
     struct OneShotStageFault {
         stage: FaultStage,
         armed: AtomicBool,
     }
 
-    struct OneShotStageDelay {
-        stage: FaultStage,
-        armed: AtomicBool,
-        delay: std::time::Duration,
+    struct OneShotCommitPause {
+        release: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
     }
 
     async fn acceptance_dispatch(
@@ -2448,10 +2449,14 @@ mod tests {
         }
     }
 
-    impl FaultInjector for OneShotStageDelay {
+    impl FaultInjector for OneShotCommitPause {
         fn check(&self, stage: FaultStage) -> Result<(), InjectedFault> {
-            if stage == self.stage && self.armed.swap(false, Ordering::SeqCst) {
-                std::thread::sleep(self.delay);
+            if stage == FaultStage::AfterCommitBeforeSwap
+                && let Some(release) = self.release.lock().unwrap().take()
+            {
+                release
+                    .recv_timeout(std::time::Duration::from_secs(30))
+                    .expect("release paused commit");
             }
             Ok(())
         }
@@ -2491,21 +2496,26 @@ mod tests {
         let publication = Arc::new(ActivationCoordinator::new(initial, 0));
         let blocking = BoundedBlockingExecutor::new(
             1,
-            std::time::Duration::from_secs(1),
-            std::time::Duration::from_millis(40),
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_secs(10),
         )
         .unwrap();
-        let service = SkillLibraryService::new(
+        let (release, paused) = std::sync::mpsc::channel();
+        let mut service = SkillLibraryService::new(
             Arc::clone(&store),
             blocking,
             Arc::clone(&publication),
             Arc::clone(&projection),
         )
-        .with_fault_injector(Arc::new(OneShotStageDelay {
-            stage: FaultStage::AfterCommitBeforeSwap,
-            armed: AtomicBool::new(true),
-            delay: std::time::Duration::from_millis(150),
+        .with_fault_injector(Arc::new(OneShotCommitPause {
+            release: Mutex::new(Some(paused)),
         }));
+        service.blocking = BoundedBlockingExecutor::new(
+            1,
+            std::time::Duration::from_secs(5),
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap();
         let params = json!({
             "name": "timeout-recovery",
             "files": [{"path":"SKILL.md", "content":"---\nname: timeout-recovery\ndescription: timeout recovery\n---\nbody\n"}],
@@ -2529,14 +2539,8 @@ mod tests {
             })
         ));
 
-        // Loaded Windows CI runners can take longer to schedule the blocking
-        // reconciliation task after the deliberately injected timeout.
-        let reconciliation_timeout = if cfg!(windows) {
-            std::time::Duration::from_secs(5)
-        } else {
-            std::time::Duration::from_secs(1)
-        };
-        tokio::time::timeout(reconciliation_timeout, async {
+        release.send(()).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(15), async {
             loop {
                 if store.library_snapshot().unwrap().version == 1
                     && publication.health() == (PublicationHealth::Ready { library_version: 1 })
@@ -2553,7 +2557,7 @@ mod tests {
             PublicationHealth::Ready { library_version: 1 }
         );
 
-        // The 40 ms budget above forces the first commit to time out. Replay
+        // The paused commit above forces the first request to time out. Replay
         // exercises the recovered store and publication with a normal budget,
         // rather than accidentally injecting a second timeout on loaded hosts.
         let replay_service = SkillLibraryService::new(
@@ -2896,6 +2900,101 @@ mod tests {
                 .count(),
             1
         );
+        // The archive changed the library after the other skill was written.
+        let snapshot = store.library_snapshot().unwrap();
+        let unchanged = snapshot
+            .records
+            .values()
+            .find(|record| !record.archived)
+            .unwrap();
+        let mut edit = json!({
+            "artifact_id": unchanged.artifact_id,
+            "expected_revision_id": unchanged.latest_revision_id,
+            "files": [{"path":"SKILL.md","content":format!("---\nname: {}\ndescription: updated\n---\nupdated\n",unchanged.name)}],
+            "idempotency_key":"guarded-edit"
+        });
+        let correlation = SkillLibraryCorrelationId::parse("guarded-edit").unwrap();
+        edit["expected_library_version"] = json!(snapshot.version - 1);
+        let stale = service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "artifacts.save",
+                edit.clone(),
+                &correlation,
+            )
+            .await;
+        assert!(matches!(
+            stale,
+            Err(SkillLibraryDispatchError::Artifact(
+                ArtifactError::Conflict("library_version_changed")
+            ))
+        ));
+        edit.as_object_mut()
+            .unwrap()
+            .remove("expected_library_version");
+        for outcome in ["committed", "replayed"] {
+            let saved = service
+                .dispatch(
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    "artifacts.save",
+                    edit.clone(),
+                    &correlation,
+                )
+                .await
+                .unwrap();
+            assert_eq!(saved["outcome"], outcome);
+        }
+        edit["idempotency_key"] = json!("another-editor");
+        let stale = service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "artifacts.save",
+                edit.clone(),
+                &correlation,
+            )
+            .await;
+        assert!(matches!(
+            stale,
+            Err(SkillLibraryDispatchError::Artifact(
+                ArtifactError::Conflict("revision_changed")
+            ))
+        ));
+        edit.as_object_mut().unwrap().remove("expected_revision_id");
+        assert!(matches!(
+            service
+                .dispatch(
+                    &runtime,
+                    caller(),
+                    "bootstrap-default",
+                    "artifacts.save",
+                    edit.clone(),
+                    &correlation
+                )
+                .await,
+            Err(SkillLibraryDispatchError::InvalidParams)
+        ));
+        edit["expected_library_version"] = json!(snapshot.version + 1);
+        edit["files"][0]["content"] = json!(format!(
+            "---\nname: {}\ndescription: final\n---\nfinal\n",
+            unchanged.name
+        ));
+        service
+            .dispatch(
+                &runtime,
+                caller(),
+                "bootstrap-default",
+                "artifacts.save",
+                edit,
+                &correlation,
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -3317,6 +3416,50 @@ mod tests {
             shared_content.as_bytes()
         );
 
+        let mut damaged = restarted_snapshot.clone();
+        let active = damaged
+            .records
+            .values()
+            .find(|record| record.active_revision_id.is_some())
+            .unwrap()
+            .clone();
+        for (id, name) in [
+            ("missing-record", "missing-revision"),
+            ("collision-a", "same-name"),
+            ("collision-b", "same-name"),
+        ] {
+            let mut record = active.clone();
+            record.artifact_id = id.into();
+            record.name = name.into();
+            damaged.records.insert(id.into(), record);
+        }
+        let recovered = projection
+            .prepare(&restarted_store, &damaged, None)
+            .unwrap();
+        assert!(
+            recovered
+                .providers
+                .find("skill://labby/shared-brief/SKILL.md")
+                .is_some()
+        );
+        for (name, reason) in [
+            ("missing-revision", "artifact_materialization_failed"),
+            ("same-name", "active_skill_collision"),
+        ] {
+            assert!(
+                recovered
+                    .providers
+                    .find(&format!("skill://labby/{name}/SKILL.md"))
+                    .is_none()
+            );
+            assert!(
+                recovered
+                    .rejected
+                    .iter()
+                    .any(|entry| entry.skill == name && entry.reason == reason)
+            );
+        }
+
         let access_store = runtime.store().await.unwrap();
         access_store
             .execute_test_statement(
@@ -3398,5 +3541,158 @@ mod tests {
             coordinator.health(),
             PublicationHealth::Ready { library_version: 2 }
         );
+    }
+
+    #[tokio::test]
+    async fn activating_a_second_owners_same_named_skill_is_refused() {
+        let root = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let access_path = root.path().join("access.db");
+        let access_store = AccessStore::open(access_path.clone()).await.unwrap();
+        let identity = |subject| {
+            VerifiedIdentity::external(
+                Authenticator::BrowserSession,
+                "https://accounts.google.com",
+                subject,
+            )
+            .unwrap()
+        };
+        let eli = identity("eli");
+        let pujit = identity("pujit");
+        access_store
+            .bootstrap_owner(BootstrapOwnerInput::new(eli.clone(), "Local", "Default").unwrap())
+            .await
+            .unwrap();
+        access_store
+            .execute_test_statement(
+                "INSERT INTO principals VALUES
+                   ('pujit-principal','bootstrap-local','user','active','Pujit',2,2);
+                 INSERT INTO principal_links VALUES
+                   ('pujit-link','pujit-principal','external','https://accounts.google.com','pujit',NULL,'active',1,1,2,2);
+                 INSERT INTO project_memberships VALUES
+                   ('pujit-membership','bootstrap-local','bootstrap-default','pujit-principal','member','active','bootstrap-owner',2,2);",
+            )
+            .await
+            .unwrap();
+        drop(access_store);
+        let runtime = AccessRuntime::initialize(access_path.clone()).await;
+        let store = Arc::new(ArtifactStore::new(root.path().join("artifacts")).unwrap());
+        let projection: Arc<
+            dyn GenerationProjection<crate::skills::registry::FirstPartyGeneration>,
+        > = Arc::new(ArtifactFirstPartyProjection::default());
+        let initial = projection
+            .prepare(&store, &store.library_snapshot().unwrap(), None)
+            .unwrap();
+        let publication = Arc::new(ActivationCoordinator::new(initial, 0));
+        let service = SkillLibraryService::new(
+            Arc::clone(&store),
+            BoundedBlockingExecutor::new(
+                2,
+                std::time::Duration::from_secs(1),
+                std::time::Duration::from_secs(10),
+            )
+            .unwrap(),
+            Arc::clone(&publication),
+            Arc::clone(&projection),
+        );
+        let latest_revision = |artifact_id: &str| {
+            store
+                .get(artifact_id)
+                .unwrap()
+                .revision_ids
+                .last()
+                .unwrap()
+                .clone()
+        };
+        let eli_content = "---\nname: notes\ndescription: Eli's shared notes\n---\nEli.\n";
+        let eli_notes = acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "artifacts.create",
+            json!({
+                "name": "notes",
+                "visibility": "shared",
+                "files": [{"path": "SKILL.md", "content": eli_content}],
+                "expected_library_version": 0,
+                "idempotency_key": "eli-create-notes"
+            }),
+            "eli-create-notes",
+        )
+        .await
+        .unwrap();
+        let eli_id = eli_notes["artifact_id"].as_str().unwrap().to_owned();
+        acceptance_dispatch(
+            &service,
+            &runtime,
+            &eli,
+            "artifacts.activate",
+            json!({
+                "artifact_id": eli_id,
+                "expected_revision_id": latest_revision(&eli_id),
+                "expected_library_version": 1,
+                "idempotency_key": "eli-activate-notes"
+            }),
+            "eli-activate-notes",
+        )
+        .await
+        .unwrap();
+
+        let pujit_notes = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "artifacts.create",
+            json!({
+                "name": "notes",
+                "files": [{"path": "SKILL.md", "content": "---\nname: notes\ndescription: Pujit's private notes\n---\nPujit.\n"}],
+                "expected_library_version": 2,
+                "idempotency_key": "pujit-create-notes"
+            }),
+            "pujit-create-notes",
+        )
+        .await
+        .unwrap();
+        let pujit_id = pujit_notes["artifact_id"].as_str().unwrap().to_owned();
+        let refused = acceptance_dispatch(
+            &service,
+            &runtime,
+            &pujit,
+            "artifacts.activate",
+            json!({
+                "artifact_id": pujit_id,
+                "expected_revision_id": latest_revision(&pujit_id),
+                "expected_library_version": 3,
+                "idempotency_key": "pujit-activate-notes"
+            }),
+            "pujit-activate-notes",
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{refused:?}").contains("active_skill_collision"),
+            "{refused:?}"
+        );
+
+        // Eli's skill keeps serving its own bytes under its own policy.
+        let generation = publication.generation();
+        let entry = generation
+            .providers
+            .find("skill://labby/notes/SKILL.md")
+            .expect("the first owner's skill stays published");
+        assert_eq!(
+            generation
+                .providers
+                .read(entry, "skill://labby/notes/SKILL.md", 64 * 1024)
+                .await
+                .unwrap()
+                .bytes,
+            eli_content.as_bytes()
+        );
+        assert_eq!(generation.providers.collision_rejections().len(), 0);
     }
 }

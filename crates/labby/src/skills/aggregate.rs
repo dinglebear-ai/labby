@@ -58,6 +58,9 @@ impl ToolAccess {
     }
 }
 
+/// Origin-label keyed reachability on federated listing pages.
+pub(crate) const SKILL_ORIGINS_META_KEY: &str = "ai.dinglebear.labby/skillOrigins";
+
 /// Build the provenance `_meta` for one origin.
 pub(crate) fn origin_meta(
     origin: &str,
@@ -141,7 +144,7 @@ pub(crate) fn mint_proxied_entries(
     let mut candidates: Vec<SkillEntry> = Vec::with_capacity(skills.len());
     let mut manifest_counts = BTreeMap::<String, usize>::new();
     for skill in skills {
-        let Some(entry) = mint_proxied_entry(&config.name, skill, meta) else {
+        let Some(entry) = mint_proxied_entry(&config.name, skill, None) else {
             continue;
         };
         *manifest_counts.entry(entry.uri.clone()).or_default() += 1;
@@ -161,6 +164,10 @@ pub(crate) fn mint_proxied_entries(
     let minted = candidates
         .into_iter()
         .filter(|entry| !excluded_uris.contains(&entry.uri))
+        .map(|mut entry| {
+            entry.meta = meta.cloned();
+            entry
+        })
         .collect::<Vec<_>>();
     let excluded_count = skills.len().saturating_sub(minted.len());
     MintedEntries {

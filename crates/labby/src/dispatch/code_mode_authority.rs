@@ -98,21 +98,11 @@ impl CodeModePersonalOauthProvider for CanonicalPersonalOauthProvider {
             let allowed_upstreams = context.allowed_upstreams.clone();
             drop(context);
 
-            let store = access.store().await.map_err(|error| {
-                crate::dispatch::access_errors::map_runtime_error("gateway", error)
-            })?;
-            let installation_id = store
-                .installation_id()
-                .await
-                .map_err(|error| {
-                    crate::dispatch::access_errors::map_store_error("gateway", error, denied)
-                })?
-                .unwrap_or_else(|| "installation".to_owned());
             let authority = crate::access::authorize_gateway_action(
                 &access,
                 identity,
                 ceiling,
-                &installation_id,
+                None,
                 None,
                 "gateway.oauth.authorize",
             )

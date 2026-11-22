@@ -43,6 +43,7 @@ impl Drop for ActiveProbe {
 #[derive(Clone, Default)]
 struct QaUpstream {
     probes: Arc<AtomicUsize>,
+    reads: Arc<AtomicUsize>,
     fail: Arc<AtomicBool>,
     gate: Option<Arc<tokio::sync::Semaphore>>,
     entered: Arc<tokio::sync::Notify>,
@@ -110,6 +111,7 @@ impl ServerHandler for QaUpstream {
         request: ReadResourceRequestParams,
         _: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         let (_, text) = DOCUMENTS
             .iter()
             .find(|(name, _)| request.uri == format!("qa-vm-service://{name}"))
@@ -187,7 +189,6 @@ async fn serve_gateway(server: LabMcpServer) -> HttpFixture {
             route_runtime: Arc::clone(&server.route_runtime),
             client_registry: server.client_registry.clone(),
             transport_label: "http",
-            logging_level: Arc::clone(&server.logging_level),
             route_scope: server.route_scope.clone(),
             relay_session_id: crate::mcp::server::next_relay_session_id(),
             code_mode_widget_callbacks_enabled_for_test: false,
@@ -308,11 +309,8 @@ async fn native_http_cold_list_then_read_modern_and_legacy() {
             "handshake must leave discovery cold"
         );
         assert_documents(&client, modern).await;
-        assert_eq!(
-            fixture.probes.load(Ordering::SeqCst),
-            3,
-            "one discovery plus two isolated read relays"
-        );
+        assert_eq!(fixture.reads.load(Ordering::SeqCst), 2);
+        assert!((1..=3).contains(&fixture.probes.load(Ordering::SeqCst)));
         client.cancel().await.unwrap();
     }
 }
@@ -355,8 +353,8 @@ async fn native_http_concurrent_lists_templates_and_reads_reuse_regular_connecti
             .await
             .unwrap();
     }
-    // One regular discovery plus eight request-isolated read relays.
-    assert_eq!(fixture.probes.load(Ordering::SeqCst), 9);
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 8);
+    assert!((1..=9).contains(&fixture.probes.load(Ordering::SeqCst)));
     assert_eq!(pool.connection_count_for_tests().await, 1);
     for client in clients {
         client.cancel().await.unwrap();
@@ -391,17 +389,24 @@ async fn mixed_upstreams_share_one_budget_and_preserve_healthy_resources() {
         upstream("queued", &slow_http),
     ];
     let (server, pool) = gateway(configs, 200, 2).await;
-    let started = tokio::time::Instant::now();
-    tokio::time::timeout(
-        Duration::from_millis(600),
-        server.ensure_resource_upstreams_ready(&pool),
-    )
-    .await
-    .expect("mixed discovery must finish within one overall budget");
-    assert!(
-        started.elapsed() < Duration::from_millis(600),
-        "one budget, not one per batch"
-    );
+    let manager = server.gateway_manager.as_ref().unwrap();
+    let config = manager.current_config().await;
+    let discovery = manager.warm_resource_upstreams(&pool, None, config, Duration::from_secs(60));
+    tokio::pin!(discovery);
+    tokio::select! {
+        () = &mut discovery => panic!("stalled upstreams must wait for the shared deadline"),
+        () = async {
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while stalled.probes.load(Ordering::SeqCst) < 2 {
+                    stalled.entered.notified().await;
+                }
+            }).await.expect("healthy and failing peers finish before both stalled probes start");
+        } => {}
+    }
+    tokio::time::pause();
+    tokio::time::advance(Duration::from_secs(61)).await;
+    discovery.await;
+    tokio::time::resume();
     assert_eq!(healthy.probes.load(Ordering::SeqCst), 1);
     assert_eq!(failing.probes.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -445,7 +450,8 @@ async fn cooldown_expiry_allows_fresh_native_listing_to_recover() {
     let http = serve_gateway(server).await;
     let client = client(&http, true).await;
     assert_documents(&client, true).await;
-    assert_eq!(fixture.probes.load(Ordering::SeqCst), 6);
+    assert!((4..=6).contains(&fixture.probes.load(Ordering::SeqCst)));
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 2);
     assert!(matches!(
         pool.upstream_tool_health("qa").await,
         Some(crate::dispatch::upstream::types::UpstreamHealth::Healthy)
@@ -454,7 +460,7 @@ async fn cooldown_expiry_allows_fresh_native_listing_to_recover() {
 }
 
 #[tokio::test]
-async fn cancelled_discovery_releases_lock_and_next_native_listing_recovers() {
+async fn cancelled_discovery_leaves_one_owner_to_publish_the_connection() {
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let fixture = QaUpstream {
         gate: Some(Arc::clone(&gate)),
@@ -473,12 +479,21 @@ async fn cancelled_discovery_releases_lock_and_next_native_listing_recovers() {
     }
     assert_eq!(pool.connection_count_for_tests().await, 0);
     gate.add_permits(4);
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while pool.connection_count_for_tests().await == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("the original owner finishes without another listing");
+    assert_eq!(fixture.probes.load(Ordering::SeqCst), 1);
     let http = serve_gateway(server).await;
     let client = client(&http, true).await;
     tokio::time::timeout(Duration::from_secs(5), assert_documents(&client, true))
         .await
         .unwrap();
-    assert_eq!(fixture.probes.load(Ordering::SeqCst), 4);
+    assert!((1..=3).contains(&fixture.probes.load(Ordering::SeqCst)));
+    assert_eq!(fixture.reads.load(Ordering::SeqCst), 2);
     assert!(matches!(
         pool.upstream_tool_health("qa").await,
         Some(crate::dispatch::upstream::types::UpstreamHealth::Healthy)

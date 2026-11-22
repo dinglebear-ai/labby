@@ -21,13 +21,15 @@
 //! (LEARNED) — "Ingest endpoints need per-batch count + per-event size caps;
 //! no rate limit = DoS via authenticated node."
 
-use std::collections::VecDeque;
+use lru::LruCache;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::RwLock;
 
 /// Drop-oldest cap on the number of tracked client entries.
-const MAX_CLIENTS: usize = 500;
+pub const MAX_CLIENTS: usize = 500;
 
 /// Byte cap applied to every peer-controlled string field before storage.
 const MAX_FIELD_LEN: usize = 256;
@@ -78,18 +80,31 @@ pub struct ConnectedClient {
     pub observation_count: u64,
 }
 
-struct RegistryEntry {
-    client: ConnectedClient,
-    // Full authenticated actor key, or a transport-local connection key.
-    // Never serialized. A shortened display tag must not merge users.
-    scope_key: Option<String>,
+#[derive(Hash, PartialEq, Eq)]
+enum ObservationKey {
+    Authenticated(
+        String,
+        Option<String>,
+        Option<String>,
+        String,
+        Option<String>,
+    ),
+    Anonymous(u64),
 }
 
-/// Thin shared handle — cloneable, cheap, `Default` yields an empty registry
-/// (the no-op case for CLI/dev paths that never wire a real transport).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ClientRegistryHandle {
-    clients: Arc<RwLock<VecDeque<RegistryEntry>>>,
+    clients: Arc<RwLock<LruCache<ObservationKey, ConnectedClient>>>,
+}
+
+impl Default for ClientRegistryHandle {
+    fn default() -> Self {
+        Self {
+            clients: Arc::new(RwLock::new(LruCache::new(
+                NonZeroUsize::new(MAX_CLIENTS).expect("positive registry capacity"),
+            ))),
+        }
+    }
 }
 
 impl ClientRegistryHandle {
@@ -115,26 +130,26 @@ impl ClientRegistryHandle {
             connected_at: client.connected_at,
             observation_count: client.observation_count.max(1),
         };
+        let key = match scope_key {
+            Some(scope) => ObservationKey::Authenticated(
+                scope,
+                client.client_name.clone(),
+                client.client_version.clone(),
+                client.transport.clone(),
+                client.authorized_client_id.clone(),
+            ),
+            None => {
+                static ANONYMOUS: AtomicU64 = AtomicU64::new(0);
+                ObservationKey::Anonymous(ANONYMOUS.fetch_add(1, Ordering::Relaxed))
+            }
+        };
         let mut guard = self.clients.write().await;
-        if let Some(key) = scope_key.as_deref()
-            && let Some(index) = guard.iter().position(|entry| {
-                entry.scope_key.as_deref() == Some(key)
-                    && entry.client.client_name == client.client_name
-                    && entry.client.client_version == client.client_version
-                    && entry.client.transport == client.transport
-                    && entry.client.authorized_client_id == client.authorized_client_id
-            })
-        {
-            let mut entry = guard.remove(index).expect("position came from registry");
-            entry.client.last_seen_at = Some(client.connected_at);
-            entry.client.observation_count = entry.client.observation_count.saturating_add(1);
-            guard.push_back(entry);
-            return;
+        if let Some(entry) = guard.get_mut(&key) {
+            entry.last_seen_at = Some(client.connected_at);
+            entry.observation_count = entry.observation_count.saturating_add(1);
+        } else {
+            guard.put(key, client);
         }
-        if guard.len() >= MAX_CLIENTS {
-            guard.pop_front();
-        }
-        guard.push_back(RegistryEntry { client, scope_key });
     }
 
     /// Return a snapshot of currently retained client records in connection order.
@@ -143,7 +158,8 @@ impl ClientRegistryHandle {
             .read()
             .await
             .iter()
-            .map(|entry| entry.client.clone())
+            .rev()
+            .map(|(_, client)| client.clone())
             .collect()
     }
 }

@@ -798,28 +798,6 @@ mod tests {
         assert_eq!(capped_http_client().max_bytes(), MAX_RESPONSE_BYTES);
     }
 
-    #[tokio::test]
-    async fn outstanding_admission_is_bounded_without_an_unbounded_queue() {
-        let outstanding = tokio::sync::Semaphore::new(MAX_OUTSTANDING);
-        let held = (0..MAX_OUTSTANDING)
-            .map(|_| outstanding.try_acquire())
-            .collect::<Result<Vec<_>, _>>()
-            .expect("configured outstanding slots");
-        assert!(outstanding.try_acquire().is_err());
-        drop(held);
-        assert!(outstanding.try_acquire().is_ok());
-    }
-
-    #[tokio::test]
-    async fn queue_wait_consumes_the_absolute_request_deadline() {
-        let concurrency = tokio::sync::Semaphore::new(1);
-        let held = concurrency.acquire().await.expect("initial permit");
-        let deadline = tokio::time::Instant::now() + Duration::from_millis(20);
-        let queued = tokio::time::timeout_at(deadline, concurrency.acquire()).await;
-        assert!(queued.is_err());
-        drop(held);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn stdio_process_exit_observes_actual_termination() {

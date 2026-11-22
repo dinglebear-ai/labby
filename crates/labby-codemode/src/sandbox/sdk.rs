@@ -20,7 +20,11 @@ impl Drop for CancelOnDrop {
 }
 
 /// Execute through the pinned local SDK. No SDK auto-installer is invoked.
-pub(super) async fn run(profile: SandboxProfile, request: SandboxRun) -> Result<Value, ToolError> {
+pub(super) async fn run(
+    profile: SandboxProfile,
+    request: SandboxRun,
+    name: String,
+) -> Result<Value, ToolError> {
     request.validate(&profile)?;
     let backend: Arc<dyn microsandbox::Backend> = Arc::new(
         tokio::time::timeout(Duration::from_secs(5), LocalBackend::new())
@@ -36,7 +40,7 @@ pub(super) async fn run(profile: SandboxProfile, request: SandboxRun) -> Result<
         .map_err(|_| error("resource_limit", "sandbox workload admission is full"))?;
     let cancel = CancellationToken::new();
     let guard = CancelOnDrop(cancel.clone());
-    let worker = start_worker(profile, request, permit, cancel);
+    let worker = start_worker(profile, request, permit, cancel, name);
     let result = worker
         .await
         .map_err(|_| error("internal_error", "sandbox worker failed"))?;
@@ -49,6 +53,7 @@ fn start_worker(
     request: SandboxRun,
     permit: OwnedSemaphorePermit,
     cancel: CancellationToken,
+    name: String,
 ) -> tokio::task::JoinHandle<Result<Value, ToolError>> {
     tokio::spawn(async move {
         let local = tokio::time::timeout(Duration::from_secs(5), LocalBackend::new())
@@ -57,7 +62,7 @@ fn start_worker(
             .map_err(|_| error("sandbox_unavailable", "local MSB initialization failed"))?;
         let backend: Arc<dyn microsandbox::Backend> = Arc::new(local);
         microsandbox::with_backend(backend, async move {
-            run_owned(profile, request, cancel, permit).await
+            run_owned(profile, request, cancel, permit, name).await
         })
         .await
     })
@@ -68,8 +73,8 @@ async fn run_owned(
     request: SandboxRun,
     cancel: CancellationToken,
     permit: OwnedSemaphorePermit,
+    name: String,
 ) -> Result<Value, ToolError> {
-    let name = super::recovery::name();
     let started = std::time::Instant::now();
     let builder = Sandbox::builder(&name)
         .image(profile.image.as_str())
@@ -273,6 +278,19 @@ mod tests {
         assert!(token.is_cancelled());
     }
 
+    async fn assert_guest_removed(name: &str) {
+        let backend: Arc<dyn microsandbox::Backend> =
+            Arc::new(LocalBackend::new().await.expect("local guest inventory"));
+        let lookup = microsandbox::with_backend(backend, Sandbox::get(name)).await;
+        assert!(
+            matches!(
+                lookup,
+                Err(microsandbox::MicrosandboxError::SandboxNotFound(_))
+            ),
+            "owned guest must be absent after cleanup"
+        );
+    }
+
     #[tokio::test]
     #[ignore = "requires MSB runtime and cached Node image"]
     async fn sandbox_live_cancellation_cleans_guest() {
@@ -287,7 +305,8 @@ mod tests {
             .acquire_owned()
             .await
             .expect("permit");
-        let worker = start_worker(profile, request, permit, cancel);
+        let name = super::super::recovery::name();
+        let worker = start_worker(profile, request, permit, cancel, name.clone());
         tokio::time::sleep(Duration::from_millis(200)).await;
         drop(guard);
         let result = tokio::time::timeout(Duration::from_secs(26), worker)
@@ -295,6 +314,7 @@ mod tests {
             .expect("owned cleanup deadline")
             .expect("worker");
         assert!(matches!(result, Err(ToolError::Sdk { sdk_kind, .. }) if sdk_kind == "cancelled"));
+        assert_guest_removed(&name).await;
     }
 
     #[tokio::test]
@@ -305,10 +325,13 @@ mod tests {
         )
         .expect("profile");
         let request: SandboxRun = serde_json::from_value(json!({"image":profile.image,"command":["node","-e","process.stdout.write('x'.repeat(70000));setTimeout(()=>{},10000)"],"timeout_ms":2000,"files":{}})).expect("request");
-        let result = run(profile, request).await;
+        let name = super::super::recovery::name();
+        let result = run(profile, request, name.clone()).await;
         assert!(
-            matches!(result, Err(ToolError::Sdk { sdk_kind, .. }) if sdk_kind == "output_limit")
+            matches!(&result, Err(ToolError::Sdk { sdk_kind, .. }) if sdk_kind == "output_limit"),
+            "expected an output-limit error, got {result:?}"
         );
+        assert_guest_removed(&name).await;
     }
 
     #[tokio::test]
@@ -319,7 +342,9 @@ mod tests {
         )
         .expect("profile");
         let request:SandboxRun=serde_json::from_value(json!({"image":profile.image,"command":["node","-e","setTimeout(()=>{},10000)"],"timeout_ms":100,"files":{}})).expect("request");
-        let result = run(profile, request).await;
+        let name = super::super::recovery::name();
+        let result = run(profile, request, name.clone()).await;
         assert!(matches!(result,Err(ToolError::Sdk{sdk_kind,..}) if sdk_kind=="timeout"));
+        assert_guest_removed(&name).await;
     }
 }

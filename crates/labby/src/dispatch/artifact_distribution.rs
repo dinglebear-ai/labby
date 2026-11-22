@@ -513,7 +513,7 @@ impl ManagedArtifactCoordinator {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use labby_auth::{Authenticator, VerifiedIdentity};
     use labby_runtime::artifacts::{
@@ -573,13 +573,13 @@ mod tests {
             .unwrap()
     }
 
-    async fn install_authority(access: &AccessStore, artifact_id: &str) -> u64 {
+    async fn install_authority(access: &AccessStore, provider: &str, artifact_id: &str) -> u64 {
         let owner = OwnerScope::Personal(
             labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
         );
         access
             .put_artifact_source_policy(crate::access::ArtifactSourcePolicyRecord {
-                provider_authority: "depot".into(),
+                provider_authority: provider.into(),
                 artifact_id: artifact_id.into(),
                 source_scope: owner.clone(),
                 policy_epoch: 1,
@@ -598,7 +598,7 @@ mod tests {
             .put_artifact_assignment_distribution(
                 crate::access::ArtifactAssignmentDistributionRecord {
                     assignment_id: "assignment-test".into(),
-                    provider_authority: "depot".into(),
+                    provider_authority: provider.into(),
                     artifact_id: artifact_id.into(),
                     source_scope: owner,
                     policy_epoch: 1,
@@ -643,7 +643,7 @@ mod tests {
             )
             .unwrap();
         let acquisition = source_acquisition(&source, &source_record).await;
-        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &source_record.descriptor.id).await;
 
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
@@ -694,7 +694,7 @@ mod tests {
             )
             .unwrap();
         let acquisition = source_acquisition(&source, &source_record).await;
-        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &source_record.descriptor.id).await;
 
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
@@ -743,7 +743,43 @@ mod tests {
 
     #[tokio::test]
     async fn revocation_disables_then_purges_managed_bytes_and_pauses_following() {
-        let (_access_dir, access) = bootstrapped_access().await;
+        check_follow_reconciliation(
+            "bootstrap-owner",
+            ManagedArtifactMirrorStatus::AccessRevoked,
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn publisher_withdrawal_purges_managed_bytes_and_pauses_following() {
+        check_follow_reconciliation(
+            "bootstrap-owner",
+            ManagedArtifactMirrorStatus::SourceWithdrawn,
+            None,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn mismatched_follow_owner_cannot_reconcile_or_purge() {
+        check_follow_reconciliation("other-owner", ManagedArtifactMirrorStatus::Active, None).await;
+    }
+
+    pub(in crate::dispatch) async fn check_follow_reconciliation(
+        owner: &str,
+        restriction: ManagedArtifactMirrorStatus,
+        remote: Option<&crate::dispatch::artifact_control::ArtifactControlPlane>,
+    ) {
+        let provider = if remote.is_some() {
+            "depot:system"
+        } else {
+            "depot"
+        };
+        let (access_dir, access) = bootstrapped_access().await;
+        if owner == "other-owner" {
+            access.execute_test_statement("INSERT INTO principals VALUES('other-owner','bootstrap-local','user','active',NULL,1,1)").await.unwrap();
+        }
         let source_dir = tempfile::tempdir().unwrap();
         let source_package = tempfile::tempdir().unwrap();
         std::fs::write(source_package.path().join("a.txt"), b"alpha").unwrap();
@@ -755,7 +791,7 @@ mod tests {
             )
             .unwrap();
         let acquisition = source_acquisition(&source, &source_record).await;
-        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let policy_epoch = install_authority(&access, provider, &source_record.descriptor.id).await;
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
             Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
@@ -764,9 +800,9 @@ mod tests {
             .install(ManagedArtifactInstallRequest {
                 mirror_id: "mirror-revoke".into(),
                 operation_id: "operation-revoke-install".into(),
-                owner_principal_id: "bootstrap-owner".into(),
+                owner_principal_id: owner.into(),
                 destination_id: None,
-                source_provider_authority: "depot".into(),
+                source_provider_authority: provider.into(),
                 source_assignment_id: "assignment-test".into(),
                 source_scope: OwnerScope::Personal(
                     labby_primitives::access::PrincipalId::new("bootstrap-owner").unwrap(),
@@ -783,13 +819,88 @@ mod tests {
         assert!(destination.get(&source_record.descriptor.id).is_ok());
         assert!(installed.subscription.as_ref().unwrap().active);
 
-        let removed = coordinator
-            .restrict_and_purge_managed_mirror(
-                "mirror-revoke".into(),
-                ManagedArtifactMirrorStatus::AccessRevoked,
+        if restriction == ManagedArtifactMirrorStatus::AccessRevoked {
+            access
+                .put_artifact_assignment_distribution(
+                    crate::access::ArtifactAssignmentDistributionRecord {
+                        assignment_id: "assignment-test".into(),
+                        provider_authority: provider.into(),
+                        artifact_id: source_record.descriptor.id.clone(),
+                        source_scope: installed.mirror.source_scope.clone(),
+                        policy_epoch: 2,
+                        ceiling: crate::access::ArtifactDistributionCeiling {
+                            sync: true,
+                            follow: true,
+                            fork: true,
+                            export: true,
+                            reshare: true,
+                        },
+                        active: false,
+                        created_at: 12,
+                        updated_at: 29,
+                    },
+                )
+                .await
+                .unwrap();
+        } else if restriction == ManagedArtifactMirrorStatus::SourceWithdrawn && remote.is_none() {
+            access
+                .put_artifact_source_policy(crate::access::ArtifactSourcePolicyRecord {
+                    provider_authority: provider.into(),
+                    artifact_id: source_record.descriptor.id.clone(),
+                    source_scope: installed.mirror.source_scope.clone(),
+                    policy_epoch: 2,
+                    ceiling: crate::access::ArtifactDistributionCeiling {
+                        sync: false,
+                        follow: false,
+                        fork: false,
+                        export: false,
+                        reshare: false,
+                    },
+                    updated_at: 29,
+                })
+                .await
+                .unwrap();
+        }
+        let runtime =
+            crate::access::AccessRuntime::initialize(access_dir.path().join("access.db")).await;
+        let controls = crate::dispatch::artifact_control::ArtifactControlPlane::from_config(
+            &crate::config::ArtifactPreferences::default(),
+        )
+        .unwrap();
+        let result =
+            crate::dispatch::skill_library::follow_reconciler::reconcile_managed_authority(
+                &runtime,
+                &destination,
+                remote.unwrap_or(&controls),
+                installed.mirror.clone(),
                 30,
+                tokio::time::Instant::now() + std::time::Duration::from_secs(10),
             )
+            .await;
+        if restriction == ManagedArtifactMirrorStatus::Active {
+            assert!(matches!(
+                result,
+                Err(
+                    crate::dispatch::skill_library::follow_reconciler::FollowReconcileError::State(
+                        "managed_mirror_owner_mismatch"
+                    )
+                )
+            ));
+            let retained = access
+                .managed_artifact_mirror(installed.mirror.mirror_id)
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(retained.status, ManagedArtifactMirrorStatus::Active);
+            assert_eq!(retained.last_checked_at, Some(30));
+            assert!(destination.get(&source_record.descriptor.id).is_ok());
+            return;
+        }
+        result.unwrap();
+        let removed = access
+            .managed_artifact_mirror("mirror-revoke".into())
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(removed.status, ManagedArtifactMirrorStatus::Removed);
         assert!(matches!(
@@ -804,11 +915,7 @@ mod tests {
         assert!(!subscription.active);
         assert_eq!(
             coordinator
-                .restrict_and_purge_managed_mirror(
-                    "mirror-revoke".into(),
-                    ManagedArtifactMirrorStatus::AccessRevoked,
-                    31,
-                )
+                .restrict_and_purge_managed_mirror("mirror-revoke".into(), restriction, 31,)
                 .await
                 .unwrap()
                 .status,
@@ -830,7 +937,7 @@ mod tests {
             )
             .unwrap();
         let acquisition = source_acquisition(&source, &source_record).await;
-        let policy_epoch = install_authority(&access, &source_record.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &source_record.descriptor.id).await;
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
             Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
@@ -922,7 +1029,7 @@ mod tests {
             )
             .unwrap();
         let first_acquisition = source_acquisition(&source, &first_source).await;
-        let policy_epoch = install_authority(&access, &first_source.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &first_source.descriptor.id).await;
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
             Arc::new(ArtifactStore::new(destination_dir.path().join("store")).unwrap());
@@ -1022,7 +1129,7 @@ mod tests {
             )
             .unwrap();
         let first_acquisition = source_acquisition(&source, &first_source).await;
-        let policy_epoch = install_authority(&access, &first_source.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &first_source.descriptor.id).await;
 
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =
@@ -1098,7 +1205,7 @@ mod tests {
             )
             .unwrap();
         let first_acquisition = source_acquisition(&source, &first_source).await;
-        let policy_epoch = install_authority(&access, &first_source.descriptor.id).await;
+        let policy_epoch = install_authority(&access, "depot", &first_source.descriptor.id).await;
 
         let destination_dir = tempfile::tempdir().unwrap();
         let destination =

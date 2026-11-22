@@ -9,8 +9,11 @@
 /// Generate the complete JSON Schema for a typed action payload.
 #[must_use]
 pub fn schema_for<T: schemars::JsonSchema>() -> serde_json::Value {
-    serde_json::to_value(schemars::schema_for!(T))
-        .expect("schemars-generated schema must serialize to JSON")
+    schemars::generate::SchemaSettings::draft2020_12()
+        .for_serialize()
+        .into_generator()
+        .into_root_schema_for::<T>()
+        .into()
 }
 
 /// Compile-time metadata for one dotted action exposed by a service.

@@ -110,6 +110,7 @@ pub use skills::{CodeModeArtifactSearchProvider, CodeModeSkillProvider, CodeMode
 pub(crate) struct CatalogRenderCache {
     /// Fingerprint of the healthy tool list when this cache was built.
     pub fingerprint: String,
+    pub embedding_fingerprint: String,
     /// Rendered catalog entries (includes `.signature` / `.dts`). A boxed
     /// slice behind an `Arc`, not `Arc<Vec<_>>` — mirrors `catalog_json`
     /// below and `ToolsRender.entries` in `labby-codemode`: nothing ever
@@ -120,6 +121,7 @@ pub(crate) struct CatalogRenderCache {
     /// `describe_types` dispatch), so this is read far more than once per
     /// execution.
     pub entries: std::sync::Arc<[CatalogDescriptor]>,
+    pub proxy_sources: std::sync::Arc<labby_codemode::host::CatalogProxyCache>,
     /// `serde_json::to_string(&entries)` — the `const tools = ...` payload.
     /// Same `Arc` rationale as `entries`.
     pub catalog_json: std::sync::Arc<str>,
@@ -144,14 +146,4 @@ pub(crate) struct CatalogRenderFlight {
 pub(crate) struct SnippetMetadataCache {
     pub fingerprint: String,
     pub entries: Vec<labby_codemode::snippet::store::SnippetInfo>,
-}
-
-/// Cached catalog embedding vectors, keyed by the same fingerprint used for
-/// `CatalogRenderCache` (see `search.rs`'s `catalog_from_tools`). One vector
-/// per catalog entry id, computed via one or more batched TEI calls.
-pub(crate) struct CatalogEmbeddingCache {
-    pub fingerprint: String,
-    /// `(entry.id, embedding_vector)` pairs. Callers should look up by id,
-    /// not by index.
-    pub vectors: std::sync::Arc<Vec<(String, Vec<f32>)>>,
 }

@@ -157,10 +157,10 @@ async fn message_tool_requires_exact_session_proof() {
             json!({"label":"not registered"}),
         )
         .await;
-        assert!(
-            reply["result"]["structuredContent"]["session_id"].is_null(),
-            "{reply}"
-        );
+        let expected = hidden();
+        assert_eq!(reply["error"]["code"], expected.code.0);
+        assert_eq!(reply["error"]["message"], expected.message.as_ref());
+        assert!(reply.get("result").is_none());
     }
     let first = call(
         &router,
@@ -186,7 +186,8 @@ async fn message_tool_requires_exact_session_proof() {
         json!({"to":{"kind":"session","session_id":second_id},"body":"forgery","idempotency_key":"forgery","sender_session_id":second_id}),
     ).await;
     assert_eq!(forged["error"]["data"]["kind"], "invalid_param");
-    let body = "\\".repeat(16_384);
+    let sentinel = "private-proof-sentinel";
+    let body = format!("{sentinel}{}", "\\".repeat(16_384 - sentinel.len()));
     let send = call(&router, token, &[FIRST_KEY], "send",
         json!({"to":{"kind":"session","session_id":second_id},"body":body,"idempotency_key":"proof"})).await;
     let id = &ok(&send)["message_id"];
@@ -198,7 +199,8 @@ async fn message_tool_requires_exact_session_proof() {
         json!({"message_id":id}),
     )
     .await;
-    assert!(sibling["result"]["structuredContent"]["body"].is_null());
+    assert_eq!(sibling["error"]["data"]["kind"], "not_found");
+    assert!(!sibling.to_string().contains(sentinel));
     let read = call(
         &router,
         token,

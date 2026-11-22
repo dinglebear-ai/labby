@@ -9,7 +9,7 @@ async fn auxiliary_omission_preserves_inline_results_without_creating_final_arti
     let fixture = env!("CARGO_BIN_EXE_stdio-mcp-fixture");
     std::fs::create_dir_all(home.path().join("tmp")).unwrap();
     std::fs::write(home.path().join("config.toml"), format!(
-        "[code_mode]\nenabled=true\ntimeout_ms=30000\nmax_response_bytes=4096\nmax_response_tokens=100000\nresult_shape_policy=\"off\"\n[gateway]\nextra_stdio_commands=[{}]\n[[upstream]]\nname=\"fixture\"\ntransport=\"stdio\"\ncommand={}\nargs=[\"--forge\"]\n", json!(fixture), json!(fixture)
+        "[code_mode]\nenabled=true\ntimeout_ms=30000\nmax_response_bytes=4096\nmax_response_tokens=100000\nresult_shape_policy=\"truncate\"\n[gateway]\nextra_stdio_commands=[{}]\n[[upstream]]\nname=\"fixture\"\ntransport=\"stdio\"\ncommand={}\nargs=[\"--forge\"]\n", json!(fixture), json!(fixture)
     )).unwrap();
     // The positive case uses the same writable owner, storage and enabled policy.
     for size in [2000, 10000] {
@@ -70,11 +70,22 @@ async fn auxiliary_omission_preserves_inline_results_without_creating_final_arti
                 .find(|value| value["path"] == "automatic/final-result.json")
                 .expect("true preservation must write an artifact");
             assert!(receipt["artifact_id"].is_string());
-            let absolute = receipt["absolute_path"].as_str().unwrap();
-            let path = absolute.strip_prefix("~/").map_or_else(
-                || std::path::PathBuf::from(absolute),
-                |relative| home.path().join(relative),
+            assert_eq!(
+                response["result"]["preserved_result_artifact_id"],
+                receipt["artifact_id"]
             );
+            assert_eq!(response["result"]["original_size"], size + 2);
+            assert!(receipt.get("absolute_path").is_none());
+            let (run_id, _) = receipt["artifact_id"]
+                .as_str()
+                .unwrap()
+                .split_once(':')
+                .unwrap();
+            let path = home
+                .path()
+                .join("code-mode-artifacts")
+                .join(run_id)
+                .join("automatic/final-result.json");
             let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
             assert_eq!(stored, json!("r".repeat(size)));
         }

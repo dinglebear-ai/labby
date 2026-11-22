@@ -86,18 +86,13 @@ fn reject_credential_like_path(path: &str) -> Result<(), ToolError> {
         });
     }
 
-    let denied = [
-        ".env",
-        ".ssh/",
-        ".aws/",
-        ".config/gcloud/",
-        ".netrc",
-        "id_rsa",
-        "id_ed25519",
-    ];
-    if denied
-        .iter()
-        .any(|needle| lower == *needle || lower.contains(needle))
+    let parts = lower.split('/').collect::<Vec<_>>();
+    if parts.iter().any(|name| {
+        matches!(
+            *name,
+            ".env" | ".envrc" | ".ssh" | ".aws" | ".netrc" | "id_rsa" | "id_ed25519"
+        ) || name.starts_with(".env.")
+    }) || parts.windows(2).any(|pair| pair == [".config", "gcloud"])
     {
         return Err(ToolError::Sdk {
             sdk_kind: "permission_denied".to_string(),
@@ -108,8 +103,17 @@ fn reject_credential_like_path(path: &str) -> Result<(), ToolError> {
 }
 
 pub(crate) fn is_reserved_metadata_path(path: &str) -> bool {
-    path.split('/')
-        .any(|part| part.eq_ignore_ascii_case(".git") || part.eq_ignore_ascii_case(".labby-state"))
+    path.split('/').any(|part| {
+        let part = part.trim_end_matches(['.', ' ']);
+        part.eq_ignore_ascii_case(".git")
+            || part.eq_ignore_ascii_case(".labby-state")
+            || (cfg!(windows)
+                && part.split('.').next().is_some_and(|stem| {
+                    stem.rsplit_once('~').is_some_and(|(_, ordinal)| {
+                        !ordinal.is_empty() && ordinal.bytes().all(|byte| byte.is_ascii_digit())
+                    })
+                }))
+    })
 }
 
 #[cfg(test)]
@@ -175,6 +179,13 @@ mod tests {
 
     #[test]
     fn virtual_path_allows_git_substrings_outside_reserved_segments() {
+        for path in [
+            "src/response.envelope.ts",
+            "docs/id_rsa_usage.md",
+            ".github/workflows/check.yml",
+        ] {
+            assert!(VirtualPath::parse(path).is_ok());
+        }
         assert_eq!(
             VirtualPath::parse("docs/foo.gitkeep").unwrap().as_str(),
             "docs/foo.gitkeep"

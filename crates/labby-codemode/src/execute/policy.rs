@@ -1,3 +1,10 @@
+use std::collections::BTreeSet;
+use std::fmt;
+
+use serde::Deserialize;
+
+use crate::namespace_alias::{namespaced_tool_id, split_namespaced_id};
+
 use super::*;
 
 pub(super) fn execution_allowed(caller: &CodeModeCaller, scope: &ToolScope) -> bool {
@@ -65,15 +72,18 @@ pub(super) fn clamp_semantic_query(mut query: String) -> String {
 /// the two sites never diverging.
 ///
 /// - snippets are included only for snippet-capable callers on unscoped runs;
-/// - the host's render cache is only safe for CLI executions with no explicit
-///   namespace scope (everything else builds live).
+/// - CLI executions use the one-shot catalog when unscoped or trusted-local.
+///   Explicitly scoped authenticated callers use their live catalog.
 pub fn discovery_render_params(
     caller: &CodeModeCaller,
     surface: CodeModeSurface,
     scope: &ToolScope,
 ) -> (bool, bool) {
     let include_snippets = caller.can_use_snippets() && !scope.is_scoped();
-    let use_cache = surface == CodeModeSurface::Cli && scope.allowed_namespaces().is_none();
+    // A local CLI without a gateway pool also uses the one-shot catalog for a
+    // snippet's declared tools. The host limits upstreams before any probe.
+    let use_cache = surface == CodeModeSurface::Cli
+        && (scope.allowed_namespaces().is_none() || matches!(caller, CodeModeCaller::TrustedLocal));
     (include_snippets, use_cache)
 }
 
@@ -183,7 +193,7 @@ pub(super) fn scoped_call_id(
             .allowed_tools()
             .into_iter()
             .flatten()
-            .filter_map(|id| crate::split_namespaced_id(id).map(|(ns, _)| ns.to_string()))
+            .filter_map(|id| split_namespaced_id(id).map(|(ns, _)| ns.to_string()))
             .collect()
     });
     let resolved =
@@ -196,7 +206,7 @@ pub(super) fn scoped_call_id(
     if let Some(canonical) = resolved
         && scope.allows(canonical, tool)
     {
-        return Ok(crate::types::namespaced_tool_id(canonical, tool));
+        return Ok(namespaced_tool_id(canonical, tool));
     }
     let namespace_in_scope = allowed_namespaces
         .as_ref()
@@ -217,7 +227,7 @@ pub(super) fn out_of_scope_call_error(
     raw: &str,
     namespace: &str,
     namespace_in_scope: bool,
-    allowed_namespaces: std::collections::BTreeSet<String>,
+    allowed_namespaces: BTreeSet<String>,
 ) -> CodeModeCallError {
     const MAX_LISTED_TOOLS: usize = 25;
     let shown = crate::display_name(raw);
@@ -240,4 +250,214 @@ pub(super) fn out_of_scope_call_error(
         )
     };
     CodeModeCallError::new("unknown_tool", message).with_tool(shown)
+}
+
+/// Access mode applied by a Code Mode tool scope.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CodeModeToolAccess {
+    /// Permit only tools the host independently verifies as read-only.
+    ReadOnly,
+    /// Permit normal scoped tool access.
+    #[default]
+    Full,
+}
+
+/// Namespace/tool allowlist and access mode applied to one Code Mode execution.
+#[derive(Clone, Default, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ToolScope {
+    namespaces: Option<BTreeSet<String>>,
+    tools: BTreeSet<String>,
+    access: CodeModeToolAccess,
+    #[serde(default)]
+    resources_disabled: bool,
+    // None means the surface supplied no Skills binding; Some(None) explicitly disables it.
+    #[serde(skip)]
+    request_skill_context: Option<Option<String>>,
+}
+
+impl fmt::Debug for ToolScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ToolScope")
+            .field("namespaces", &self.namespaces)
+            .field("tools", &self.tools)
+            .field("access", &self.access)
+            .field("resources_disabled", &self.resources_disabled)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ToolScope {
+    /// Create an unscoped-by-default tool scope from optional namespace/tool filters.
+    #[must_use]
+    pub fn new(namespaces: Vec<String>, tools: Vec<String>) -> Self {
+        Self::new_inner(None, namespaces, tools)
+    }
+
+    /// Create a scope where an empty namespace list means no namespaces are allowed.
+    #[must_use]
+    pub fn scoped_namespaces(namespaces: Vec<String>, tools: Vec<String>) -> Self {
+        Self::new_inner(Some(BTreeSet::new()), namespaces, tools)
+    }
+
+    fn new_inner(
+        scoped_default: Option<BTreeSet<String>>,
+        namespaces: Vec<String>,
+        tools: Vec<String>,
+    ) -> Self {
+        fn clean_set(values: Vec<String>) -> BTreeSet<String> {
+            values
+                .into_iter()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+                .collect()
+        }
+        let namespaces = clean_set(namespaces);
+        Self {
+            namespaces: if namespaces.is_empty() {
+                scoped_default
+            } else {
+                Some(namespaces)
+            },
+            tools: clean_set(tools),
+            access: CodeModeToolAccess::Full,
+            resources_disabled: false,
+            request_skill_context: None,
+        }
+    }
+
+    /// Bind a request-local Skills context, or prohibit Skills for this request.
+    #[must_use]
+    pub fn with_request_skill_context(mut self, token: Option<&str>) -> Self {
+        self.request_skill_context = Some(token.map(str::to_owned));
+        self
+    }
+
+    /// A present request binding takes precedence over local defaults.
+    #[must_use]
+    pub fn request_skill_context(&self) -> Option<Option<&str>> {
+        self.request_skill_context.as_ref().map(Option::as_deref)
+    }
+
+    /// Apply the route's upstream resource visibility to discovery and reads.
+    #[must_use]
+    pub fn with_resources_visible(mut self, visible: bool) -> Self {
+        self.resources_disabled = !visible;
+        self
+    }
+
+    /// Whether upstream resource discovery and reads are enabled.
+    #[must_use]
+    pub fn allows_resources(&self) -> bool {
+        !self.resources_disabled
+    }
+
+    /// Restrict this execution to tools that the host can prove are read-only.
+    /// Hosts must enforce this again against the live tool descriptor at the
+    /// invocation boundary; discovery filtering alone is not authorization.
+    #[must_use]
+    pub fn read_only(mut self) -> Self {
+        self.access = CodeModeToolAccess::ReadOnly;
+        self
+    }
+
+    /// Return whether the scope is restricted to verified read-only tools.
+    #[must_use]
+    pub fn is_read_only(&self) -> bool {
+        self.access == CodeModeToolAccess::ReadOnly
+    }
+
+    /// Return whether a namespace/tool pair is included by the configured filters.
+    #[must_use]
+    pub fn allows(&self, namespace: &str, tool: &str) -> bool {
+        (self
+            .namespaces
+            .as_ref()
+            .is_none_or(|namespaces| namespaces.contains(namespace)))
+            && (self.tools.is_empty()
+                || self.tools.contains(tool)
+                || self.tools.contains(&namespaced_tool_id(namespace, tool)))
+    }
+
+    /// Return whether any namespace, tool, or read-only restriction is active.
+    #[must_use]
+    pub fn is_scoped(&self) -> bool {
+        self.namespaces.is_some()
+            || self.resources_disabled
+            || !self.tools.is_empty()
+            || self.access == CodeModeToolAccess::ReadOnly
+    }
+
+    /// Borrow the `tools` allowlist (bare names or `namespace::tool` ids), if
+    /// tool scoping is active. Mirrors [`Self::allowed_namespaces`].
+    #[must_use]
+    pub fn allowed_tools(&self) -> Option<&BTreeSet<String>> {
+        (!self.tools.is_empty()).then_some(&self.tools)
+    }
+
+    /// Borrow the explicit namespace allowlist, if namespace scoping is active.
+    #[must_use]
+    pub fn allowed_namespaces(&self) -> Option<&BTreeSet<String>> {
+        self.namespaces.as_ref()
+    }
+
+    /// Return a stable serialized fingerprint of this scope for ownership checks and caches.
+    #[must_use]
+    pub fn fingerprint(&self) -> String {
+        let mut value = serde_json::json!({
+            "access": match self.access {
+                CodeModeToolAccess::ReadOnly => "read_only",
+                CodeModeToolAccess::Full => "full",
+            },
+            "namespaces": self.namespaces.as_ref().map(|set| set.iter().cloned().collect::<Vec<_>>()),
+            "tools": self.tools.iter().cloned().collect::<Vec<_>>(),
+        });
+        if self.resources_disabled {
+            value["resources_disabled"] = Value::Bool(true);
+        }
+        value.to_string()
+    }
+}
+
+pub(crate) fn source_capability_within_lookup(source: &str, lookup: &str) -> bool {
+    if source == lookup {
+        return true;
+    }
+
+    // Promotion sources are process-local. Different opaque fingerprints cannot
+    // establish which tools or access mode the lookup allows.
+    let (Ok(source), Ok(lookup)) = (
+        serde_json::from_str::<ToolScope>(source),
+        serde_json::from_str::<ToolScope>(lookup),
+    ) else {
+        return false;
+    };
+    if (lookup.is_read_only() && !source.is_read_only())
+        || (!lookup.allows_resources() && source.allows_resources())
+    {
+        return false;
+    }
+    if let Some(namespaces) = &lookup.namespaces
+        && source
+            .namespaces
+            .as_ref()
+            .is_none_or(|set| !set.is_subset(namespaces))
+    {
+        return false;
+    }
+    lookup.tools.is_empty()
+        || (!source.tools.is_empty()
+            && source.tools.iter().all(|tool| {
+                if let Some((namespace, name)) = split_namespaced_id(tool) {
+                    lookup.allows(namespace, name)
+                } else {
+                    lookup.tools.contains(tool)
+                        || source.namespaces.as_ref().is_some_and(|namespaces| {
+                            namespaces
+                                .iter()
+                                .all(|namespace| lookup.allows(namespace, tool))
+                        })
+                }
+            }))
 }

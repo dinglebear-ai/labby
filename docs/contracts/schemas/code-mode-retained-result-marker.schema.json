@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-result-marker-v1.json",
-  "title": "Labby Code Mode Retained Result Marker",
-  "description": "The JSON truncation marker emitted by `truncate_execution_response` when a Code Mode final result exceeds the response envelope budget. Fields `truncated`, `original_size`, `original_tokens`, `preview`, `artifacts`, and `next_action` are the pre-existing shape (labby-codemode/src/truncate.rs::truncation_marker); `result_handle` and `retained_until` are additive and present ONLY when the value was admitted to the retained-result store.",
+  "$comment": "Proposal. See docs/features/codemode-retained-results/README.md.",
+  "title": "Proposed Labby Code Mode Retained Result Marker",
+  "description": "Proposed wire contract, pending implementation. The JSON truncation marker emitted by `truncate_execution_response` when a Code Mode final result exceeds the response envelope budget. Fields `truncated`, `original_size`, `original_tokens`, `preview`, `artifacts`, and `next_action` are the pre-existing shape (labby-codemode/src/truncate.rs::truncation_marker); `result_handle` and `retained_until` are additive and present ONLY when the value was admitted to the retained-result store.",
   "type": "object",
   "required": [
     "truncated",

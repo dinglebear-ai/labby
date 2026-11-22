@@ -73,7 +73,16 @@ pub(super) fn activate(
         (Some(enrollment), true, true) if enrollment.binding.recipient == owner.recipient => {
             NoticeStore::retain_message_enrollment_in(&tx, enrollment, now, validated.expires)?
         }
-        (None, false, false) => register_in(&tx, &recipient, owner.recipient.scope(), now)?.id,
+        (None, false, false) => {
+            register_in(
+                &tx,
+                &recipient,
+                owner.recipient.scope(),
+                owner.recipient.conversation_owner().as_deref(),
+                now,
+            )?
+            .id
+        }
         _ => return Err(NoticeError::Identity),
     };
     let existing: Option<(bool, String)> = tx.query_row(

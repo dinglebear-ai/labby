@@ -62,6 +62,8 @@ pub fn normalize_user_code(code: &str) -> String {
     wrap_loose_code_as_async_arrow(code)
 }
 
+const MAX_PROLOGUE_EXPORT_CANDIDATES: usize = 8;
+
 /// Split `{prologue} export default {value}` into the prologue and the
 /// default-export value, but only when `export default` appears at a statement
 /// boundary after a non-empty prologue (the prologue ends at a `;` or `}`).
@@ -73,9 +75,15 @@ pub fn normalize_user_code(code: &str) -> String {
 /// here (see `normalize_user_code` and the `..._inside_a_string` test). The
 /// start-anchored `export default` case is also handled earlier, so this only
 /// fires when a real prologue precedes an otherwise-unparseable arrow default.
+///
+/// Each candidate rescans its whole prefix for comments, so only the first
+/// [`MAX_PROLOGUE_EXPORT_CANDIDATES`] in-code occurrences are tried. Valid
+/// source has at most one default export; without this bound, caller input
+/// made of many `export default ` occurrences costs O(k*n) on a runtime worker
+/// before the execution deadline exists.
 fn split_prologue_export_default(code: &str) -> Option<(&str, &str)> {
     const NEEDLE: &str = "export default ";
-    for idx in export_default_indices(code, NEEDLE) {
+    for idx in export_default_indices(code, NEEDLE).take(MAX_PROLOGUE_EXPORT_CANDIDATES) {
         let before = code[..idx].trim_end();
         // A real statement terminator wins as-is. Only when `before` does not
         // already end at a boundary do we retry after stripping a trailing
@@ -200,8 +208,19 @@ fn wrap_loose_code_as_async_arrow(code: &str) -> String {
     if code.is_empty() {
         return "async () => {}".to_string();
     }
-    if let Some((before, after)) = code.rsplit_once(';') {
-        let trailing = after.trim();
+    let mut depth = 0usize;
+    let mut separator = None;
+    for (offset, ch) in scan_code_positions(code) {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ';' if depth == 0 => separator = Some(offset),
+            _ => {}
+        }
+    }
+    if let Some(offset) = separator {
+        let before = &code[..offset];
+        let trailing = code[offset + 1..].trim();
         if !trailing.is_empty() && looks_like_returnable_expression(trailing) {
             return format!("async () => {{\n{before};\nreturn ({trailing})\n}}");
         }
@@ -412,17 +431,23 @@ fn function_declaration_name(code: &str) -> Option<&str> {
 /// past its matching `}`, using [`scan_code_positions`] so braces inside a
 /// string/template literal or a comment don't throw off the depth count.
 fn matching_brace_end(code: &str, open_brace: usize) -> Option<usize> {
-    let mut depth: i32 = 0;
-    for (offset, ch) in scan_code_positions(&code[open_brace..]) {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(open_brace + offset + ch.len_utf8());
-                }
+    matching_delimiter_end(&code[open_brace..], '{', '}').map(|end| open_brace + end)
+}
+
+fn matching_paren_end(code: &str) -> Option<usize> {
+    matching_delimiter_end(code, '(', ')')
+}
+
+fn matching_delimiter_end(code: &str, open: char, close: char) -> Option<usize> {
+    let mut depth = 0;
+    for (offset, ch) in scan_code_positions(code) {
+        if ch == open {
+            depth += 1;
+        } else if ch == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(offset + 1);
             }
-            _ => {}
         }
     }
     None
@@ -451,14 +476,23 @@ fn is_bare_arrow_expression(code: &str) -> bool {
     if !code.contains("=>") {
         return false;
     }
-    if code.ends_with("()") || code.ends_with(");") {
-        return false;
+    let mut candidate = code.trim();
+    // A single enclosing pair may group the entire arrow expression.
+    if candidate.starts_with('(') && matching_paren_end(candidate) == Some(candidate.len()) {
+        candidate = candidate[1..candidate.len() - 1].trim();
     }
-    code.starts_with("async ")
-        || code.starts_with('(')
-        || code
-            .split_once("=>")
-            .is_some_and(|(params, _)| is_identifier(params.trim()))
+    if let Some(rest) = candidate.strip_prefix("async") {
+        if rest.starts_with(char::is_whitespace) || rest.starts_with('(') {
+            candidate = rest.trim_start();
+        }
+    }
+    if candidate.starts_with('(') {
+        return matching_paren_end(candidate)
+            .is_some_and(|end| candidate[end..].trim_start().starts_with("=>"));
+    }
+    candidate
+        .split_once("=>")
+        .is_some_and(|(params, _)| is_identifier(params.trim()))
 }
 
 fn is_identifier(candidate: &str) -> bool {
@@ -477,7 +511,7 @@ fn looks_like_returnable_expression(statement: &str) -> bool {
         // in the suffix. Preserve the whole statement body in that case.
         && !statement.starts_with('}')
         && !matches!(
-            statement.split_whitespace().next(),
+            statement.split(|ch: char| !ch.is_alphanumeric() && ch != '_' && ch != '$').next(),
             Some(
                 "const"
                     | "let"

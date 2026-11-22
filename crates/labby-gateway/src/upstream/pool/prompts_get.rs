@@ -226,7 +226,10 @@ impl UpstreamPool {
         deadline_at: tokio::time::Instant,
     ) -> Vec<Prompt> {
         let mut futures = FuturesUnordered::new();
-        for config in configs.iter().filter(|config| config.oauth.is_some()) {
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.proxy_prompts && config.oauth.is_some())
+        {
             let config = config.clone();
             let subject = subject.to_string();
             let pool = self.clone();
@@ -402,7 +405,10 @@ impl UpstreamPool {
         prompt_name: &str,
     ) -> Option<String> {
         let mut futures = FuturesUnordered::new();
-        for config in configs.iter().filter(|config| config.oauth.is_some()) {
+        for config in configs
+            .iter()
+            .filter(|config| config.enabled && config.proxy_prompts && config.oauth.is_some())
+        {
             let config = config.clone();
             let subject = subject.to_string();
             let pool = self.clone();
@@ -566,6 +572,11 @@ impl UpstreamPool {
         subject: &str,
         mut params: GetPromptRequestParams,
     ) -> Result<GetPromptResult, CapabilityCallError> {
+        if !config.enabled || !config.proxy_prompts {
+            return Err(CapabilityCallError::Other {
+                message: format!("prompt proxying is disabled for upstream `{}`", config.name),
+            });
+        }
         let start = Instant::now();
         // Strip the `{upstream}/` namespace before forwarding the bare name.
         params.name = bare_upstream_prompt_name(&config.name, &params.name).to_string();

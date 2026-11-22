@@ -192,13 +192,13 @@ sleep 3600
     }
 }
 
-/// The `openapi` provider must dispatch WITHOUT taking `LOCAL_PROVIDER_LOCK`,
+/// The `openapi` provider must dispatch WITHOUT taking a state/Git workspace lock,
 /// so a slow state/git op holding that lock cannot stall it. Holding the lock
 /// and dispatching an (empty-registry) openapi call must return quickly with
 /// an `unknown_instance` error rather than blocking on the mutex.
 #[tokio::test]
 async fn openapi_dispatch_does_not_block_on_local_provider_lock() {
-    let lock = LOCAL_PROVIDER_LOCK.get_or_init(|| Mutex::new(()));
+    let (_, lock) = workspace_identity(&CodeModeCaller::TrustedLocal).unwrap();
     let _held = lock.lock().await; // a slow state/git op holds the lock
     let reg = labby_openapi::OpenApiRegistry::default();
     let client = labby_openapi::http::build_dispatch_client().expect("test dispatch client");
@@ -220,7 +220,10 @@ async fn openapi_dispatch_does_not_block_on_local_provider_lock() {
         ),
     )
     .await;
-    assert!(res.is_ok(), "openapi must not block on LOCAL_PROVIDER_LOCK");
+    assert!(
+        res.is_ok(),
+        "openapi must not block on a state/Git workspace lock"
+    );
     // Empty registry ⇒ unknown label.
     assert_eq!(res.unwrap().unwrap_err().kind(), "unknown_instance");
 }
@@ -291,4 +294,37 @@ sleep 3600
             .all(|call| call.error_kind.as_deref() != Some("call_budget_exceeded")),
         "the internal call must not consume a budget slot"
     );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn unawaited_host_call_preserves_result_and_marks_runner_for_eviction() {
+    let host = DelayedToolHost {
+        inner: NoopHost::default(),
+        delay: Duration::from_secs(60),
+    };
+    let script = r#"IFS= read -r _
+printf '%s\n' '{"type":"tool_call","seq":1,"id":"stub::slow","params":{}}' '{"type":"done","result":{"state":"json","value":42},"reuse_ready":false}'
+IFS= read -r _
+"#;
+    let mut runner = PooledRunner::spawn_stub_script(script).unwrap();
+    let config = test_config(Duration::from_secs(2));
+    let outcome = CodeModeBroker::new(Some(&host))
+        .drive_runner(
+            &mut runner,
+            &config,
+            tokio::time::Instant::now() + config.timeout,
+        )
+        .await;
+    let DriveOutcome::Completed(response) = outcome else {
+        panic!("script should complete")
+    };
+    assert_eq!(response.result, Some(json!(42)));
+    assert_eq!(response.calls.len(), 1);
+    assert_eq!(response.calls[0].id, "stub::slow");
+    assert_eq!(
+        response.calls[0].error_kind.as_deref(),
+        Some("outcome_unknown")
+    );
+    assert!(!runner.reuse_ready);
 }

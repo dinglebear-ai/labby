@@ -106,7 +106,6 @@ impl LabMcpServer {
             "tasks.get",
             json!({"task_id":id}),
             context,
-            Some(&context.meta),
         ))
         .await?;
         if let Some(team) = self.route_scope.bound_team_id()
@@ -201,7 +200,6 @@ impl LabMcpServer {
                         "tasks.result",
                         json!({"task_id":id}),
                         context,
-                        Some(&context.meta),
                     ))
                     .await
                     .map_err(protocol_error)?;
@@ -258,7 +256,6 @@ impl LabMcpServer {
             "tasks.cancel",
             json!({"task_id":id}),
             context,
-            Some(&context.meta),
         ))
         .await
         .map(drop)

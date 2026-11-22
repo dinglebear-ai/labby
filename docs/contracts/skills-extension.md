@@ -290,9 +290,7 @@ SEP explicitly sanctions: "Intermediaries MAY attach provenance or verification
 annotations via `_meta` under their own reverse-domain prefix — not the
 `io.modelcontextprotocol.skills/` prefix reserved for this extension."
 
-`labby` is reserved for first-party skills. Under prepending this is
-structurally guaranteed rather than merely validated: an upstream's segments can
-never occupy the first position of a URI Labby publishes.
+Configuration reserves `labby` for first-party Skills and rejects that upstream name when `proxy_skills` is enabled. Proxied URIs start with the configured upstream's origin label.
 
 **No scheme is privileged.** An upstream MAY serve skills under a scheme
 native to its own domain — the SEP's example is
@@ -342,8 +340,7 @@ declared `directoryRead: true`. Modern Labby discovery declares it when the
 route exposes both Skills and Resources and has no enabled, route-visible
 proxied Skills namespace. Every directory request rechecks this condition;
 enabling a proxied Skills namespace revokes directory support without removing
-Skills from discovery. Legacy initialization declares it only for a native
-server without a gateway manager.
+Skills from discovery. Legacy initialization uses the same route checks and the upstream configuration snapshot. If a gateway manager has no snapshot yet, it omits directory support.
 
 Native directory pages come from the caller-visible captured manifest, not a
 filesystem scan. They contain direct children, use `inode/directory` for child
@@ -381,7 +378,7 @@ under its configured gateway origin as described in [URI grammar](#uri-grammar).
 `skills/list` returns `skills[]` plus `nextCursor`, `ttlMs`, and `cacheScope`. Labby
 returns at most 128 entries per downstream page. Its cursor is opaque and bound to the
 captured first-party generation; a cursor from a replaced generation is rejected as an
-invalid request rather than being replayed against different content. First-party-only
+invalid parameter (JSON-RPC `-32602`). First-party-only
 results advertise a 30-second TTL. Aggregated results clamp that TTL to the shortest
 remaining upstream TTL, and caller-dependent listings use private cache scope.
 Digests are `sha256:{hex}` with exactly 64 lowercase hex characters.
@@ -399,6 +396,7 @@ operations outside the SEP namespace as actions on its `artifacts` tool:
 - author without implicit activation: `.validate`, `.create`, `.save`;
 - publish exact revisions: `.activate`, `.deactivate`, `.rollback`, `.refresh`;
 - acquire without implicit activation: `.import`, `.import_batch`;
+- inspect or apply managed distribution: `.transfer_options`, `.pin`, `.follow_managed`, `.follow_update`, `.fork_personal`;
 - retain revisions while retiring catalog visibility: `.archive`.
 
 These actions are a Labby extension and must not be presented as SEP-2640

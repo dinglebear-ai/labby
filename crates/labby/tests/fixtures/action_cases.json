@@ -4693,8 +4693,8 @@
       "default",
       "gateway-host"
     ],
-    "scenario_kind": "stateful_scenario",
-    "scenario_id": "stateful_scenario::snippets::snippets_create",
+    "scenario_kind": "destructive_isolated",
+    "scenario_id": "destructive_isolated::snippets::snippets_create",
     "minimum_evidence": "live_state_transition",
     "setup_ref": "disposable-home",
     "fixture_params": {

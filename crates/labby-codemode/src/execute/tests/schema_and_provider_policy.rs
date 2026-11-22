@@ -90,6 +90,7 @@ async fn subject_scoped_openapi_allows_authenticated_executor_but_not_missing_su
     let registry = subject_scoped_registry().await;
     assert!(registry.has_subject_scoped_operations());
     let user = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -105,6 +106,7 @@ async fn subject_scoped_openapi_allows_authenticated_executor_but_not_missing_su
     ));
 
     let missing_subject = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -120,6 +122,7 @@ async fn subject_scoped_openapi_allows_authenticated_executor_but_not_missing_su
     ));
 
     let empty_subject = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -148,6 +151,7 @@ fn local_providers_require_unscoped_admin_scope() {
     ));
     assert!(local_providers_allowed(
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -160,6 +164,7 @@ fn local_providers_require_unscoped_admin_scope() {
     ));
     assert!(!local_providers_allowed(
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,

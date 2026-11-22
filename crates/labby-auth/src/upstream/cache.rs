@@ -60,6 +60,11 @@ pub struct OAuthLifecycleEpoch {
 }
 
 impl OAuthLifecycleEpoch {
+    /// Versions of the global, upstream and subject credential facts captured by this observation.
+    pub fn versions(&self) -> [u64; 3] {
+        std::array::from_fn(|index| self.epochs[index].1)
+    }
+
     pub fn is_current(&self) -> bool {
         self.epochs
             .iter()

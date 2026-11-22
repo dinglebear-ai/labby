@@ -61,6 +61,16 @@ pub(super) fn test_upstream_config() -> UpstreamConfig {
     }
 }
 
+/// [`test_upstream_config`] with `proxy_resources` on, for tests that read
+/// `lab://upstream/` resources, which are refused for an upstream that opted
+/// out.
+pub(super) fn resource_proxying_test_upstream_config() -> UpstreamConfig {
+    UpstreamConfig {
+        proxy_resources: true,
+        ..test_upstream_config()
+    }
+}
+
 pub(super) fn named_test_upstream_config(name: &str) -> UpstreamConfig {
     UpstreamConfig {
         display_name: None,
@@ -296,6 +306,7 @@ where
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
             healthy_in_process_entry(Arc::clone(&upstream_name_arc), HashMap::new()),
@@ -393,6 +404,7 @@ pub(super) async fn slow_response_pool(upstream_name: &str) -> Arc<UpstreamPool>
             _server_task: Some(server_task),
             peer,
             runtime: UpstreamRuntimeMetadata::default(),
+            header_refresh: Default::default(),
             incarnation: None,
         },
     );
@@ -541,6 +553,7 @@ impl UpstreamPool {
                     _server_task: Some(server_task),
                     peer,
                     runtime: UpstreamRuntimeMetadata::default(),
+                    header_refresh: Default::default(),
                     incarnation: None,
                 },
                 healthy_in_process_entry(Arc::from(upstream_name), HashMap::new()),
@@ -605,6 +618,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
             |_| {},
@@ -660,6 +674,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
             |_| {},
@@ -737,6 +752,7 @@ impl UpstreamPool {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
             |_| {},

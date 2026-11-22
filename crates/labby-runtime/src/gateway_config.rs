@@ -365,7 +365,7 @@ pub struct CodeModeConfig {
     /// `LABBY_CODE_MODE_MAX_CALLS_PER_RUN` env var.
     #[serde(default)]
     pub max_calls_per_run: Option<u64>,
-    /// Max `callTool` result size in MiB before truncation. Overridden by
+    /// Max `callTool` result size in MiB before rejection with `result_too_large`. Overridden by
     /// `LABBY_CODE_MODE_CALLTOOL_RESULT_MAX_MIB` env var.
     #[serde(default)]
     pub calltool_result_max_mib: Option<usize>,
@@ -908,6 +908,15 @@ fn is_http_token_byte(byte: u8) -> bool {
 }
 
 impl UpstreamConfig {
+    /// Config-level precondition for proxying this upstream's resources: it is
+    /// enabled and has not opted out with `proxy_resources = false`. This is
+    /// not the whole read policy: callers must still enforce the route
+    /// allowlist, Team credential, exposure policy, and OAuth subject.
+    #[must_use]
+    pub fn serves_resources(&self) -> bool {
+        self.enabled && self.proxy_resources
+    }
+
     /// Validate the upstream name and mutually-exclusive auth shapes.
     /// `bearer_token_env` and `oauth` both configured is a config error.
     pub fn validate(&self) -> Result<(), ConfigError> {

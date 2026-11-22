@@ -393,3 +393,35 @@ async fn dispatch_internal_call_describe_types_excludes_out_of_scope_sibling_too
              shares a namespace with an allowed tool and is present in the unfiltered render"
     );
 }
+
+#[tokio::test]
+async fn warm_proxy_reuses_large_public_catalog_without_revealing_filtered_tools() {
+    let entries = (0..4000)
+        .map(|n| {
+            CatalogDescriptor::tool("bulk", &format!("read{n}"), "Small read tool", None, None)
+        })
+        .collect();
+    let host = FixtureHost::new(entries);
+    let caller = CodeModeCaller::TrustedLocal;
+    let build = async |scope: ToolScope| {
+        CodeModeBroker::new(Some(&host))
+            .build_code_mode_proxy(&caller, CodeModeSurface::Cli, &scope)
+            .await
+            .unwrap()
+    };
+    let broad = build(ToolScope::default()).await;
+    assert!(host.proxy_sources.get().is_some());
+    assert!(
+        broad.len() > MAX_SOURCE_BYTES,
+        "generated catalog has an independent budget"
+    );
+    assert_eq!(build(ToolScope::default()).await, broad);
+    let narrow = build(ToolScope::new(vec![], vec!["bulk::read0".into()])).await;
+    assert!(narrow.contains("bulk::read0"));
+    assert!(!narrow.contains("bulk::read3999"));
+    eprintln!(
+        "full 4000-tool generated preamble: {} bytes; narrow: {} bytes",
+        broad.len(),
+        narrow.len()
+    );
+}

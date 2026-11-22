@@ -415,7 +415,7 @@ impl UpstreamPool {
         upstream: &str,
         native_uri: &str,
         generation: super::ResourceCatalogGeneration,
-    ) -> Option<ObservedConnectionCatalogEntry> {
+    ) -> Option<(ObservedConnectionCatalogEntry, std::sync::Arc<()>)> {
         let _binding = self.connection_catalog_binding.read().await;
         let (peer, incarnation) = {
             let connections = self.connections.read().await;
@@ -424,21 +424,25 @@ impl UpstreamPool {
         };
         let catalog = self.catalog.read().await;
         if catalog.incarnation(upstream) != Some(incarnation)
-            || !catalog.contains_resource_route(generation, upstream, native_uri)
+            || !catalog.resource_generation_is_current(generation)
         {
             return None;
         }
-        Some(ObservedConnectionCatalogEntry {
-            upstream: upstream.to_string(),
-            peer,
-            incarnation,
-        })
+        let route = catalog.resource_route(upstream, native_uri)?;
+        Some((
+            ObservedConnectionCatalogEntry {
+                upstream: upstream.to_string(),
+                peer,
+                incarnation,
+            },
+            std::sync::Arc::clone(&route.publication),
+        ))
     }
 
     pub(super) async fn apply_to_observed_resource_call<R>(
         &self,
         observed: &ObservedConnectionCatalogEntry,
-        generation: super::ResourceCatalogGeneration,
+        publication: &std::sync::Arc<()>,
         native_uri: &str,
         apply: impl FnOnce(&mut UpstreamEntry) -> R,
     ) -> Option<R> {
@@ -451,7 +455,9 @@ impl UpstreamPool {
         drop(connections);
         let mut catalog = self.catalog_health_write(observed.upstream()).await;
         if catalog.incarnation(observed.upstream()) != Some(observed.incarnation)
-            || !catalog.contains_resource_route(generation, observed.upstream(), native_uri)
+            || !catalog
+                .resource_route(observed.upstream(), native_uri)
+                .is_some_and(|route| std::sync::Arc::ptr_eq(&route.publication, publication))
         {
             return None;
         }

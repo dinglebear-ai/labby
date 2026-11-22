@@ -5,11 +5,15 @@ use std::time::Instant;
 use base64::Engine as _;
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::UpstreamConfig;
-use labby_runtime::skills::{SkillResource, ValidatedSkill, parse_skill_resource_uri};
+use labby_runtime::skills::{
+    SkillProviderError, SkillResource, ValidatedSkill, parse_skill_resource_uri,
+};
 
 use super::UpstreamPool;
 use super::capability_call::{CapabilityCallError, timed_capability_call_with_response_limit};
 use super::logging::{UpstreamRequestLog, log_upstream_request_start};
+use super::skills_list::UpstreamSkillsError;
+use super::skills_list::map_upstream_skills_error;
 
 /// Bytes of one proxied skill file, verified against the manifest that published it.
 #[derive(Debug, Clone)]
@@ -35,15 +39,6 @@ fn integrity(message: impl Into<String>) -> ToolError {
     ToolError::Sdk {
         sdk_kind: labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH.to_string(),
         message: message.into(),
-    }
-}
-
-fn stale_skill_binding(upstream: &str, uri: &str) -> ToolError {
-    ToolError::Sdk {
-        sdk_kind: labby_runtime::skills::KIND_SKILL_MANIFEST_STALE.to_string(),
-        message: format!(
-            "`{uri}` on upstream `{upstream}` does not identify exactly one exposed skill file"
-        ),
     }
 }
 
@@ -81,7 +76,7 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: Option<&str>,
         upstream_uri: &str,
-    ) -> Result<VerifiedSkillFile, ToolError> {
+    ) -> Result<VerifiedSkillFile, SkillProviderError> {
         self.read_proxied_skill_file_inner(config, subject, None, upstream_uri, None)
             .await
     }
@@ -93,7 +88,7 @@ impl UpstreamPool {
         skill_uri: &str,
         upstream_uri: &str,
         max_bytes: usize,
-    ) -> Result<VerifiedSkillFile, ToolError> {
+    ) -> Result<VerifiedSkillFile, SkillProviderError> {
         self.read_proxied_skill_file_inner(
             config,
             subject,
@@ -111,14 +106,24 @@ impl UpstreamPool {
         expected_skill_uri: Option<&str>,
         upstream_uri: &str,
         max_bytes: Option<usize>,
-    ) -> Result<VerifiedSkillFile, ToolError> {
+    ) -> Result<VerifiedSkillFile, SkillProviderError> {
         let binding = self
             .resolve_skill_binding(config, subject, expected_skill_uri, upstream_uri)
             .await?;
         let decoded = self
             .fetch_skill_content(config, subject, &binding.resource.uri, max_bytes)
             .await?;
-        verify_skill_content(config, &binding, decoded, max_bytes)
+        verify_skill_content(config, &binding, decoded, max_bytes).map_err(|error| {
+            match error.kind() {
+                "response_too_large" => SkillProviderError::LimitExceeded {
+                    what: "resource_bytes",
+                    limit: max_bytes.unwrap_or(super::helpers::max_skill_response_bytes()),
+                },
+                _ => SkillProviderError::Integrity {
+                    reason: "digest_or_frontmatter_mismatch",
+                },
+            }
+        })
     }
 
     async fn resolve_skill_binding(
@@ -127,20 +132,24 @@ impl UpstreamPool {
         subject: Option<&str>,
         expected_skill_uri: Option<&str>,
         upstream_uri: &str,
-    ) -> Result<SkillBinding, ToolError> {
+    ) -> Result<SkillBinding, SkillProviderError> {
         let canonical_uri = parse_skill_resource_uri(upstream_uri)
-            .map_err(|error| ToolError::Sdk {
-                sdk_kind: "invalid_param".into(),
-                message: error.to_string(),
+            .map_err(|_| SkillProviderError::InvalidRequest {
+                field: "resource_id",
+                reason: "invalid_skill_uri",
             })?
             .to_uri();
         let (cached, _) = self
             .upstream_skills_snapshot(config, subject)
             .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "upstream_error".to_string(),
-                message: "upstream skill catalog is unavailable".to_string(),
-            })?;
+            .map_err(map_upstream_skills_error)?;
+        if cached
+            .skills
+            .ambiguous_resource_uris
+            .contains(&canonical_uri)
+        {
+            return Err(SkillProviderError::ManifestStale);
+        }
         let policy = super::entries::resolve_request_skill_exposure_policy(
             &config.name,
             config.expose_skills.clone(),
@@ -151,7 +160,10 @@ impl UpstreamPool {
             .get(&canonical_uri)
             .into_iter()
             .flatten()
-            .filter(|binding| policy.matches(&cached.skills.skills[binding.skill].name))
+            .filter(|binding| {
+                let skill = &cached.skills.skills[binding.skill];
+                policy.matches(&skill.name) && !cached.skills.has_ambiguous_claim(skill)
+            })
             .filter(|binding| {
                 expected_skill_uri.is_none_or(|expected| {
                     cached.skills.skills[binding.skill].entry.uri == expected
@@ -168,7 +180,7 @@ impl UpstreamPool {
                 .and_then(|resources| resources.get(binding.resource))
                 .cloned()
             else {
-                return Err(stale_skill_binding(&config.name, &canonical_uri));
+                return Err(SkillProviderError::ManifestStale);
             };
             return Ok(SkillBinding {
                 canonical_uri,
@@ -177,14 +189,14 @@ impl UpstreamPool {
             });
         }
         if !bindings.is_empty() {
-            return Err(stale_skill_binding(&config.name, &canonical_uri));
+            return Err(SkillProviderError::ManifestStale);
         }
 
         let Some(expected) = expected_skill_uri else {
-            return Err(stale_skill_binding(&config.name, &canonical_uri));
+            return Err(SkillProviderError::ManifestStale);
         };
         let Some(skill) = self.cached_direct_skill(config, subject, expected).await else {
-            return Err(stale_skill_binding(&config.name, &canonical_uri));
+            return Err(SkillProviderError::ManifestStale);
         };
         let Some(resource) = skill
             .entry
@@ -197,7 +209,7 @@ impl UpstreamPool {
             })
             .cloned()
         else {
-            return Err(stale_skill_binding(&config.name, &canonical_uri));
+            return Err(SkillProviderError::ManifestStale);
         };
         Ok(SkillBinding {
             canonical_uri,
@@ -212,14 +224,11 @@ impl UpstreamPool {
         subject: Option<&str>,
         upstream_uri: &str,
         max_bytes: Option<usize>,
-    ) -> Result<DecodedSkillContent, ToolError> {
+    ) -> Result<DecodedSkillContent, SkillProviderError> {
         let peer = self
             .skills_request_peer(config, subject, "skill.read")
             .await
-            .map_err(|_| ToolError::Sdk {
-                sdk_kind: "upstream_error".to_string(),
-                message: format!("upstream `{}` is not connected", config.name),
-            })?;
+            .map_err(map_upstream_skills_error)?;
         let start = Instant::now();
         let redacted = super::helpers::redact_resource_uri_for_logging(upstream_uri);
         let event = UpstreamRequestLog::skill(&config.name, redacted, subject.is_some());
@@ -242,20 +251,16 @@ impl UpstreamPool {
             super::helpers::max_skill_response_bytes(),
         )
         .await
-        .map_err(|error| ToolError::Sdk {
-            sdk_kind: if matches!(&error, CapabilityCallError::ResponseTooLarge { .. }) {
-                "response_too_large"
-            } else {
-                "upstream_error"
-            }
-            .to_string(),
-            message: if matches!(&error, CapabilityCallError::ResponseTooLarge { .. }) {
-                "upstream skill resource exceeded the response budget".to_string()
-            } else {
-                "upstream skill read failed".to_string()
+        .map_err(|error| match error {
+            CapabilityCallError::ResponseTooLarge { .. } => SkillProviderError::LimitExceeded {
+                what: "resource_bytes",
+                limit: max_bytes.unwrap_or(super::helpers::max_skill_response_bytes()),
             },
+            error => map_upstream_skills_error(UpstreamSkillsError::Capability(error)),
         })?;
-        decode_single_content(&config.name, contents)
+        decode_single_content(&config.name, contents).map_err(|_| SkillProviderError::Integrity {
+            reason: "invalid_resource_content",
+        })
     }
 }
 
@@ -390,6 +395,22 @@ fn is_skill_md(entry_uri: &str, upstream_path: &str) -> bool {
 mod tests {
     use super::*;
     use labby_runtime::skills::limits;
+
+    proptest::proptest! {
+        #[test]
+        fn manifest_classification_and_read_identity_follow_the_uri_grammar(
+            name in "[a-z][a-z0-9-]{0,24}",
+            prefix in "[a-z]{0,8}",
+            scheme in proptest::sample::select(vec!["skill", "Skill", "SKILL"]),
+        ) {
+            let canonical = format!("skill://{name}/SKILL.md");
+            let candidate = format!("{scheme}://{name}/{prefix}SKILL.md");
+            let uri = parse_skill_resource_uri(&candidate).unwrap();
+            proptest::prop_assert_eq!(uri.is_skill_md(), prefix.is_empty());
+            proptest::prop_assert_eq!(uri.skill_md_parts().is_some(), prefix.is_empty());
+            proptest::prop_assert_eq!(is_skill_md(&candidate, &canonical), prefix.is_empty());
+        }
+    }
 
     #[test]
     fn response_sizing_rejects_content_over_the_caller_cap_without_serializing() {

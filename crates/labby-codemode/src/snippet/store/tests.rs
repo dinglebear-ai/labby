@@ -285,6 +285,10 @@ fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
         .expect("repo-status-gh-pulse listed");
 
     assert_eq!(info.source, SnippetSource::Builtin);
+    assert!(!info.path.is_absolute());
+    let fixture = builtin_snippet_asset(&info.path.with_extension("test.json"))
+        .expect("packaged default fixture");
+    serde_json::from_slice::<Value>(fixture).expect("valid fixture JSON");
     assert!(info.inputs.contains_key("owner"));
     assert!(info.inputs.contains_key("repo"));
     assert!(info.inputs.contains_key("root"));
@@ -306,18 +310,17 @@ fn all_builtin_snippets_satisfy_the_size_and_format_contract() {
     // `collect_snippets` skips invalid snippets silently, so without this
     // test an oversized built-in only surfaces as a `docs generate` abort.
     let dir = builtin_snippet_dir();
-    let entries = fs::read_dir(&dir).expect("read builtin snippets directory");
+    let entries = BUILTIN_FILES.iter().map(|(name, _)| dir.join(name));
     let mut checked = 0usize;
-    for entry in entries {
-        let path = entry.expect("builtin snippet dir entry").path();
-        if !path.is_file() || !has_snippet_extension(&path) {
+    for path in entries {
+        if !has_snippet_extension(&path) {
             continue;
         }
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("builtin snippet file stem");
-        let body = fs::read_to_string(&path).expect("read builtin snippet");
+        let body = read_snippet_body(&path).expect("read builtin snippet");
         // Mirror `collect_snippets`' builtin discovery rule: a markdown file
         // with no frontmatter at all (e.g. the directory README) is not a
         // snippet, so it is not held to the snippet contract. A file that
@@ -473,4 +476,60 @@ fn merge_snippet_input_rejects_unknown_declared_inputs() {
     let error = merge_snippet_input(&snippet, json!({"bogus": true}))
         .expect_err("unknown input should be rejected");
     assert!(format!("{error}").contains("unknown snippet input"));
+}
+
+#[test]
+fn create_refuses_to_shadow_a_built_in_without_explicit_consent() {
+    let home = tempfile::tempdir().expect("home");
+    let builtins = tempfile::tempdir().expect("builtins");
+    fs::write(
+        builtins.path().join("health.md"),
+        valid_body().replace("name: demo", "name: health"),
+    )
+    .expect("built-in");
+
+    let error = create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "health",
+        "async () => ({ replaced: true })",
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect_err("shadowing a built-in needs consent");
+    assert_eq!(error.kind(), "confirmation_required");
+    assert!(
+        resolve_snippet(home.path(), builtins.path(), "health")
+            .map(|snippet| snippet.source == SnippetSource::Builtin)
+            .unwrap_or(false),
+        "the built-in still resolves"
+    );
+
+    let created = create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "health",
+        "async () => ({ replaced: true })",
+        None,
+        false,
+        None,
+        true,
+    )
+    .expect("explicit shadow");
+    assert!(created.shadowed);
+
+    // A name with no built-in needs no consent.
+    create_user_snippet_guarded(
+        home.path(),
+        builtins.path(),
+        "custom",
+        "async () => ({ ok: true })",
+        None,
+        false,
+        None,
+        false,
+    )
+    .expect("ordinary create");
 }

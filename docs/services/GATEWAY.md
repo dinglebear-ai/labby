@@ -515,6 +515,14 @@ URI passes `expose_resources`. Callback markers without such an owner and
 ambiguous tool names fail closed. Destructive app tools require execute scope,
 and OAuth app resources remain subject-bound on read.
 
+The gateway lists resource templates from regular upstreams. OAuth upstreams
+contribute concrete resources through the signed-in subject’s connection. Their
+URI templates are omitted from `resources/templates/list`. A subject’s concrete
+listing is fresh for 60 seconds. For the next 60 seconds the gateway can return
+it while refreshing the same live connection in the background. A catalog
+change, connection replacement, or refresh error ends this reuse. Exact
+per-upstream lookups require fresh rows.
+
 ### Add Server MCP App
 
 When `mcp_apps.add_server = true`, admin-capable MCP Apps hosts may also

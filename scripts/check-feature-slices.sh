@@ -34,6 +34,7 @@ labby_product_features=(
   "skills"
   "all"
   "openapi-mcp"
+  "product"
 )
 
 for features in "${labby_product_features[@]}"; do

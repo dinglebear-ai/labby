@@ -3,7 +3,7 @@
 //! Connects to configured upstreams via HTTP (`StreamableHttpClientTransport`)
 //! or stdio (child process), discovers their tools, and caches schemas.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -88,6 +88,7 @@ mod prompts_exposure;
 mod prompts_exposure_tests;
 mod prompts_get;
 mod prompts_list;
+mod prompts_snapshot;
 mod recovery;
 mod stdio_secret_env;
 #[cfg(all(test, unix))]
@@ -96,6 +97,7 @@ pub use recovery::UpstreamRestart;
 mod registration;
 mod relay;
 mod relay_cache;
+pub use relay_cache::relay_client_capabilities;
 mod relay_cancellation;
 #[cfg(test)]
 mod relay_cancellation_tests;
@@ -140,6 +142,7 @@ mod task_route_record;
 mod task_route_schema;
 mod task_route_store;
 mod tasks;
+pub use tasks::task_protocol_error;
 #[cfg(any(test, feature = "testkit"))]
 pub(crate) mod testsupport;
 mod tool_call_cancel;
@@ -167,6 +170,7 @@ pub(crate) use catalog_publication::{
     ResourceTemplateCatalogPublicationError, ToolCatalogPublicationError,
 };
 pub(crate) use checked_call::CheckedToolCallError;
+pub use completion::CompletionCatalogGeneration;
 pub(crate) use connect_stdio::connect_direct_stdio;
 use helpers::{DEFAULT_RELAY_TIMEOUT, DEFAULT_REQUEST_TIMEOUT};
 pub use helpers::{
@@ -344,7 +348,15 @@ pub struct UpstreamPool {
     subscription_tasks: Arc<RwLock<HashMap<String, Arc<CancellationToken>>>>,
     /// Per-upstream single-flight gates. Only registry lookup holds this mutex;
     /// disjoint snapshots never queue behind another upstream's network I/O.
-    resource_snapshot_warmup: Arc<Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>>,
+    resource_snapshot_warmup: Arc<helpers::SnapshotFlights>,
+    /// Per-upstream single-flight gates for cold prompt snapshot warm-up.
+    prompt_snapshot_warmup: Arc<helpers::SnapshotFlights>,
+    /// Last failed prompt warm-up per upstream, keyed to the connection it ran
+    /// on. A failed listing leaves no prompt source, so without this an
+    /// upstream whose `prompts/list` keeps failing would be re-listed, and
+    /// waited on, by every Code Mode run until its breaker opens.
+    prompt_warmup_failures:
+        Arc<std::sync::Mutex<HashMap<String, (incarnation::ConnectionIncarnation, Instant)>>>,
     /// Upstreams already queued for a background subscription reconcile.
     subscription_refresh_pending: Arc<Mutex<BTreeSet<String>>>,
     /// Cancels queued/in-flight subscription reconcile batches during pool drain.
@@ -352,7 +364,7 @@ pub struct UpstreamPool {
     /// Native resource URIs acknowledged by each upstream subscription.
     subscription_resources: Arc<RwLock<HashMap<String, BTreeSet<String>>>>,
     /// Lock-free gateway-facing snapshot used by synchronous subscription negotiation.
-    subscribable_resource_uris: Arc<ArcSwap<BTreeSet<String>>>,
+    subscribable_resource_uris: Arc<ArcSwap<BTreeMap<String, BTreeSet<String>>>>,
     /// Per-upstream OAuth managers, keyed by upstream name.
     /// `None` when the server was started without OAuth support.
     oauth_client_cache: Option<OauthClientCache>,
@@ -568,6 +580,7 @@ where
     pub(crate) peer: rmcp::service::Peer<RoleClient>,
     /// Runtime metadata for process-backed upstreams.
     pub(crate) runtime: UpstreamRuntimeMetadata,
+    header_refresh: Arc<Mutex<Option<Instant>>>,
     incarnation: Option<incarnation::ConnectionIncarnation>,
 }
 
@@ -575,6 +588,10 @@ impl<H> UpstreamConnection<H>
 where
     H: rmcp::ClientHandler,
 {
+    pub(super) fn handler(&self) -> &H {
+        self._client_service.service()
+    }
+
     /// Build a live upstream connection from its rmcp handles.
     ///
     /// The running service and optional server task are intentionally retained
@@ -608,6 +625,7 @@ where
             _server_task: server_task,
             peer,
             runtime,
+            header_refresh: Default::default(),
             incarnation: None,
         }
     }
@@ -680,11 +698,13 @@ impl UpstreamPool {
             resource_upstreams: Arc::new(RwLock::new(Vec::new())),
             notification_tx,
             subscription_tasks: Arc::new(RwLock::new(HashMap::new())),
-            resource_snapshot_warmup: Arc::new(Mutex::new(HashMap::new())),
+            resource_snapshot_warmup: Arc::default(),
+            prompt_snapshot_warmup: Arc::default(),
+            prompt_warmup_failures: Arc::default(),
             subscription_refresh_pending: Arc::new(Mutex::new(BTreeSet::new())),
             subscription_reconcile_cancel: CancellationToken::new(),
             subscription_resources: Arc::new(RwLock::new(HashMap::new())),
-            subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeSet::new())),
+            subscribable_resource_uris: Arc::new(ArcSwap::from_pointee(BTreeMap::new())),
             oauth_client_cache: None,
             oauth_invalidation_barrier: Arc::new(RwLock::new(())),
             oauth_invalidation_drain: Arc::new(Mutex::new(None)),

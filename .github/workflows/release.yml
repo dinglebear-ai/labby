@@ -197,7 +197,7 @@ jobs:
         # CI checks every workspace member. The release archives contain only
         # the product CLI, so avoid compiling unrelated workspace binaries and
         # fixture executables on each native release runner.
-        run: cargo build --package labby --bin labby --all-features --locked --release --target ${{ matrix.target }}
+        run: cargo build --package labby --bin labby --features product --locked --release --target ${{ matrix.target }}
 
       - name: Package artifact
         run: |
@@ -224,6 +224,14 @@ jobs:
             | grep -q '"sum":2'
           ./dist/${{ matrix.binary }} skill --help \
             | grep -q 'Read locally visible skills'
+          candidate="$PWD/dist/${{ matrix.binary }}"
+          smoke_home="$(mktemp -d)"
+          (cd "$smoke_home" && LABBY_HOME="$smoke_home" "$candidate" --json snippet list) > "$smoke_home/snippets.json"
+          python3 - "$smoke_home/snippets.json" <<'PYTHON'
+          import json, sys
+          listing = json.load(open(sys.argv[1]))
+          assert any(s["name"] == "axon-fanout" for s in listing["snippets"])
+          PYTHON
 
       - name: Attest exact platform candidate archive
         uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a
@@ -383,7 +391,7 @@ jobs:
           git merge-base --is-ancestor "$source_sha" "$GITHUB_SHA"
           source_dir="$RUNNER_TEMP/labby-arm64-n-minus-one-source"
           git worktree add --detach "$source_dir" "$source_sha"
-          (cd "$source_dir" && cargo build --package labby --bin labby --all-features --locked --release \
+          (cd "$source_dir" && cargo build --package labby --bin labby --features product --locked --release \
             --target aarch64-unknown-linux-gnu)
           baseline="$source_dir/target/aarch64-unknown-linux-gnu/release/labby"
           test -x "$baseline"

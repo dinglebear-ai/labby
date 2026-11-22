@@ -34,13 +34,13 @@ use crate::mcp::catalog::{
     ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME, CODE_MODE_UI_TOOL_NAME,
     GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
 };
+#[cfg(any(feature = "gateway", feature = "skills"))]
+use crate::mcp::context::code_mode_read_scope_allowed;
 #[cfg(feature = "gateway")]
 use crate::mcp::context::oauth_upstream_subject_for_request;
-use crate::mcp::context::request_openai_session_fingerprint;
+use crate::mcp::context::{auth_context_from_extensions, request_openai_session_fingerprint};
 #[cfg(feature = "gateway")]
-use crate::mcp::context::tool_execute_scope_allowed;
-#[cfg(any(feature = "gateway", feature = "skills"))]
-use crate::mcp::context::{auth_context_from_extensions, code_mode_read_scope_allowed};
+use crate::mcp::context::{tool_execute_scope_allowed, upstream_tool_allowed_for_scope};
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::{
     add_server_app_resource_uri_for_tool, add_server_app_skybridge_uri_for_tool,
@@ -77,6 +77,34 @@ pub(crate) fn strip_resource_backed_ui_meta(meta: &mut Option<MetaObject>) {
     }
 }
 
+pub(super) fn apply_route_descriptor_gates(
+    route_scope: &crate::mcp::route_scope::McpRouteScope,
+    descriptors: &mut Vec<rmcp::model::Tool>,
+) {
+    if !route_scope.exposes_resources() {
+        #[cfg(feature = "gateway")]
+        descriptors.retain(|descriptor| descriptor.name.as_ref() != CODE_MODE_UI_TOOL_NAME);
+        for descriptor in descriptors.iter_mut() {
+            strip_resource_backed_ui_meta(&mut descriptor.meta);
+        }
+    }
+
+    #[cfg(feature = "gateway")]
+    if !route_scope.exposes_tools() {
+        let keep_code_mode = route_scope.exposes_code_mode();
+        descriptors.retain(|descriptor| {
+            keep_code_mode
+                && matches!(
+                    descriptor.name.as_ref(),
+                    CODE_MODE_TOOL_NAME
+                        | CODE_MODE_READ_TOOL_NAME
+                        | CODE_MODE_UI_TOOL_NAME
+                        | MCP_APP_TOOL_NAME
+                )
+        });
+    }
+}
+
 impl LabMcpServer {
     async fn unavailable_project_tool_list(
         &self,
@@ -94,7 +122,7 @@ impl LabMcpServer {
             has_next_cursor = false,
             "tool list unavailable for Project transport"
         );
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             context,
             "lab",
             "list_tools",
@@ -103,8 +131,7 @@ impl LabMcpServer {
                 level: LoggingLevel::Warning,
                 kind: "access_context_unavailable".into(),
             },
-        )
-        .await;
+        );
         ListToolsResult::with_all_items(Vec::new())
             .with_ttl_ms(0)
             .with_cache_scope(rmcp::model::CacheScope::Private)
@@ -149,7 +176,7 @@ impl LabMcpServer {
                 Some(binding)
             }
         };
-        let page_collector = match PageCollector::new(request) {
+        let mut page_collector = match PageCollector::new(request) {
             Ok(collector) => collector,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -163,7 +190,7 @@ impl LabMcpServer {
                     kind,
                     "tool list failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     "lab",
                     "list_tools",
@@ -172,11 +199,66 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 return Err(error);
             }
         };
+        let peer_contract = self.peer_contract_for_request(&context);
+        let authority = crate::mcp::runtime::catalog_snapshot_audience(
+            auth_context_from_extensions(&context.extensions),
+        );
+        #[cfg(not(feature = "gateway"))]
+        let project_cursor_binding: Option<String> = None;
+        let source_revision = peer_contract
+            .tool_page_revision(project_cursor_binding.as_deref())
+            .await;
+        if let (Some(sources), Some(revision)) = (
+            &source_revision,
+            page_collector.expected_revision().map(str::to_owned),
+        ) && let Some((snapshot, contract)) = self
+            .route_runtime
+            .tool_snapshot(&authority, &revision, sources, &peer_contract)
+            .await
+        {
+            #[cfg(feature = "gateway")]
+            if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_))
+                && project_shadow.cursor_binding_fingerprint(SystemTime::now())
+                    != project_cursor_binding
+            {
+                return Ok(self.unavailable_project_tool_list(&context, start).await);
+            }
+            page_collector.bind_revision(&revision)?;
+            let (tools, next_cursor) = page_collector.finish_snapshot(&snapshot)?;
+            if next_cursor.is_none() && self.transport_label != "http" {
+                self.last_listed_tool_contract
+                    .write()
+                    .await
+                    .publish(self.request_subject(&context).map(str::to_owned), contract);
+            }
+            let elapsed_ms = start.elapsed().as_millis();
+            tracing::info!(
+                surface = "mcp",
+                service = "labby",
+                action = "list_tools",
+                subject,
+                elapsed_ms,
+                retained = true,
+                page_tool_count = tools.len(),
+                "tool list ok"
+            );
+            self.trace_dispatch_outcome(
+                &context,
+                "lab",
+                "list_tools",
+                elapsed_ms,
+                DispatchLogOutcome::Success,
+            );
+            let mut result = ListToolsResult::with_all_items(tools)
+                .with_ttl_ms(0)
+                .with_cache_scope(rmcp::model::CacheScope::Private);
+            result.next_cursor = next_cursor;
+            return Ok(result);
+        }
         let mut descriptors = Vec::new();
         let mut advertised_names = HashSet::new();
         let mut builtin_tool_count = 0usize;
@@ -202,7 +284,7 @@ impl LabMcpServer {
         // with the subscription contract and its tools/list_changed hashes.
         // The clone cost is only real on ProtectedSubset
         // routes — `Root` is a unit variant.
-        let peer_contract = self.peer_contract_for_request(&context);
+
         #[cfg(feature = "gateway")]
         if peer_contract.audience.session_messages_visible {
             descriptors.push(self.registry.permanent_tools().session_messages_tool());
@@ -277,6 +359,9 @@ impl LabMcpServer {
         let skill_library_mode = SkillLibraryDescriptorMode::Hidden;
         let tool_projection_mode = self.registry.tool_projection_mode();
         for svc in self.registry.services() {
+            if !skill_library_mode.exposes_service(svc.name) {
+                continue;
+            }
             // service_visible_on_mcp already checks route_scope.allows_service.
             if self.service_visible_on_mcp(svc.name).await {
                 #[cfg(feature = "gateway")]
@@ -346,8 +431,6 @@ impl LabMcpServer {
             // ── Gateway Code Mode tool. It takes `{ code, upstreams?, tools? }`
             // and exposes in-sandbox discovery through `codemode.search()` /
             // `codemode.describe()`.
-            // See mcp/CLAUDE.md for the exception rationale and
-            // dispatch/gateway/dispatch.rs guard.
             let code_mode_upstreams =
                 crate::mcp::peer_contract::project_code_mode_description_upstreams(
                     matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)),
@@ -413,6 +496,7 @@ impl LabMcpServer {
         let mcp_app_callback_visible = code_mode_read_scope_allowed(auth);
         #[cfg(feature = "gateway")]
         if !self.registry.is_proxy_aggregate()
+            && !matches!(project_shadow, ProjectDiscoveryShadow::Bound(_))
             && (mcp_app_model_visible || mcp_app_callback_visible)
         {
             descriptors.push(self.registry.permanent_tools().mcp_app_tool(
@@ -471,10 +555,14 @@ impl LabMcpServer {
                 .iter()
                 .filter(|(_, health)| health.is_open())
                 .count();
-            let oauth_subject = self.route_oauth_subject(oauth_upstream_subject_for_request(
-                auth,
-                self.request_subject(&context),
-            ));
+            let oauth_subject = if matches!(project_shadow, ProjectDiscoveryShadow::Bound(_)) {
+                None
+            } else {
+                self.route_oauth_subject(oauth_upstream_subject_for_request(
+                    auth,
+                    self.request_subject(&context),
+                ))
+            };
             let oauth_configs = if oauth_subject.is_some() {
                 self.route_scoped_oauth_upstream_configs().await
             } else {
@@ -491,28 +579,45 @@ impl LabMcpServer {
                         MAX_UPSTREAM_TOOLS,
                     )
                     .await
+                    .into_iter()
+                    .map(|entry| (entry.upstream_name, entry.tool, entry.destructive))
+                    .collect()
                 } else {
                     Vec::new()
                 }
             } else {
-                pool.healthy_tools_allowed(self.route_scope.allowed_upstreams())
-                    .await
+                pool.healthy_tools_allowed_as(self.route_scope.allowed_upstreams(), |entry| {
+                    (
+                        Arc::clone(&entry.upstream_name),
+                        entry.tool.clone(),
+                        entry.destructive,
+                    )
+                })
+                .await
             };
-            for ut in upstream_tools {
-                if hide_raw_tools && !tool_execute_scope_allowed(auth) && ut.destructive {
+            for (upstream_name, tool, destructive) in upstream_tools {
+                if upstream_name
+                    .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+                {
+                    continue;
+                }
+                if hide_raw_tools && !tool_execute_scope_allowed(auth) && destructive {
+                    continue;
+                }
+                if !hide_raw_tools && !upstream_tool_allowed_for_scope(auth, &tool) {
                     continue;
                 }
                 let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
                     &self.registry,
-                    &ut.upstream_name,
-                    ut.tool.clone(),
+                    &upstream_name,
+                    tool.clone(),
                 );
                 let tool_name = descriptor.name.as_ref();
                 if matches!(&project_shadow, ProjectDiscoveryShadow::Bound(_)) {
                     project_shadow_checked_tool_count += 1;
                     if project_shadow.allows_upstream_tool(
-                        ut.upstream_name.as_ref(),
-                        ut.tool.name.as_ref(),
+                        upstream_name.as_ref(),
+                        tool.name.as_ref(),
                         SystemTime::now(),
                     ) != Some(true)
                     {
@@ -541,7 +646,7 @@ impl LabMcpServer {
                 && let Some(oauth_subject) = oauth_subject.as_ref()
             {
                 let subject_tool_limit = MAX_UPSTREAM_TOOLS.saturating_sub(upstream_tool_count);
-                for (_, upstream_tools) in pool
+                for (upstream, upstream_tools) in pool
                     .cached_subject_scoped_tools_bounded(
                         &oauth_configs,
                         oauth_subject.as_ref(),
@@ -550,15 +655,22 @@ impl LabMcpServer {
                     .await
                 {
                     for ut in upstream_tools {
-                        let tool_name = ut.name.as_ref();
-                        if crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(
-                            tool_name,
-                        ) || builtin_names.contains(tool_name)
+                        let descriptor = crate::mcp::permanent_tools::proxy_upstream_descriptor(
+                            &self.registry,
+                            &upstream,
+                            ut,
+                        );
+                        let tool_name = descriptor.name.as_ref();
+                        if !upstream_tool_allowed_for_scope(auth, &descriptor)
+                            || crate::mcp::permanent_tools::is_reserved_non_upstream_tool_name(
+                                tool_name,
+                            )
+                            || builtin_names.contains(tool_name)
                             || !advertised_names.insert(tool_name.to_string())
                         {
                             continue;
                         }
-                        descriptors.push(crate::mcp::permanent_tools::with_labby_security(ut));
+                        descriptors.push(descriptor);
                         subject_scoped_tool_count += 1;
                     }
                 }
@@ -570,28 +682,7 @@ impl LabMcpServer {
             }
         }
 
-        if !self.route_scope.exposes_resources() {
-            #[cfg(feature = "gateway")]
-            descriptors.retain(|descriptor| descriptor.name.as_ref() != CODE_MODE_UI_TOOL_NAME);
-            for descriptor in &mut descriptors {
-                strip_resource_backed_ui_meta(&mut descriptor.meta);
-            }
-        }
-
-        #[cfg(feature = "gateway")]
-        if !self.route_scope.exposes_tools() {
-            let keep_code_mode = self.route_scope.exposes_code_mode();
-            descriptors.retain(|descriptor| {
-                keep_code_mode
-                    && matches!(
-                        descriptor.name.as_ref(),
-                        CODE_MODE_TOOL_NAME
-                            | CODE_MODE_READ_TOOL_NAME
-                            | CODE_MODE_UI_TOOL_NAME
-                            | MCP_APP_TOOL_NAME
-                    )
-            });
-        }
+        apply_route_descriptor_gates(&self.route_scope, &mut descriptors);
         descriptors.sort_by(|left, right| left.name.cmp(&right.name));
         let owned_app_bindings = descriptors
             .iter()
@@ -614,7 +705,6 @@ impl LabMcpServer {
         {
             return Ok(self.unavailable_project_tool_list(&context, start).await);
         }
-        let mut page_collector = page_collector;
         let complete_contract = ToolCatalogSnapshot::from_descriptors(&descriptors);
         let descriptor_revision = hex::encode(complete_contract.contract_hash);
         #[cfg(feature = "gateway")]
@@ -640,7 +730,7 @@ impl LabMcpServer {
                 kind,
                 "tool list failed"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "list_tools",
@@ -649,17 +739,10 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: kind.into(),
                 },
-            )
-            .await;
+            );
             return Err(error);
         }
-        for descriptor in descriptors.iter().cloned() {
-            page_collector.accept(descriptor);
-            if page_collector.finished() {
-                break;
-            }
-        }
-        let (tools, next_cursor) = match page_collector.finish() {
+        let (tools, next_cursor) = match page_collector.finish_snapshot(&descriptors) {
             Ok(page) => page,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
@@ -673,7 +756,7 @@ impl LabMcpServer {
                     kind,
                     "tool list failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     "lab",
                     "list_tools",
@@ -682,13 +765,31 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 return Err(error);
             }
         };
         let page_tool_count = tools.len();
         let has_next_cursor = next_cursor.is_some();
+        if has_next_cursor
+            && let Some(sources) = source_revision
+            && peer_contract
+                .tool_page_revision(project_cursor_binding.as_deref())
+                .await
+                .as_ref()
+                == Some(&sources)
+        {
+            self.route_runtime
+                .store_tool_snapshot(
+                    authority,
+                    contract_revision,
+                    sources,
+                    descriptors,
+                    peer_contract,
+                    complete_contract.clone(),
+                )
+                .await;
+        }
         if !has_next_cursor && self.transport_label != "http" {
             let subject_key = self.request_subject(&context).map(str::to_owned);
             self.last_listed_tool_contract
@@ -744,14 +845,13 @@ impl LabMcpServer {
             owned_app_bindings = ?owned_app_bindings,
             "tool list ok"
         );
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             &context,
             "lab",
             "list_tools",
             elapsed_ms,
             DispatchLogOutcome::Success,
-        )
-        .await;
+        );
 
         let mut result = ListToolsResult::with_all_items(tools)
             .with_ttl_ms(0)
@@ -1293,7 +1393,7 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                             "type": "object",
                             "properties": {
                                 "path": { "type": "string" },
-                                "absolute_path": { "type": "string" },
+                                "artifact_id": { "type": "string" },
                                 "content_type": {
                                     "type": "string",
                                     "maxLength": 256,
@@ -1306,7 +1406,7 @@ pub(crate) fn code_mode_trace_output_schema() -> Arc<serde_json::Map<String, Val
                                     "pattern": "^[a-f0-9]{64}$"
                                 }
                             },
-                            "required": ["path", "absolute_path", "content_type", "bytes", "sha256"],
+                            "required": ["path", "content_type", "bytes", "sha256"],
                             "additionalProperties": false
                         }
                     },

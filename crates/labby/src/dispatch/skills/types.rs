@@ -43,6 +43,8 @@ pub(crate) struct SkillListResponse {
     pub(crate) skills: Vec<SkillSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) incomplete: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) origins: Option<Value>,
     pub(crate) total_returned: usize,
     pub(crate) truncated: bool,
 }
@@ -53,6 +55,8 @@ pub(crate) struct SkillSearchResponse {
     pub(crate) matches: Vec<SkillSearchResponseHit>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) incomplete: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) origins: Option<Value>,
     pub(crate) total_returned: usize,
 }
 

@@ -63,6 +63,8 @@ jobs:
             --critical-minimum 30 \
             --critical crates/labby-auth/src/ \
             --critical crates/labby-gateway/src/ \
+            --critical crates/labby-codemode/src/ \
+            --critical crates/labby/src/mcp/ \
             --critical crates/labby/src/dispatch/ \
             --critical crates/labby/src/config.rs \
             --summary coverage-summary.md

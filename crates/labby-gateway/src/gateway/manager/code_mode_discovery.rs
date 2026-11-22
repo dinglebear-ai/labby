@@ -37,6 +37,7 @@ impl GatewayManager {
         subject: Option<String>,
     ) -> Result<(labby_codemode::host::ToolsRender, ToolScope), ToolError> {
         let caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -46,9 +47,17 @@ impl GatewayManager {
             sub: subject,
         };
         let scope = ToolScope::default();
-        let render =
-            CodeModeHost::list_tools(self, &caller, CodeModeSurface::Api, &scope, false, true)
-                .await?;
+        let (include_snippets, use_cache) =
+            labby_codemode::discovery_render_params(&caller, CodeModeSurface::Api, &scope);
+        let render = CodeModeHost::list_tools(
+            self,
+            &caller,
+            CodeModeSurface::Api,
+            &scope,
+            include_snippets,
+            use_cache,
+        )
+        .await?;
         Ok((render, scope))
     }
 }

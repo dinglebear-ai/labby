@@ -112,7 +112,28 @@ pub(crate) fn gateway_transport_requires_admin(action: &str) -> bool {
     )
 }
 
-pub(crate) fn qualify_team_gateway_params(
+pub(crate) async fn prepare_gateway_action_params(
+    authority: Option<&GatewayActionAuthorization>,
+    action: &str,
+    team_id: Option<&str>,
+    params: Value,
+) -> Result<Value, ToolError> {
+    if let Some(team) = team_id
+        && crate::dispatch::gateway::team_scoped_gateway_action(action)
+    {
+        let grant = authority.ok_or_else(denied)?;
+        crate::dispatch::gateway::validate_team_scoped_upstream_references(
+            &grant.store,
+            team,
+            action,
+            &params,
+        )
+        .await?;
+    }
+    qualify_team_gateway_params(action, team_id, params)
+}
+
+fn qualify_team_gateway_params(
     action: &str,
     team_id: Option<&str>,
     mut params: Value,
@@ -230,7 +251,7 @@ pub(crate) async fn authorize_gateway_action(
     runtime: &AccessRuntime,
     identity: VerifiedIdentity,
     ceiling: AuthorityCeiling,
-    installation_id: &str,
+    installation_id: Option<&str>,
     team_id: Option<&str>,
     action: &str,
 ) -> Result<Option<GatewayActionAuthorization>, ToolError> {
@@ -263,11 +284,21 @@ pub(crate) async fn authorize_gateway_action(
             };
             (owner, capability, team_id.to_owned())
         }
-        GatewayAuthorityClass::PlatformManage => (
-            OwnerScope::Installation(InstallationId::new(installation_id).map_err(|_| denied())?),
-            Capability::PlatformManage,
-            installation_id.to_owned(),
-        ),
+        GatewayAuthorityClass::PlatformManage => {
+            let id = match installation_id {
+                Some(id) => id.to_owned(),
+                None => store
+                    .installation_id()
+                    .await
+                    .map_err(|error| map_authority_error(action, error))?
+                    .unwrap_or_else(|| "installation".into()),
+            };
+            (
+                OwnerScope::Installation(InstallationId::new(&id).map_err(|_| denied())?),
+                Capability::PlatformManage,
+                id,
+            )
+        }
         GatewayAuthorityClass::Public => unreachable!(),
     };
     let action_ref = ActionRef::new("gateway", action).map_err(|_| denied())?;
@@ -426,7 +457,7 @@ mod tests {
             runtime,
             static_bearer_identity(),
             AuthorityCeiling::trusted_local(),
-            "installation",
+            Some("installation"),
             None,
             action,
         )
@@ -460,7 +491,7 @@ mod tests {
                     &runtime,
                     static_bearer_identity(),
                     AuthorityCeiling::trusted_local(),
-                    "installation",
+                    Some("installation"),
                     Some("alpha"),
                     action,
                 )
@@ -503,7 +534,7 @@ mod tests {
                 &runtime,
                 static_bearer_identity(),
                 AuthorityCeiling::trusted_local(),
-                "installation",
+                Some("installation"),
                 None,
                 action,
             )

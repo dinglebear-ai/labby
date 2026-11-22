@@ -27,6 +27,17 @@ pub struct ArtifactSearchResult {
     pub incomplete_sources: Vec<String>,
 }
 
+/// Static sources derived from an immutable, fully visible catalog. Withheld
+/// summaries, ranking weights, and host-provided capabilities remain per-run.
+#[derive(Debug)]
+pub struct CatalogProxySources {
+    pub(crate) discovery_json: String,
+    pub(crate) namespaces: String,
+}
+
+/// Optional memoized sources owned by the host's existing catalog revision.
+pub type CatalogProxyCache = tokio::sync::OnceCell<CatalogProxySources>;
+
 /// A rendered Code Mode discovery catalog: the descriptors the sandbox's
 /// `search`/`describe`/proxy read, plus their pre-serialized JSON form.
 ///
@@ -445,6 +456,14 @@ pub trait CodeModeHost: Send + Sync {
         _scope: &ToolScope,
     ) -> impl Future<Output = Result<ArtifactSearchResult, ToolError>> + Send {
         std::future::ready(Ok(ArtifactSearchResult::default()))
+    }
+
+    /// Return storage owned by this exact immutable descriptor snapshot.
+    fn catalog_proxy_cache(
+        &self,
+        _render: &ToolsRender,
+    ) -> impl Future<Output = Option<Arc<CatalogProxyCache>>> + Send {
+        std::future::ready(None)
     }
 
     /// Code Mode configuration (timeouts, log/response caps).

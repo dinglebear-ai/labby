@@ -16,6 +16,7 @@ Feature invariant status: clean.
 | labby | `integrated-gateway` | IntentionalException | false | false | - | `gateway` |
 | labby | `lab-admin` | ProductSlice | false | true | - |  |
 | labby | `openapi-mcp` | BinaryOnly | false | false | - | `dep:labby-openapi`<br>`labby-openapi/mcp-registry` |
+| labby | `product` | IntentionalException | false | false | - | `all`<br>`codemode-microsandbox`<br>`integrated-gateway`<br>`openapi-mcp` |
 | labby | `proxy-testkit` | IntentionalException | false | false | - | `labby-gateway/testkit`<br>`labby-auth/testkit` |
 | labby | `skills` | IntentionalException | true | true | - | `labby-gateway?/skills` |
 | labby | `systemd` | HelperInternal | false | true | - | `dep:sd-notify` |

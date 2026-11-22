@@ -565,8 +565,14 @@ impl ImportCoordinator {
                 Ok(acquisition)
             }
         }?;
-        acquisition.validate()?;
-        Ok(acquisition)
+        // This boundary also accepts independent repository providers. Validate
+        // their payload before returning it to callers, off the async worker.
+        tokio::task::spawn_blocking(move || {
+            acquisition.validate()?;
+            Ok(acquisition)
+        })
+        .await
+        .map_err(|_| ArtifactError::Conflict("provider_validation_failed"))?
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -776,7 +782,7 @@ impl ImportCoordinator {
         for (index, (source, child_key)) in sources.into_iter().zip(child_keys).enumerate() {
             let resolved_source = match self.resolve_selector(source) {
                 Ok(source) => source,
-                Err(error) => return Ok(batch_partial_receipt(items, version, index, &error)),
+                Err(error) => return Ok(batch_partial_receipt(items, version, index, error)),
             };
             // Import and commit one item at a time. Reusing the single-item path keeps source
             // authorization, replay binding, single-flight acquisition and terminal auditing
@@ -796,7 +802,7 @@ impl ImportCoordinator {
             {
                 Ok(value) => value,
                 Err(error) => {
-                    return Ok(batch_partial_receipt(items, version, index, &error));
+                    return Ok(batch_partial_receipt(items, version, index, error));
                 }
             };
             version = value
@@ -837,24 +843,14 @@ fn batch_partial_receipt(
     items: Vec<Value>,
     committed_library_version: u64,
     failed_index: usize,
-    error: &ImportAdapterError,
+    error: ImportAdapterError,
 ) -> Value {
-    let kind = match error {
-        ImportAdapterError::SourceUnavailable => "source_unavailable",
-        ImportAdapterError::Artifact(ArtifactError::InvalidField { .. }) => "invalid_source",
-        ImportAdapterError::Artifact(ArtifactError::NotFound(_)) => "source_not_found",
-        ImportAdapterError::Artifact(ArtifactError::Conflict(_)) => "source_conflict",
-        ImportAdapterError::Artifact(_) => "source_error",
-        ImportAdapterError::Dispatch(SkillLibraryDispatchError::Artifact(
-            ArtifactError::Conflict(_),
-        )) => "commit_conflict",
-        ImportAdapterError::Dispatch(_) => "commit_failed",
-    };
+    let error = super::map_import_error(error);
     serde_json::json!({
         "imported": items.len(),
         "items": items,
         "failed_index": failed_index,
-        "error": { "kind": kind },
+        "error": error,
         "committed_library_version": committed_library_version,
         "atomic": false
     })
@@ -982,6 +978,40 @@ pinned_addresses = ["8.8.8.8"]
     }
 
     #[test]
+    fn batch_partial_receipt_preserves_indeterminate_recovery() {
+        let receipt = batch_partial_receipt(
+            vec![serde_json::json!({"committed_library_version": 7})],
+            7,
+            1,
+            SkillLibraryDispatchError::BlockingIndeterminate {
+                operation: "commit",
+            }
+            .into(),
+        );
+        assert_eq!(receipt["imported"], 1);
+        assert_eq!(receipt["failed_index"], 1);
+        assert_eq!(
+            receipt["error"],
+            serde_json::to_value(super::super::map_import_error(
+                SkillLibraryDispatchError::BlockingIndeterminate {
+                    operation: "commit"
+                }
+                .into()
+            ))
+            .unwrap()
+        );
+        assert_eq!(receipt["error"]["outcome"], "indeterminate");
+        assert_eq!(receipt["error"]["side_effects"], "possible");
+        assert_eq!(receipt["error"]["recovery"]["same_arguments"], "safe");
+        assert!(
+            receipt["error"]["recovery"]["guidance"]
+                .as_str()
+                .unwrap()
+                .contains("same idempotency key")
+        );
+    }
+
+    #[test]
     fn owned_acquisition_validation_preserves_payload_allocation() {
         let acquisition = acquisition(
             "zero-copy",
@@ -992,9 +1022,11 @@ pinned_addresses = ["8.8.8.8"]
         );
         let pointer = acquisition.files[0].bytes.as_ptr();
         let capacity = acquisition.files[0].bytes.capacity();
-        let acquisition = super::super::dispatch::validate_owned_acquisition(acquisition).unwrap();
-        assert_eq!(acquisition.files[0].bytes.as_ptr(), pointer);
-        assert_eq!(acquisition.files[0].bytes.capacity(), capacity);
+        let validated =
+            labby_runtime::artifacts::materialize_acquired_skill_owned(acquisition).unwrap();
+        let bytes = &validated.resources["skill://labby/zero-copy/SKILL.md"];
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes.capacity(), capacity);
     }
 
     struct FakeDepot {
@@ -1513,6 +1545,9 @@ pinned_addresses = ["8.8.8.8"]
             Arc::new(ActivationCoordinator::new(initial, 0)),
             projection,
         );
+        let service = service.with_fault_injector(Arc::new(
+            crate::dispatch::skill_library::blocking::FaultStage::AfterCommitBeforeSwap,
+        ));
         let acquired = acquisition(
             "legacy-import",
             "depot",
@@ -1531,7 +1566,7 @@ pinned_addresses = ["8.8.8.8"]
             "idempotency_key":key,
         }))
         .unwrap();
-        let committed = service
+        let interrupted = service
             .import_acquired(
                 &runtime,
                 caller(),
@@ -1543,8 +1578,18 @@ pinned_addresses = ["8.8.8.8"]
                 &SkillLibraryCorrelationId::parse("legacy-import-seed").unwrap(),
             )
             .await
-            .unwrap();
-        assert_eq!(committed["outcome"], "committed");
+            .unwrap_err();
+        assert!(matches!(
+            interrupted,
+            SkillLibraryDispatchError::InjectedFault(_)
+        ));
+        assert!(matches!(
+            service.publication.health(),
+            crate::dispatch::skill_library::dispatch::PublicationHealth::Degraded {
+                committed_library_version: 1,
+                ..
+            }
+        ));
         let calls = Arc::new(AtomicUsize::new(0));
         let coordinator = ImportCoordinator::new(
             Some(DepotConnection::fake(
@@ -1574,6 +1619,12 @@ pinned_addresses = ["8.8.8.8"]
             .await
             .unwrap();
         assert_eq!(replayed["outcome"], "replayed");
+        assert_eq!(
+            service.publication.health(),
+            crate::dispatch::skill_library::dispatch::PublicationHealth::Ready {
+                library_version: 1
+            }
+        );
         assert_eq!(
             calls.load(Ordering::SeqCst),
             1,
@@ -1967,7 +2018,7 @@ pinned_addresses = ["8.8.8.8"]
         assert_eq!(batch["imported"], 1);
         assert_eq!(batch["items"].as_array().unwrap().len(), 1);
         assert_eq!(batch["failed_index"], 1);
-        assert_eq!(batch["error"]["kind"], "commit_conflict");
+        assert_eq!(batch["error"]["kind"], "conflict");
         assert_eq!(batch["committed_library_version"], 3);
         assert_eq!(batch["atomic"], false);
         assert_eq!(batch_calls.load(Ordering::SeqCst), 2);

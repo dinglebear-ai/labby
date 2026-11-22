@@ -27,6 +27,7 @@
 //! reported through `truncated`.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 use std::time::Instant;
 
 use rmcp::RoleClient;
@@ -39,11 +40,11 @@ use rmcp::service::{Peer, ServiceError};
 use super::super::types::SkillExposurePolicy;
 use labby_runtime::skills::wire::{
     CACHE_SCOPE_PRIVATE, CACHE_SCOPE_PUBLIC, SKILLS_EXTENSION_KEY, SKILLS_GET_METHOD,
-    SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult, SkillsListResult,
+    SKILLS_LIST_METHOD, SkillEntry, SkillsGetResult, SkillsListPage,
 };
 use labby_runtime::skills::{
-    SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri, validate_skill_entry,
-    validate_skill_entry_detailed,
+    SkillProviderError, SkillRejection, ValidatedSkill, limits, parse_skill_resource_uri,
+    validate_skill_entry, validate_skill_entry_detailed,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -83,8 +84,6 @@ pub(crate) enum UpstreamSkillsError {
     IdentityMismatch,
     #[error("upstream skill collides with existing manifest ownership")]
     Collision,
-    #[error("upstream direct skill cache exceeded its bounded capacity")]
-    LimitExceeded,
     #[error("upstream Skill search did not complete within its traversal budget")]
     SearchIncomplete,
 }
@@ -127,8 +126,13 @@ pub(super) struct UpstreamSkills {
     /// must not present an owner as unambiguous when a later entry on an
     /// already-received page claims the same resource.
     pub(super) ambiguous_resource_uris: BTreeSet<String>,
-    pub(super) observed_resource_owners: BTreeMap<String, (String, Option<(String, u64)>)>,
 }
+
+/// Walk-scoped scratch for [`ingest_page`]: the first owner and binding seen
+/// for each claim. Owners are shared, not cloned per claim, so memory stays
+/// proportional to the bytes received across the walk. It is never part of
+/// the cached snapshot.
+type ObservedResourceOwners = BTreeMap<String, (Arc<str>, Option<(String, u64)>, bool)>;
 
 #[derive(Debug, Clone)]
 pub(super) struct ExcludedSkill {
@@ -138,6 +142,19 @@ pub(super) struct ExcludedSkill {
 }
 
 impl UpstreamSkills {
+    pub(super) fn has_ambiguous_claim(&self, skill: &ValidatedSkill) -> bool {
+        std::iter::once(&skill.entry.uri)
+            .chain(
+                skill
+                    .entry
+                    .resources
+                    .iter()
+                    .flatten()
+                    .map(|resource| &resource.uri),
+            )
+            .any(|uri| self.ambiguous_resource_uris.contains(uri))
+    }
+
     /// Count of skills dropped for integrity or budget reasons.
     pub(super) fn excluded_count(&self) -> usize {
         self.excluded.len()
@@ -183,6 +200,66 @@ enum SkillIngestCap {
     Candidates,
 }
 
+pub(super) fn map_upstream_skills_error(error: UpstreamSkillsError) -> SkillProviderError {
+    match error {
+        UpstreamSkillsError::Capability(CapabilityCallError::Timeout { .. })
+        | UpstreamSkillsError::SearchIncomplete => SkillProviderError::DeadlineExceeded,
+        UpstreamSkillsError::Capability(CapabilityCallError::ResponseTooLarge { .. }) => {
+            SkillProviderError::LimitExceeded {
+                what: "response_bytes",
+                limit: limits::MAX_SKILL_RESOURCE_BYTES,
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Transport { .. })
+        | UpstreamSkillsError::Unavailable
+        | UpstreamSkillsError::Invalidated
+        | UpstreamSkillsError::CacheMissing => SkillProviderError::Unavailable {
+            reason: "upstream_unavailable".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::QueueSaturated { .. }) => {
+            SkillProviderError::Unavailable {
+                reason: "upstream_queue_saturated".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Collision => SkillProviderError::ManifestStale,
+        UpstreamSkillsError::InvalidUri => SkillProviderError::InvalidRequest {
+            field: "skill.source_id",
+            reason: "invalid_skill_uri",
+        },
+        UpstreamSkillsError::InvalidManifest { reason } => SkillProviderError::Integrity { reason },
+        UpstreamSkillsError::Capability(CapabilityCallError::Mcp { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_mcp_error".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Protocol { .. })
+        | UpstreamSkillsError::CacheScopeChanged
+        | UpstreamSkillsError::IdentityMismatch => SkillProviderError::Provider {
+            reason: "upstream_protocol_error".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::Cancelled { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_cancelled".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::InputRequiredRoundsExceeded {
+            ..
+        }) => SkillProviderError::Provider {
+            reason: "input_required_rounds_exceeded".to_owned(),
+        },
+        UpstreamSkillsError::Capability(CapabilityCallError::NotExposed { .. }) => {
+            SkillProviderError::Provider {
+                reason: "not_exposed".to_owned(),
+            }
+        }
+        UpstreamSkillsError::Capability(CapabilityCallError::Other { .. }) => {
+            SkillProviderError::Provider {
+                reason: "upstream_error".to_owned(),
+            }
+        }
+    }
+}
+
 fn skills_method_error(method: &str, error: &ServiceError) -> String {
     match error {
         ServiceError::UnexpectedResponse => format!("{method} returned a malformed result"),
@@ -203,8 +280,9 @@ pub(super) fn skills_get_error(error: &ServiceError) -> String {
 /// Returns the cap that stopped accumulation, so the caller can stop walking
 /// rather than fetching pages whose contents would be discarded.
 fn ingest_page(
-    entries: Vec<SkillEntry>,
+    entries: Vec<Result<SkillEntry, serde_json::Error>>,
     out: &mut UpstreamSkills,
+    observed_resource_owners: &mut ObservedResourceOwners,
     max_items: usize,
     max_candidates: usize,
 ) -> Option<SkillIngestCap> {
@@ -216,8 +294,18 @@ fn ingest_page(
     // validation-work prefix is applied. This is intentionally lightweight:
     // the response byte ceiling already bounds the page, while full manifest
     // validation remains constrained by `max_candidates` below.
-    for entry in &entries {
-        let owner = entry.uri.clone();
+    for entry in entries.iter().flatten() {
+        // An entry whose URI or manifest exceeds the per-skill limits is
+        // rejected by validation below, so it can never own a resource. Skip
+        // it before its claims are walked so an over-long URI or an oversized
+        // manifest cannot fill the scratch map or mark claims ambiguous.
+        if !within_ownership_scan_limits(entry) {
+            continue;
+        }
+        let Ok(identity) = parse_skill_resource_uri(&entry.uri) else {
+            continue;
+        };
+        let owner: Arc<str> = Arc::from(identity.to_uri());
         let manifest = entry
             .resources
             .as_ref()
@@ -227,6 +315,7 @@ fn ingest_page(
                 .resources
                 .iter()
                 .flatten()
+                .filter(|resource| resource.uri != entry.uri)
                 .map(|resource| (&resource.uri, Some(resource))),
         );
         for (uri, resource) in claims {
@@ -234,17 +323,21 @@ fn ingest_page(
                 continue;
             };
             let binding = resource.map(|resource| (resource.digest.clone(), resource.size));
-            if let Some((existing_owner, existing_binding)) =
-                out.observed_resource_owners.get(&claim)
+            let is_root = claim == owner.as_ref();
+            if let Some((existing_owner, existing_binding, seen_root)) =
+                observed_resource_owners.get_mut(&claim)
             {
                 // Nested Skills may publish the same file. Its bytes remain
                 // unambiguous only when every owner's binding is identical.
-                if existing_owner != &owner && (binding.is_none() || *existing_binding != binding) {
+                if (is_root && *seen_root)
+                    || (existing_owner != &owner
+                        && (binding.is_none() || *existing_binding != binding))
+                {
                     out.ambiguous_resource_uris.insert(claim);
                 }
+                *seen_root |= is_root;
             } else {
-                out.observed_resource_owners
-                    .insert(claim, (owner.clone(), binding));
+                observed_resource_owners.insert(claim, (Arc::clone(&owner), binding, is_root));
             }
         }
     }
@@ -256,6 +349,14 @@ fn ingest_page(
         if out.skills.len() >= max_items {
             return Some(SkillIngestCap::ValidatedSkills);
         }
+        let Ok(entry) = entry else {
+            out.excluded.push(ExcludedSkill {
+                reason: SkillRejection::MalformedEntry,
+                uri: String::new(),
+                detail: "entry does not match the skill descriptor schema".into(),
+            });
+            continue;
+        };
         let uri = entry.uri.clone();
         match validate_skill_entry_detailed(&entry) {
             Ok(validated) => {
@@ -284,122 +385,19 @@ fn ingest_page(
     None
 }
 
+/// Whether `entry` can take part in the ownership pre-scan: its URI parses
+/// under the canonical skill-URI rules (including the length cap) and its
+/// manifest is within the per-skill entry cap. Validation rejects any other
+/// entry, so it can never own a resource.
+fn within_ownership_scan_limits(entry: &SkillEntry) -> bool {
+    parse_skill_resource_uri(&entry.uri).is_ok()
+        && entry
+            .resources
+            .as_ref()
+            .is_none_or(|resources| resources.len() <= limits::MAX_RESOURCES_PER_SKILL)
+}
+
 impl UpstreamPool {
-    /// Query-aware bounded traversal for discovery callers that retain only
-    /// matches. Unlike prefix previews, non-matching entries do not consume the
-    /// result budget; page count, response bytes, and wall time still enforce
-    /// the hostile-upstream safety envelope.
-    pub(super) async fn fetch_upstream_skills_matching(
-        &self,
-        upstream_name: &str,
-        peer: &Peer<RoleClient>,
-        query: &str,
-        max_items: usize,
-        exposure: &SkillExposurePolicy,
-        deadline: Instant,
-    ) -> Result<UpstreamSkillSearch, UpstreamSkillsError> {
-        let query = query.trim().to_ascii_lowercase();
-        let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
-        let traversal_budget_ms = deadline
-            .saturating_duration_since(Instant::now())
-            .as_millis();
-        let mut cursor: Option<String> = None;
-        let mut matches = Vec::new();
-
-        for _page in 0..limits::MAX_LIST_PAGES {
-            if matches.len() >= max_items {
-                return Ok(UpstreamSkillSearch {
-                    skills: matches,
-                    incomplete: false,
-                });
-            }
-            if Instant::now() >= deadline {
-                tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "deadline", "Skill search stopped before exhausting upstream pages");
-                return Ok(UpstreamSkillSearch {
-                    skills: matches,
-                    incomplete: true,
-                });
-            }
-            let mut params = PaginatedRequestParams::default();
-            params.cursor = cursor.clone();
-            let request = ClientRequest::ListSkillsRequest(ListSkillsRequest::with_param(params));
-            let started = Instant::now();
-            let remaining = deadline.saturating_duration_since(started);
-            let event = UpstreamRequestLog::skills_list(upstream_name, false);
-            log_upstream_request_start(event);
-            let result: SkillsListResult = match timed_capability_call_with_timeout(
-                self,
-                remaining,
-                upstream_name,
-                UpstreamCapability::Skills,
-                event,
-                started,
-                super::skills_wire::request(peer, request),
-                |_| 0,
-                None,
-                |error| format!("upstream `{upstream_name}` {}", skills_list_error(error)),
-                format!(
-                    "upstream `{upstream_name}` skills/list exceeded the {}ms traversal budget",
-                    traversal_budget_ms
-                ),
-                None,
-            )
-            .await
-            {
-                Ok(result) => result,
-                Err(_error) if !matches.is_empty() => {
-                    tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "later_page_error", "Skill search retained matches after an incomplete upstream walk");
-                    return Ok(UpstreamSkillSearch {
-                        skills: matches,
-                        incomplete: true,
-                    });
-                }
-                Err(error) => return Err(UpstreamSkillsError::Capability(error)),
-            };
-
-            for entry in result.skills {
-                if matches.len() >= max_items {
-                    break;
-                }
-                let haystack = format!(
-                    "{} {} {}",
-                    entry.uri,
-                    entry.frontmatter_str("name").unwrap_or_default(),
-                    entry.frontmatter_str("description").unwrap_or_default()
-                )
-                .to_ascii_lowercase();
-                if !haystack.contains(&query) {
-                    continue;
-                }
-                if let Ok(validated) = validate_skill_entry_detailed(&entry)
-                    && exposure.matches(&validated.name)
-                {
-                    matches.push(validated);
-                }
-            }
-
-            let Some(next) = result.next_cursor else {
-                return Ok(UpstreamSkillSearch {
-                    skills: matches,
-                    incomplete: false,
-                });
-            };
-            if cursor.as_deref() == Some(next.as_str()) {
-                tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "repeated_cursor", "Skill search stopped before exhausting upstream pages");
-                return Ok(UpstreamSkillSearch {
-                    skills: matches,
-                    incomplete: true,
-                });
-            }
-            cursor = Some(next);
-        }
-        tracing::warn!(upstream = %upstream_name, matches = matches.len(), reason = "page_cap", "Skill search stopped before exhausting upstream pages");
-        Ok(UpstreamSkillSearch {
-            skills: matches,
-            incomplete: true,
-        })
-    }
-
     /// Walk an upstream's `skills/list`, validating each page as it arrives.
     ///
     /// Bulkhead exception: a fan-out catalog pass, like the prompt and resource
@@ -415,6 +413,7 @@ impl UpstreamPool {
             peer,
             limits::MAX_SKILLS_PER_UPSTREAM,
             None,
+            None,
         )
         .await
     }
@@ -427,6 +426,7 @@ impl UpstreamPool {
         peer: &Peer<RoleClient>,
         max_items: usize,
         exposure: Option<&SkillExposurePolicy>,
+        search_deadline: Option<Instant>,
     ) -> Result<UpstreamSkills, UpstreamSkillsError> {
         let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
         let max_candidates = max_items
@@ -439,9 +439,11 @@ impl UpstreamPool {
             max_items
         };
         let mut out = UpstreamSkills::default();
+        let mut observed_resource_owners = ObservedResourceOwners::new();
         let mut cursor: Option<String> = None;
         let mut unclassified_page = false;
-        let deadline = Instant::now() + limits::SKILLS_LIST_TIMEOUT;
+        let deadline =
+            search_deadline.unwrap_or_else(|| Instant::now() + limits::SKILLS_LIST_TIMEOUT);
 
         for page in 0..limits::MAX_LIST_PAGES {
             if Instant::now() >= deadline {
@@ -462,7 +464,7 @@ impl UpstreamPool {
             let remaining = deadline.saturating_duration_since(page_start);
             let event = UpstreamRequestLog::skills_list(upstream_name, false);
             log_upstream_request_start(event);
-            let result: SkillsListResult = timed_capability_call_with_timeout(
+            let result = timed_capability_call_with_timeout(
                 self,
                 remaining,
                 upstream_name,
@@ -479,8 +481,15 @@ impl UpstreamPool {
                 ),
                 None,
             )
-            .await
-            .map_err(UpstreamSkillsError::Capability)?;
+            .await;
+            let result: SkillsListPage<serde_json::Value> = match result {
+                Ok(page) => page,
+                Err(_) if search_deadline.is_some() && page > 0 => {
+                    out.truncated = true;
+                    break;
+                }
+                Err(error) => return Err(UpstreamSkillsError::Capability(error)),
+            };
 
             // A server MUST apply one cacheScope to every page of a list; a
             // change mid-walk means the pages do not describe one listing.
@@ -502,9 +511,17 @@ impl UpstreamPool {
                 (current, next) => current.or(next),
             };
 
-            if let Some(cap) =
-                ingest_page(result.skills, &mut out, max_validated_items, max_candidates)
-            {
+            if let Some(cap) = ingest_page(
+                result
+                    .skills
+                    .into_iter()
+                    .map(serde_json::from_value)
+                    .collect(),
+                &mut out,
+                &mut observed_resource_owners,
+                max_validated_items,
+                max_candidates,
+            ) {
                 out.truncated = true;
                 if max_items == limits::MAX_SKILLS_PER_UPSTREAM {
                     tracing::warn!(
@@ -633,3 +650,7 @@ impl UpstreamPool {
             })
     }
 }
+
+#[cfg(test)]
+#[path = "skills_list_ingest_tests.rs"]
+mod ingest_tests;

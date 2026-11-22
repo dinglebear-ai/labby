@@ -29,23 +29,70 @@ impl UpstreamPool {
         let max_items = max_items.clamp(1, limits::MAX_SKILLS_PER_UPSTREAM);
         let subject = skills_cache_subject(config, subject);
         let key = (config.name.clone(), subject.map(str::to_owned));
-        if let Some(cached) = self.cached_skills(&key).await
-            && cached.is_fresh()
-            && !cached.skills.truncated
-        {
-            let exposed = self.apply_skill_exposure_with_limit(
-                config,
-                &cached,
-                subject,
-                SkillDiscoverySource::Cached,
-                limits::MAX_SKILLS_PER_UPSTREAM,
-            );
-            let query = query.trim().to_ascii_lowercase();
-            let skills = exposed
-                .skills
-                .into_iter()
-                .filter(|skill| {
-                    format!(
+        let deadline = Instant::now() + budget;
+        let snapshot = if self.cached_skills(&key).await.is_some() {
+            self.upstream_skills_snapshot(config, subject).await?.0
+        } else {
+            let guard = self.skills_fetch_locks.guard_for(&key).await;
+            let mut state = tokio::time::timeout(budget, guard.lock())
+                .await
+                .map_err(|_| UpstreamSkillsError::SearchIncomplete)?;
+            let epoch = self.skills_cache_epoch(&config.name).await;
+            if let Some(snapshot) = self.cached_skills(&key).await.or_else(|| {
+                state.preview(
+                    epoch,
+                    limits::MAX_SKILLS_PER_UPSTREAM,
+                    &config.expose_skills,
+                )
+            }) {
+                snapshot
+            } else {
+                let Some(peer) = self.skills_discovery_peer(config, subject).await? else {
+                    return Ok(UpstreamSkillSearch {
+                        skills: Vec::new(),
+                        incomplete: false,
+                    });
+                };
+                let catalog = self
+                    .fetch_upstream_skills_with_limit(
+                        &config.name,
+                        &peer,
+                        limits::MAX_SKILLS_PER_UPSTREAM,
+                        None,
+                        Some(deadline),
+                    )
+                    .await?;
+                if self.skills_cache_epoch(&config.name).await != epoch {
+                    return Err(UpstreamSkillsError::Invalidated);
+                }
+                let snapshot = CachedSkills::new(catalog);
+                if snapshot.skills.truncated {
+                    state.share_preview(
+                        epoch,
+                        limits::MAX_SKILLS_PER_UPSTREAM,
+                        config.expose_skills.clone(),
+                        snapshot.read_snapshot(),
+                    );
+                } else if !self
+                    .store_skills(&config.name, subject, epoch, snapshot.read_snapshot())
+                    .await
+                {
+                    return Err(UpstreamSkillsError::Invalidated);
+                }
+                snapshot
+            }
+        };
+        let query = query.trim().to_ascii_lowercase();
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        let skills = snapshot
+            .skills
+            .skills
+            .iter()
+            .filter(|skill| {
+                policy.matches(&skill.name)
+                    && !snapshot.skills.has_ambiguous_claim(skill)
+                    && format!(
                         "{} {} {}",
                         skill.entry.uri,
                         skill.name,
@@ -56,35 +103,14 @@ impl UpstreamPool {
                     )
                     .to_ascii_lowercase()
                     .contains(&query)
-                })
-                .take(max_items)
-                .collect();
-            return Ok(UpstreamSkillSearch {
-                skills,
-                incomplete: false,
-            });
-        }
-        let deadline = Instant::now() + budget;
-        let peer = tokio::time::timeout(budget, self.skills_discovery_peer(config, subject))
-            .await
-            .map_err(|_| UpstreamSkillsError::SearchIncomplete)??;
-        let Some(peer) = peer else {
-            return Ok(UpstreamSkillSearch {
-                skills: Vec::new(),
-                incomplete: false,
-            });
-        };
-        let exposure =
-            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
-        self.fetch_upstream_skills_matching(
-            &config.name,
-            &peer,
-            query,
-            max_items,
-            &exposure,
-            deadline,
-        )
-        .await
+            })
+            .take(max_items)
+            .cloned()
+            .collect();
+        Ok(UpstreamSkillSearch {
+            skills,
+            incomplete: snapshot.skills.truncated,
+        })
     }
 
     /// Smaller requests reuse an existing snapshot or perform an uncached
@@ -151,7 +177,7 @@ impl UpstreamPool {
         let exposure =
             resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
         let skills = self
-            .fetch_upstream_skills_with_limit(&config.name, &peer, max_items, Some(&exposure))
+            .fetch_upstream_skills_with_limit(&config.name, &peer, max_items, Some(&exposure), None)
             .await?;
         if self.skills_cache_epoch(&config.name).await != epoch {
             return Err(UpstreamSkillsError::Invalidated);

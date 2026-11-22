@@ -13,6 +13,7 @@ categories = ["development-tools"]
 publish = false
 
 [dependencies]
+lru = "0.18"
 dotenvy.workspace = true
 labby-primitives = { path = "../labby-primitives" }
 url.workspace = true

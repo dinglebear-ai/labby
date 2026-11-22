@@ -4,7 +4,6 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock, PoisonError};
 
-use futures::stream::{self, StreamExt};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,12 +17,13 @@ const DEFAULT_CONTENT_TYPE: &str = "text/plain";
 mod budget;
 mod config;
 mod path;
-mod publication;
+pub(crate) mod publication;
 pub use config::install_artifact_config_defaults;
 pub(crate) use config::{artifact_max_bytes, artifact_max_store_bytes, artifact_retention_runs};
 mod read;
 mod retention;
 use path::normalize_artifact_path;
+pub(crate) use read::MAX_DOWNLOAD_BYTES;
 pub use read::read_receipted_artifact;
 
 /// Upper bound on the `content_type` metadata string.
@@ -55,6 +55,7 @@ pub struct CodeModeArtifactReceipt {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) artifact_id: Option<String>,
     pub(crate) path: String,
+    #[serde(skip)]
     pub(crate) absolute_path: String,
     pub(crate) content_type: String,
     pub(crate) bytes: usize,
@@ -91,8 +92,20 @@ pub(crate) fn code_mode_artifact_root(run_id: &str) -> PathBuf {
 
 #[cfg(test)]
 pub(crate) async fn prune_fixture_store(store: &tempfile::TempDir) {
-    let _reservation = budget::STORE_MUTATION.lock().await;
-    prune_artifact_runs_locked(store.path(), 1, 0, &HashSet::new()).await;
+    let _reservation = publication::lock_store(store.path()).await.unwrap();
+    prune_artifact_runs_locked(
+        store.path(),
+        1,
+        None,
+        &HashSet::new(),
+        &crate::artifact_access::retention_owner(
+            &crate::CodeModeCaller::TrustedLocal,
+            &crate::ToolScope::default(),
+            store.path(),
+        ),
+        None,
+    )
+    .await;
 }
 
 /// Process-global set of run ids whose execution is still in flight.
@@ -166,11 +179,13 @@ impl Drop for ActiveArtifactRun {
 async fn prune_artifact_runs_locked(
     store_root: &Path,
     retain: usize,
-    max_store_bytes: u64,
+    byte_budget: Option<(u64, &budget::RunTotals)>,
     active: &HashSet<String>,
+    owner: &str,
+    incoming: Option<&str>,
 ) {
     let count_pruning = retain > 0;
-    let byte_pruning = max_store_bytes > 0;
+    let byte_pruning = byte_budget.is_some();
     if !count_pruning && !byte_pruning {
         return;
     }
@@ -221,35 +236,23 @@ async fn prune_artifact_runs_locked(
         let Some(name) = entry.file_name().to_str().map(str::to_string) else {
             continue;
         };
-        if Ulid::from_string(&name).is_ok() {
+        if Ulid::from_string(&name).is_ok() && budget::owned_run(&entry.path(), owner).await {
             run_dirs.push(name);
         }
+    }
+    if let Some(name) = incoming
+        && !run_dirs.iter().any(|existing| existing == name)
+    {
+        run_dirs.push(name.to_owned());
     }
     run_dirs.sort(); // ascending: oldest ULID first
     let newest_first: Vec<String> = run_dirs.iter().rev().cloned().collect();
 
-    // When byte-pruning is on, size every run directory concurrently up front —
-    // the walks are independent — instead of serializing them inside the
-    // decision loop below.
-    let sizes: Vec<u64> = if byte_pruning {
-        const SIZE_WALK_CONCURRENCY: usize = 8;
-        let measured: Vec<_> = stream::iter(newest_first.iter().cloned().map(|name| {
-            let path = store_root.join(name);
-            async move { budget::run_payload_bytes(&path).await }
-        }))
-        .buffered(SIZE_WALK_CONCURRENCY)
-        .collect()
-        .await;
-        // Retention uses admission's payload classification. If sizing fails,
-        // skip this best-effort pass rather than delete from incomplete totals;
-        // authoritative admission still fails closed on unreadable storage.
-        let Ok(sizes) = measured.into_iter().collect::<Result<Vec<_>, _>>() else {
-            tracing::debug!("code-mode artifact retention: cannot size run payloads");
-            return;
-        };
-        sizes
-    } else {
-        Vec::new()
+    // Admission already measured every payload under the mutation guard.
+    let run_bytes = |name: &str| {
+        byte_budget
+            .and_then(|(_, runs)| runs.get(name))
+            .map_or(0, |(bytes, _)| *bytes)
     };
 
     // Active payloads have priority regardless of ULID order. Reserve their
@@ -258,9 +261,8 @@ async fn prune_artifact_runs_locked(
     let mut cumulative: u64 = if byte_pruning {
         newest_first
             .iter()
-            .zip(&sizes)
-            .filter(|(name, _)| active.contains(*name))
-            .map(|(_, bytes)| *bytes)
+            .filter(|name| active.contains(*name))
+            .map(|name| run_bytes(name))
             .fold(0, u64::saturating_add)
     } else {
         0
@@ -271,12 +273,12 @@ async fn prune_artifact_runs_locked(
             continue;
         }
         let candidate = if byte_pruning {
-            cumulative.saturating_add(sizes[idx])
+            cumulative.saturating_add(run_bytes(name))
         } else {
             cumulative
         };
         let within_count = !count_pruning || idx < retain;
-        let within_bytes = !byte_pruning || candidate <= max_store_bytes;
+        let within_bytes = byte_budget.is_none_or(|(limit, _)| candidate <= limit);
         if within_count && within_bytes {
             cumulative = candidate;
         } else {
@@ -302,16 +304,9 @@ pub(crate) async fn write_code_mode_artifact(
     root: &Path,
     request: &CodeModeArtifactWrite,
     max_bytes: usize,
+    owner: &str,
 ) -> Result<CodeModeArtifactReceipt, ToolError> {
     let rel_path = normalize_artifact_path(&request.path)?;
-    if rel_path.split('/').next().is_some_and(|component| {
-        component.eq_ignore_ascii_case(crate::artifact_access::METADATA_DIR)
-    }) {
-        return Err(ToolError::InvalidParam {
-            message: "artifact path uses a reserved metadata directory".into(),
-            param: "path".into(),
-        });
-    }
     let content_type = normalize_content_type(request.content_type.as_deref())?;
     let bytes = request.content.as_bytes();
     if bytes.len() > max_bytes {
@@ -326,8 +321,30 @@ pub(crate) async fn write_code_mode_artifact(
 
     let destination = root.join(&rel_path);
     reject_existing_symlink_ancestors(root, &destination)?;
-    let _reservation = budget::STORE_MUTATION.lock().await;
-    budget::admit(root, bytes.len(), artifact_max_store_bytes()).await?;
+    let _reservation = publication::lock_store(root.parent().ok_or_else(|| {
+        budget::accounting_error(std::io::Error::other("artifact run has no store root"))
+    })?)
+    .await?;
+    let marker = root.join(crate::artifact_access::METADATA_DIR).join(owner);
+    reject_existing_symlink_ancestors(root, &marker)?;
+    let owned = budget::owned_run(root, owner).await;
+    if !owned
+        && tokio::fs::try_exists(root)
+            .await
+            .map_err(budget::accounting_error)?
+    {
+        return Err(ToolError::Sdk {
+            sdk_kind: "forbidden".into(),
+            message: "artifact run belongs to a different or unknown owner".into(),
+        });
+    }
+    budget::admit(root, bytes.len(), artifact_max_store_bytes(), owner).await?;
+    if !owned {
+        tokio::fs::create_dir_all(root.join(crate::artifact_access::METADATA_DIR))
+            .await
+            .map_err(budget::accounting_error)?;
+        publication::publish(&marker, &[]).await?;
+    }
 
     if let Some(parent) = destination.parent() {
         tokio::fs::create_dir_all(parent)

@@ -828,29 +828,6 @@ impl AccessRuntime {
             })
     }
 
-    pub(crate) async fn lease_file_stash_participants(
-        &self,
-        owner: super::AccessPrincipalId,
-        recipient: String,
-    ) -> Result<
-        (
-            super::AccessPrincipalId,
-            super::ActiveFileStashPrincipalLease,
-        ),
-        FileStashPrincipalResolutionError,
-    > {
-        self.store()
-            .await?
-            .lease_file_stash_participants(owner, recipient)
-            .await
-            .map_err(|error| match error {
-                AccessStoreError::IdentityUnavailable | AccessStoreError::NotAuthorized => {
-                    FileStashPrincipalResolutionError::IdentityUnavailable
-                }
-                _ => FileStashPrincipalResolutionError::StoreUnavailable,
-            })
-    }
-
     /// Resolve an opaque transport-supplied recipient ID only after the
     /// AccessStore has proved that it names an active principal. Keeping the
     /// constructor inside this authority boundary prevents adapters from

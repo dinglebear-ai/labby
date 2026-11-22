@@ -148,7 +148,7 @@ pub(crate) async fn dispatch(method: &str, params: Value) -> Result<Value, ToolE
             .map_err(|_| error("invalid_param", "invalid operator sandbox profile"))?;
         let request: SandboxRun = serde_json::from_value(params)
             .map_err(|_| error("invalid_param", "invalid sandbox run request"))?;
-        sdk::run(profile, request).await
+        sdk::run(profile, request, recovery::name()).await
     }
     #[cfg(not(feature = "microsandbox-sdk"))]
     {

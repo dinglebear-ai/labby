@@ -1,6 +1,7 @@
 //! Snapshot-backed bundled and operator-local Skill providers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use labby_runtime::artifacts::{LibraryOwnership, SkillVisibility};
@@ -16,14 +17,14 @@ use super::{EMBEDDED_FILES, first_party_uri, local};
 #[derive(Debug, Clone)]
 struct SnapshotSkill {
     validated: ValidatedSkill,
-    files: BTreeMap<String, Vec<u8>>,
+    files: Arc<BTreeMap<String, String>>,
 }
 
 /// Immutable provider whose descriptor and bytes come from one verified snapshot.
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotSkillProvider {
     id: SkillProviderId,
-    skills: BTreeMap<String, SnapshotSkill>,
+    skills: BTreeMap<String, Arc<SnapshotSkill>>,
 }
 
 impl SnapshotSkillProvider {
@@ -48,9 +49,13 @@ impl SnapshotSkillProvider {
             };
             let files = group
                 .into_iter()
-                .map(|(path, body)| (first_party_uri(&name, path), body.as_bytes().to_vec()))
-                .collect();
-            skills.insert(skill.entry.uri.clone(), SnapshotSkill { validated, files });
+                .map(|(path, body)| (first_party_uri(&name, path), body.to_string()))
+                .collect::<BTreeMap<_, _>>()
+                .into();
+            skills.insert(
+                skill.entry.uri.clone(),
+                Arc::new(SnapshotSkill { validated, files }),
+            );
         }
         for name in grouped.keys() {
             tracing::error!(skill = %name, "embedded file group produced no bundled provider entry");
@@ -75,12 +80,8 @@ impl SnapshotSkillProvider {
                     }
                 };
                 let source_id = skill.entry.uri.clone();
-                let files = skill
-                    .files
-                    .into_iter()
-                    .map(|(uri, body)| (uri, body.into_bytes()))
-                    .collect();
-                Some((source_id, SnapshotSkill { validated, files }))
+                let files = skill.files;
+                Some((source_id, Arc::new(SnapshotSkill { validated, files })))
             })
             .collect();
         Self {
@@ -140,7 +141,12 @@ pub(crate) struct CollisionRejection {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CollisionKind {
+    /// A skill whose manifest URI is already owned earlier in bundled-first
+    /// order (bundled, then legacy operator-local, then Artifact).
     ManifestUri,
+    /// Active Artifact records from different library records (usually
+    /// different owners) that mint the same name-derived manifest URI.
+    ArtifactOwnerConflict,
 }
 
 impl FirstPartySkillProviders {
@@ -184,16 +190,59 @@ impl FirstPartySkillProviders {
         &self,
         local_skills: impl IntoIterator<Item = (local::LocalSkill, ArtifactSkillAccess)>,
     ) -> Self {
-        let mut access_by_manifest = BTreeMap::new();
-        let locals = local_skills
+        // Artifact manifest URIs are minted from the skill name alone, so two
+        // owners' records can claim the same URI. Pairing one record's access
+        // policy with another record's bytes would let a caller authorized for
+        // one owner read the other's content. Exclude every claimant of a
+        // shared URI and record a collision for each, so the registry's
+        // `active_skill_collision` guard refuses the projection.
+        let candidates = local_skills.into_iter().collect::<Vec<_>>();
+        let mut claimants = BTreeMap::<String, Vec<&ArtifactSkillAccess>>::new();
+        for (skill, access) in &candidates {
+            claimants
+                .entry(skill.entry.uri.clone())
+                .or_default()
+                .push(access);
+        }
+        let conflicting = claimants
             .into_iter()
-            .map(|(skill, access)| {
-                access_by_manifest
-                    .entry(skill.entry.uri.clone())
-                    .or_insert(access);
-                skill
+            .filter(|(_, owners)| owners.len() > 1)
+            .map(|(uri, owners)| {
+                // Library projection IDs are opaque access-runtime identifiers,
+                // not identity-provider subjects, so they are safe to log and
+                // tell the operator which records to rename or deactivate.
+                let owners = owners
+                    .iter()
+                    .map(|access| {
+                        format!(
+                            "{}/{}",
+                            access.ownership.tenant_id.as_str(),
+                            access.ownership.owner_id.as_str()
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                tracing::warn!(
+                    skill = %uri,
+                    owners = ?owners,
+                    "excluding Artifact skills from different records that share one manifest URI; rename or deactivate all but one"
+                );
+                uri
             })
-            .collect::<Vec<_>>();
+            .collect::<std::collections::BTreeSet<_>>();
+        let mut access_by_manifest = BTreeMap::new();
+        let mut duplicate_rejections = Vec::new();
+        let mut locals = Vec::with_capacity(candidates.len());
+        for (skill, access) in candidates {
+            if conflicting.contains(&skill.entry.uri) {
+                duplicate_rejections.push(CollisionRejection {
+                    skill: skill_name(&skill.entry),
+                    kind: CollisionKind::ArtifactOwnerConflict,
+                });
+                continue;
+            }
+            access_by_manifest.insert(skill.entry.uri.clone(), access);
+            locals.push(skill);
+        }
         let artifact = SnapshotSkillProvider::operator_local_from(locals);
         let legacy = SnapshotSkillProvider {
             id: self.operator_local.id.clone(),
@@ -209,6 +258,7 @@ impl FirstPartySkillProviders {
             merge_bundled_first(self.bundled.entries(), legacy.entries());
         let (merged, artifact_rejections) = merge_bundled_first(legacy_merged, artifact.entries());
         collision_rejections.extend(artifact_rejections);
+        collision_rejections.extend(duplicate_rejections);
 
         let accepted_artifacts = merged
             .iter()
@@ -312,7 +362,7 @@ impl FirstPartySkillProviders {
         let mut resources = 0;
         for provider in [&self.bundled, &self.operator_local] {
             for skill in provider.skills.values() {
-                let skill_bytes = skill.files.values().map(Vec::len).sum::<usize>();
+                let skill_bytes = skill.files.values().map(String::len).sum::<usize>();
                 bytes += skill_bytes;
                 max_skill_bytes = max_skill_bytes.max(skill_bytes);
                 resources += skill.files.len();
@@ -365,6 +415,16 @@ fn ensure_deadline(
     } else {
         Ok(())
     }
+}
+
+/// The skill's frontmatter `name`, the same label other collisions record,
+/// falling back to its manifest URI.
+fn skill_name(entry: &labby_runtime::skills::wire::SkillEntry) -> String {
+    entry
+        .frontmatter
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map_or_else(|| entry.uri.clone(), str::to_owned)
 }
 
 fn merge_bundled_first(
@@ -476,7 +536,7 @@ impl SkillProvider for SnapshotSkillProvider {
             let result = SkillResourceReadResult {
                 skill_id: request.skill_id.clone(),
                 resource_id: request.resource_id.clone(),
-                bytes: bytes.clone(),
+                bytes: bytes.as_bytes().to_vec(),
                 media_type: None,
                 representation: labby_runtime::skills::SkillResourceRepresentation::Text,
             };
@@ -507,14 +567,14 @@ mod tests {
             digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
             size: body.len() as u64,
         }];
-        let mut files = BTreeMap::from([(manifest.clone(), body.into_bytes())]);
+        let mut files = BTreeMap::from([(manifest.clone(), body)]);
         if let Some(uri) = extra_uri {
             resources.push(SkillResource {
                 uri: uri.to_string(),
                 digest: labby_runtime::skills::ResourceDigest::of_bytes(b"extra").to_wire(),
                 size: b"extra".len() as u64,
             });
-            files.insert(uri.to_string(), b"extra".to_vec());
+            files.insert(uri.to_string(), "extra".to_owned());
         }
         let entry = SkillEntry {
             uri: manifest.clone(),
@@ -528,7 +588,13 @@ mod tests {
         let validated = validate_skill_entry(&entry).unwrap();
         SnapshotSkillProvider {
             id: SkillProviderId::new(SkillProviderKind::Bundled, "test"),
-            skills: BTreeMap::from([(manifest, SnapshotSkill { validated, files })]),
+            skills: BTreeMap::from([(
+                manifest,
+                Arc::new(SnapshotSkill {
+                    validated,
+                    files: Arc::new(files),
+                }),
+            )]),
         }
     }
 
@@ -547,7 +613,7 @@ mod tests {
                 }]),
                 meta: None,
             },
-            files: BTreeMap::from([(manifest, body)]),
+            files: Arc::new(BTreeMap::from([(manifest, body)])),
         }
     }
 
@@ -558,6 +624,22 @@ mod tests {
                 LibraryActorId::from_canonical_projection("owner-a").unwrap(),
             ),
             visibility: SkillVisibility::Tenant,
+        }
+    }
+
+    #[test]
+    fn successive_artifact_generations_share_the_cached_file_map() {
+        let skill = local_skill("shared-bytes", "artifact", "shared");
+        let manifest = skill.entry.uri.clone();
+        let files = Arc::clone(&skill.files);
+        let first =
+            FirstPartySkillProviders::from_artifact_skills([(skill.clone(), artifact_access())]);
+        let next = first.with_artifact_skills([(skill, artifact_access())]);
+        for generation in [&first, &next] {
+            assert!(Arc::ptr_eq(
+                &generation.operator_local.skills[&manifest].files,
+                &files
+            ));
         }
     }
 
@@ -790,7 +872,7 @@ mod tests {
                 }]),
                 meta: None,
             },
-            files: BTreeMap::from([(manifest.to_owned(), body.to_owned())]),
+            files: Arc::new(BTreeMap::from([(manifest.to_owned(), body.to_owned())])),
         };
         let access = ArtifactSkillAccess {
             ownership: LibraryOwnership::canonical(
@@ -814,16 +896,65 @@ mod tests {
     }
 
     #[test]
+    fn same_named_artifact_skills_from_different_owners_collide_instead_of_merging() {
+        let manifest = "skill://labby/notes/SKILL.md";
+        let record = |description: &str, actor: &str, visibility: SkillVisibility| {
+            let body = format!("---\nname: notes\ndescription: {description}\n---\n");
+            let local = local::LocalSkill {
+                entry: SkillEntry {
+                    uri: manifest.to_owned(),
+                    frontmatter: labby_runtime::skills::parse_skill_md_frontmatter(&body).unwrap(),
+                    resources: Some(vec![SkillResource {
+                        uri: manifest.to_owned(),
+                        digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes())
+                            .to_wire(),
+                        size: body.len() as u64,
+                    }]),
+                    meta: None,
+                },
+                files: Arc::new(BTreeMap::from([(manifest.to_owned(), body)])),
+            };
+            let access = ArtifactSkillAccess {
+                ownership: LibraryOwnership::canonical(
+                    LibraryTenantId::from_canonical_projection("tenant-a").unwrap(),
+                    LibraryActorId::from_canonical_projection(actor).unwrap(),
+                ),
+                visibility,
+            };
+            (local, access)
+        };
+        // Both input orders: neither record's access may gate the other's bytes.
+        for swap in [false, true] {
+            let mut records = vec![
+                record("shared victim", "victim", SkillVisibility::Tenant),
+                record("private attacker", "attacker", SkillVisibility::Private),
+            ];
+            if swap {
+                records.reverse();
+            }
+            let providers = FirstPartySkillProviders::from_artifact_skills(records);
+            assert_eq!(providers.collision_rejections().len(), 2);
+            assert!(providers.collision_rejections().iter().all(|rejection| {
+                rejection.kind == CollisionKind::ArtifactOwnerConflict && rejection.skill == "notes"
+            }));
+            assert!(providers.artifact_access(manifest).is_none());
+            assert!(providers.find(manifest).is_none());
+        }
+    }
+
+    #[test]
     fn nested_manifest_lookup_prefers_its_own_skill_over_parent_resource() {
         let child_uri = "skill://test/first/second/SKILL.md";
         let parent = provider_with("first", Some(child_uri));
         let mut child = provider_with("second", None);
         let (_, mut skill) = child.skills.pop_first().unwrap();
-        let old_uri = skill.validated.entry.uri.clone();
-        skill.validated.entry.uri = child_uri.to_string();
-        skill.validated.entry.resources.as_mut().unwrap()[0].uri = child_uri.to_string();
-        let bytes = skill.files.remove(&old_uri).unwrap();
-        skill.files.insert(child_uri.to_string(), bytes);
+        let snapshot = Arc::make_mut(&mut skill);
+        let old_uri = snapshot.validated.entry.uri.clone();
+        snapshot.validated.entry.uri = child_uri.to_string();
+        snapshot.validated.entry.resources.as_mut().unwrap()[0].uri = child_uri.to_string();
+        let files = Arc::make_mut(&mut snapshot.files);
+        let bytes = files.remove(&old_uri).unwrap();
+        files.insert(child_uri.to_string(), bytes);
         child.skills.insert(child_uri.to_string(), skill);
         let providers = FirstPartySkillProviders::from_providers(parent, child);
 

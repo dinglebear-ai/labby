@@ -1,0 +1,278 @@
+
+globalThis.codemode = globalThis.codemode || {{}};
+var codemode = globalThis.codemode;
+var __codemodeDiscovery = {json};
+var __codemodeWithheld = {withheld_json};
+var __codemodeWithheldAdvice = {advice_json};
+function __codemodeSumTools(items) {{
+  var tools = 0;
+  for (var i = 0; i < items.length; i++) tools += items[i].tool_count;
+  return tools;
+}}
+function __codemodeAliasKey(value) {{
+  return String(value == null ? "" : value).trim().toLowerCase().replace(/[-. ]/g, "_");
+}}
+function __codemodeWithheldSummary(items) {{
+  return items.slice(0, 10).map(function(w) {{
+    return {{ namespace: w.namespace, tool_count: w.tool_count }};
+  }});
+}}
+// Withheld upstreams the query names explicitly. Never consulted when a kind
+// filter excludes tools: snippet/prompt searches cannot be explained by the
+// read-only tool gate.
+function __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter) {{
+  if (!__codemodeWithheld.length || (hasKindFilter && !kindFilter["tool"])) return [];
+  var hits = [];
+  for (var w = 0; w < __codemodeWithheld.length; w++) {{
+    var ns = __codemodeNormalize(__codemodeWithheld[w].namespace);
+    for (var t = 0; t < tokens.length; t++) {{
+      if (ns.indexOf(tokens[t]) !== -1) {{ hits.push(__codemodeWithheld[w]); break; }}
+    }}
+  }}
+  return hits;
+}}
+function __codemodeWithheldHint(hits) {{
+  if (hits.length === 1) return hits[0].guidance;
+  return __codemodeSumTools(hits) + " tools across " + hits.length + " upstreams are hidden because this is a read-only Code Mode run (`codemode_read`) and those upstreams do not annotate them `readOnlyHint: true`. " + __codemodeWithheldAdvice + " `withheld` lists the affected upstreams.";
+}}
+// Secondary note for a search that found nothing at all: the gate *may* be
+// why, but the query is the likelier cause, so the no-match hint stays first.
+function __codemodeWithheldMaybe() {{
+  return " This read-only run also hides " + __codemodeSumTools(__codemodeWithheld) + " tool(s) that lack `readOnlyHint: true` (see `withheld`); if what you need is one of them: " + __codemodeWithheldAdvice;
+}}
+function __codemodeWithheldTarget(raw) {{
+  var ns = raw;
+  if (raw.indexOf("::") !== -1) ns = raw.split("::")[0];
+  else if (raw.indexOf(".") !== -1) ns = raw.split(".")[0];
+  var key = __codemodeAliasKey(ns);
+  for (var w = 0; w < __codemodeWithheld.length; w++) {{
+    if (__codemodeWithheld[w].key === key || __codemodeWithheld[w].helper === ns) return __codemodeWithheld[w];
+  }}
+  return null;
+}}
+function __codemodeNamespaceHasVisibleTools(withheld) {{
+  for (var i = 0; i < __codemodeDiscovery.length; i++) {{
+    var entry = __codemodeDiscovery[i];
+    if (entry.kind === "tool" && __codemodeAliasKey(entry.namespace) === withheld.key) return true;
+  }}
+  return false;
+}}
+function __codemodeNormalize(value) {{
+  return String(value == null ? "" : value)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}}
+function __codemodeTokens(value) {{
+  var normalized = __codemodeNormalize(value);
+  return normalized ? normalized.split(/\s+/g) : [];
+}}
+var __codemodeRecentSearch = [];
+codemode.search = async function(input) {{
+  __codemodeRecentSearch = [];
+  var query = typeof input === "object" && input !== null ? String(input.query || "") : String(input || "");
+  var limit = typeof input === "object" && input !== null && Number.isFinite(Number(input.limit))
+    ? Math.max(1, Math.min(50, Number(input.limit)))
+    : 50;
+  var requestedKinds = typeof input === "object" && input !== null && Array.isArray(input.kinds)
+    ? input.kinds.map(function(kind) {{ return String(kind).trim().toLowerCase(); }})
+    : [];
+  var kindFilter = Object.create(null);
+  for (var k = 0; k < requestedKinds.length; k++) kindFilter[requestedKinds[k]] = true;
+  var hasKindFilter = requestedKinds.length > 0;
+  var tokens = __codemodeTokens(query);
+  var __codemodeNoMatchHint = "No matches. Broaden the query or try synonyms.";
+  if (!tokens.length) return {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+
+  // Keep query-backed catalogs out of the injected preamble. A search pulls
+  // only a bounded result page and merges it with this execution's authorized
+  // local catalog.
+  var searchEntries = __codemodeDiscovery.slice();
+  var queryBackedById = Object.create(null);
+  var artifactSearchIncomplete = false;
+  var artifactSearchIncompleteSources = [];
+  try {{
+    var artifactResponse = await callTool("__lab_internal::artifact_search", {{ query: query, limit: limit, kinds: requestedKinds }});
+    artifactSearchIncompleteSources = artifactResponse && Array.isArray(artifactResponse.incompleteSources)
+      ? artifactResponse.incompleteSources : [];
+    artifactSearchIncomplete = artifactSearchIncompleteSources.length > 0;
+    var artifactEntries = artifactResponse && Array.isArray(artifactResponse.entries) ? artifactResponse.entries : [];
+    var knownIds = Object.create(null);
+    for (var localIndex = 0; localIndex < searchEntries.length; localIndex++) knownIds[searchEntries[localIndex].id] = true;
+    for (var remoteIndex = 0; remoteIndex < artifactEntries.length; remoteIndex++) {{
+      var remoteEntry = artifactEntries[remoteIndex];
+      if (remoteEntry && remoteEntry.id && !knownIds[remoteEntry.id]) {{
+        knownIds[remoteEntry.id] = true;
+        searchEntries.push(remoteEntry);
+        queryBackedById[remoteEntry.id] = remoteEntry;
+      }}
+    }}
+  }} catch (e) {{
+    // Preserve local results, but never report a failed provider search as
+    // authoritative absence from the configured artifact sources.
+    artifactSearchIncomplete = true;
+  }}
+
+  // --- lexical scoring (unchanged algorithm) ---
+  var lexicalById = {{}};
+  var scored = [];
+  for (var i = 0; i < searchEntries.length; i++) {{
+    var entry = searchEntries[i];
+    if (hasKindFilter && !kindFilter[String(entry.kind)]) continue;
+    var fields = [
+      [__codemodeNormalize(entry.path), 12],
+      [__codemodeNormalize(entry.name), 10],
+      [__codemodeNormalize(entry.namespace), 8],
+      [__codemodeNormalize(entry.description), 5],
+      [__codemodeNormalize((entry.tags || []).join(" ")), 7],
+      [__codemodeNormalize(entry.kind === "snippet" ? "codemode run snippet" : ""), 9]
+    ];
+    var covered = 0;
+    var score = 0;
+    for (var t = 0; t < tokens.length; t++) {{
+      var tokenScore = 0;
+      for (var f = 0; f < fields.length; f++) {{
+        if (fields[f][0].indexOf(tokens[t]) !== -1 && fields[f][1] > tokenScore) tokenScore = fields[f][1];
+      }}
+      if (tokenScore > 0) {{
+        covered++;
+        score += tokenScore;
+      }}
+    }}
+    var required = tokens.length <= 2 ? tokens.length : Math.ceil(tokens.length * 0.6);
+    if (covered >= required) {{
+      var record = {{
+        path: entry.path,
+        id: entry.id,
+        helper: entry.helper,
+        kind: entry.kind,
+        namespace: entry.namespace,
+        name: entry.name,
+        description: entry.description,
+        signature: entry.signature,
+        safety: entry.safety,
+        tags: entry.tags || [],
+        tools: entry.tools,
+        score: score
+      }};
+      lexicalById[entry.id] = record;
+      scored.push(record);
+    }}
+  }}
+
+  // --- semantic blend ---
+  // Query the host's semantic ranker through the SAME callTool primitive
+  // used for every other host round-trip — no new bridge. Fail-open: any
+  // rejection or malformed response degrades to an empty ranked list, never
+  // an exception that could break search().
+  var ranked = [];
+  try {{
+    var response = await callTool("__lab_internal::semantic_rank", {{ query: query, limit: limit, kinds: requestedKinds }});
+    ranked = (response && response.ranked) || [];
+  }} catch (e) {{
+    ranked = [];
+  }}
+
+  // Normalization: lexical `score` is an unbounded sum of per-token
+  // best-field weights. We normalize each entry's lexical score by the MAX
+  // score actually observed among THIS query's lexical matches (not a fixed
+  // global ceiling), so normalization adapts to how many tokens/fields
+  // actually matched for this specific query. Semantic cosine similarity is
+  // already bounded to [-1, 1] (see `embeddings::cosine_similarity`'s
+  // `.clamp(-1.0, 1.0)` on the Rust side); we rescale it to [0, 1] to match
+  // the lexical normalization's range before blending.
+  //
+  // Blend formula: blended = max(normalized_lexical, semantic_similarity_0_to_1 * blend_weight).
+  // `max` (not a weighted sum) is deliberate: a strong exact lexical match
+  // should never be outranked by a mediocre semantic match, and a strong
+  // semantic match (synonym case) should surface even with zero lexical
+  // overlap — either signal being strong is sufficient. `blend_weight`
+  // (config default 0.5) discounts semantic-only matches relative to a
+  // perfect lexical match, so ambiguous semantic near-misses don't crowd
+  // out legitimate lexical results at the same rank.
+  var maxLexicalScore = 0;
+  for (var m = 0; m < scored.length; m++) {{
+    if (scored[m].score > maxLexicalScore) maxLexicalScore = scored[m].score;
+  }}
+  var BLEND_WEIGHT = {blend_weight};
+  for (var r = 0; r < ranked.length; r++) {{
+    var rid = ranked[r].id;
+    var semanticSimilarity01 = (ranked[r].score + 1) / 2; // [-1,1] -> [0,1]
+    var existing = lexicalById[rid];
+    if (existing) {{
+      var normalizedLexical = maxLexicalScore > 0 ? existing.score / maxLexicalScore : 0;
+      existing.blendedScore = Math.max(normalizedLexical, semanticSimilarity01 * BLEND_WEIGHT);
+    }} else {{
+      // Semantic-only match: not found by lexical scoring at all (e.g. the
+      // synonym case with zero token overlap). `ranked` can only ever
+      // contain ids already present in `__codemodeDiscovery` (the host's
+      // semantic_rank ranks exclusively within this execution's
+      // already-scope-filtered catalog — a security invariant on the host
+      // side), so this lookup is safe and will always find a match.
+      for (var d = 0; d < searchEntries.length; d++) {{
+        if (searchEntries[d].id === rid) {{
+          var de = searchEntries[d];
+          if (hasKindFilter && !kindFilter[String(de.kind)]) break;
+          var record2 = {{
+            path: de.path, id: de.id, helper: de.helper, kind: de.kind, namespace: de.namespace,
+            name: de.name, description: de.description, signature: de.signature,
+            safety: de.safety,
+            tools: de.tools,
+            tags: de.tags || [], score: 0,
+            blendedScore: semanticSimilarity01 * BLEND_WEIGHT
+          }};
+          lexicalById[rid] = record2;
+          scored.push(record2);
+          break;
+        }}
+      }}
+    }}
+  }}
+  // Entries with no semantic signal keep blendedScore = normalizedLexical
+  // (equivalent to max(normalizedLexical, 0)).
+  for (var b = 0; b < scored.length; b++) {{
+    if (scored[b].blendedScore === undefined) {{
+      scored[b].blendedScore = maxLexicalScore > 0 ? scored[b].score / maxLexicalScore : 0;
+    }}
+  }}
+
+  scored.sort(function(a, b) {{
+    if (b.blendedScore !== a.blendedScore) return b.blendedScore - a.blendedScore;
+    if (b.score !== a.score) return b.score - a.score;
+    return a.path < b.path ? -1 : a.path > b.path ? 1 : 0;
+  }});
+  var total = scored.length;
+  var withheldHits = __codemodeWithheldNamed(tokens, hasKindFilter, kindFilter);
+  if (total === 0) {{
+    var empty = {{ results: [], total: 0, truncated: false, hint: __codemodeNoMatchHint }};
+    if (artifactSearchIncomplete) {{
+      empty.incomplete = true;
+      if (artifactSearchIncompleteSources.length) empty.incompleteSources = artifactSearchIncompleteSources;
+      empty.hint = "Artifact search was incomplete. Retry or inspect source availability.";
+      return empty;
+    }}
+    if (withheldHits.length) {{
+      empty.hint = __codemodeWithheldHint(withheldHits);
+      empty.withheld = __codemodeWithheldSummary(withheldHits);
+    }} else if (__codemodeWithheld.length && !(hasKindFilter && !kindFilter["tool"])) {{
+      empty.hint = __codemodeNoMatchHint + __codemodeWithheldMaybe();
+      empty.withheld = __codemodeWithheldSummary(__codemodeWithheld);
+    }}
+    return empty;
+  }}
+  var results = scored.slice(0, limit).map(function(r) {{
+    return {{ path: r.path, id: r.id, helper: r.helper, kind: r.kind, namespace: r.namespace, name: r.name, description: r.description, signature: r.signature, tags: r.tags, tools: r.tools, safety: r.safety, score: r.score }};
+  }});
+  __codemodeRecentSearch = results.map(function(result) {{ return queryBackedById[result.id]; }}).filter(Boolean);
+  var found = {{ results: results, total: total, truncated: total > limit }};
+  if (withheldHits.length) {{
+    found.hint = __codemodeWithheldHint(withheldHits);
+    found.withheld = __codemodeWithheldSummary(withheldHits);
+  }}
+  if (artifactSearchIncomplete) {{
+    found.incomplete = true;
+    if (artifactSearchIncompleteSources.length) found.incompleteSources = artifactSearchIncompleteSources;
+    found.hint = "Artifact search was incomplete. Retry or inspect source availability." + (found.hint ? " " + found.hint : "");
+  }}
+  return found;
+}};

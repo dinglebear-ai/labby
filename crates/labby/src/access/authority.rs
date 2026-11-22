@@ -69,6 +69,7 @@ impl ActionAuthoritySpec {
 /// two axes are one fact expressed twice.
 #[derive(Clone, Debug)]
 pub(crate) struct AuthorityCeiling {
+    pub(crate) bound_team: Option<String>,
     capabilities: BTreeSet<Capability>,
 }
 
@@ -78,6 +79,7 @@ impl AuthorityCeiling {
     /// operate scoped resources and nothing more.
     pub(crate) fn durable_execution() -> Self {
         Self {
+            bound_team: None,
             capabilities: BTreeSet::from([
                 Capability::ScopeRead,
                 Capability::ScopeCreate,
@@ -97,7 +99,10 @@ impl AuthorityCeiling {
         } else {
             BTreeSet::new()
         };
-        Self { capabilities }
+        Self {
+            capabilities,
+            bound_team: None,
+        }
     }
 
     /// Every capability that is not installation authority.
@@ -111,6 +116,7 @@ impl AuthorityCeiling {
     /// Explicit ceiling for trusted local stdio, where there is no request AuthContext.
     pub(crate) fn trusted_local() -> Self {
         Self {
+            bound_team: None,
             capabilities: Capability::ALL.iter().copied().collect(),
         }
     }
@@ -165,6 +171,10 @@ impl AuthorityRequest {
             safe_boundaries,
             registry,
         }
+    }
+
+    pub(crate) fn bound_team(&self) -> Option<&str> {
+        self.ceiling.bound_team.as_deref()
     }
 
     pub(crate) fn identity(&self) -> &VerifiedIdentity {
@@ -232,7 +242,11 @@ pub(crate) fn authorize_action_in_transaction(
         .ok_or(AccessStoreError::NotAuthorized)?;
     let capability = spec.capability;
     let lease_lifetime_millis = spec.lease_lifetime_millis;
-    if !ceiling.allows(capability) {
+    if !ceiling.allows(capability)
+        || ceiling.bound_team.as_ref().is_some_and(
+            |team| !matches!(resource.owner(), OwnerScope::Team(id) if id.as_str() == team),
+        )
+    {
         return Err(AccessStoreError::NotAuthorized);
     }
 

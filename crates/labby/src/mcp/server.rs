@@ -4,7 +4,7 @@
 //! can share the same handler logic.
 
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use axum::http;
@@ -115,9 +115,27 @@ fn cancellation_token_from_meta(meta: &rmcp::model::NotificationMetaObject) -> O
 /// Restore the canonical wire metadata that rmcp places on the request context,
 /// while preserving metadata supplied by a direct typed-handler caller when the
 /// context carries no metadata of its own.
-fn restore_request_meta(typed: &mut Option<RequestMetaObject>, context: &RequestMetaObject) {
+fn restore_request_meta(
+    typed: &mut Option<RequestMetaObject>,
+    context: &RequestMetaObject,
+    transport: &str,
+) {
     if !context.0.0.is_empty() || typed.is_none() {
         *typed = Some(context.clone());
+    }
+    #[cfg(feature = "gateway")]
+    if transport == super::in_process_peer::IN_PROCESS_TRANSPORT_LABEL {
+        return;
+    }
+    #[cfg(not(feature = "gateway"))]
+    let _ = transport;
+    if let Some(meta) = typed {
+        meta.0
+            .0
+            .remove(labby_runtime::caller_auth::CALLER_AUTH_META_KEY);
+        meta.0
+            .0
+            .remove(labby_runtime::caller_auth::CALLER_UPSTREAM_SCOPE_META_KEY);
     }
 }
 
@@ -377,8 +395,6 @@ pub struct LabMcpServer {
     /// `ConnectedClient::transport` during discovery. One of `"stdio"`,
     /// `"http"`, `"in-process"` (built-in service peers), or `"test"`.
     pub(crate) transport_label: &'static str,
-    /// Negotiated RMCP logging threshold for this server route.
-    pub logging_level: Arc<AtomicU8>,
     /// Visibility and dispatch constraints for this MCP route.
     pub(crate) route_scope: McpRouteScope,
     /// Unique id for this handler's downstream relay scope. On stdio that is
@@ -496,6 +512,16 @@ fn connected_client_from_discovery(
 
 #[cfg(feature = "gateway")]
 impl LabMcpServer {
+    #[cfg(feature = "gateway")]
+    async fn finish_stateless_relay_session(&self) {
+        if self.transport_label == "http"
+            && let Some(pool) = self.current_upstream_pool().await
+        {
+            pool.finish_stateless_relay_session(self.relay_session_id)
+                .await;
+        }
+    }
+
     fn channel_enabled(&self) -> bool {
         self.transport_label == "stdio"
             && self.gateway_manager.is_some()
@@ -661,7 +687,8 @@ impl ServerHandler for LabMcpServer {
             super::claude_channel::ChannelSession::advertise(&mut capabilities);
         }
         let mut info = ServerConfig::new(capabilities);
-        info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"));
+        info.server_info = rmcp::model::Implementation::new("labby", env!("CARGO_PKG_VERSION"))
+            .with_icons(vec![super::native_metadata::server_icon()]);
         // A pointer, not skill content. It reaches clients that never parse the
         // capability map, which is the population most likely to miss an
         // extension entirely.
@@ -912,13 +939,12 @@ impl ServerHandler for LabMcpServer {
                 .map(|uris| {
                     uris.iter()
                         .filter(|uri| {
-                            deliverable.contains(*uri)
-                                && uri
-                                    .strip_prefix("lab://upstream/")
-                                    .and_then(|rest| rest.split('/').next())
-                                    .is_none_or(|upstream| {
-                                        self.route_scope.allows_upstream(upstream)
-                                    })
+                            self.route_scope.exposes_resources()
+                                && deliverable.get(*uri).is_some_and(|owners| {
+                                    owners
+                                        .iter()
+                                        .any(|owner| self.route_scope.allows_upstream(owner))
+                                })
                         })
                         .cloned()
                         .collect::<Vec<_>>()
@@ -960,8 +986,31 @@ impl ServerHandler for LabMcpServer {
         let route_scope_label = self.route_scope.label();
         let pruned_peer_count = crate::mcp::peers::prune_closed_peers(&self.peers).await;
         let mut peers = self.peers.write().await;
+        const MAX_SUBSCRIPTIONS_PER_OWNER: usize = 8;
+        let owner = self
+            .request_subject(context.request_context())
+            .map(str::to_owned);
+        if peers.len() >= labby_runtime::client_registry::MAX_CLIENTS
+            || peers
+                .iter()
+                .filter(|peer| peer.subscription_owner == owner)
+                .count()
+                >= MAX_SUBSCRIPTIONS_PER_OWNER
+        {
+            return Err(super::agent_error::internal(
+                "rate_limited",
+                "Notification subscription limit reached. Close an existing subscription before retrying.",
+                None,
+                &labby_runtime::agent_error::AgentErrorContext::for_service_action(
+                    "labby",
+                    "subscriptions/listen",
+                ),
+            ));
+        }
         let registered = crate::mcp::peers::RegisteredPeer::from_subscription(
             context.sink().clone(),
+            context.request_context().ct.clone(),
+            owner,
             contract,
             last_contract,
         );
@@ -1013,10 +1062,18 @@ impl ServerHandler for LabMcpServer {
         Box::pin(async move {
             #[cfg(feature = "gateway")]
             self.observe_client(&context).await;
-            restore_request_meta(&mut request.meta, &context.meta);
-            Ok(provenance::stamp_complete_result(
-                self.complete_impl(request, context).await?,
-            ))
+            restore_request_meta(&mut request.meta, &context.meta, self.transport_label);
+            let cancel = context.ct.clone();
+            tokio::select! {
+                biased;
+                () = cancel.cancelled() => Err(crate::mcp::agent_error::internal(
+                    "cancelled",
+                    "Completion cancelled",
+                    None,
+                    &labby_runtime::agent_error::AgentErrorContext::for_service_action("labby", "completion.complete"),
+                )),
+                result = self.complete_impl(request, context) => result.map(provenance::stamp_complete_result),
+            }
         })
     }
 
@@ -1042,14 +1099,15 @@ impl ServerHandler for LabMcpServer {
         Box::pin(async move {
             #[cfg(feature = "gateway")]
             self.observe_client(&context).await;
-            restore_request_meta(&mut request.meta, &context.meta);
-            Ok(provenance::stamp_get_prompt_response(
-                labby_runtime::usage_actor::scope_attributed(
-                    self.request_usage_attribution(&context),
-                    self.get_prompt_impl(request, context),
-                )
-                .await?,
-            ))
+            restore_request_meta(&mut request.meta, &context.meta, self.transport_label);
+            let result = labby_runtime::usage_actor::scope_attributed(
+                self.request_usage_attribution(&context),
+                self.get_prompt_impl(request, context),
+            )
+            .await;
+            #[cfg(feature = "gateway")]
+            self.finish_stateless_relay_session().await;
+            result.map(provenance::stamp_get_prompt_response)
         })
     }
 
@@ -1085,17 +1143,26 @@ impl ServerHandler for LabMcpServer {
         Box::pin(async move {
             #[cfg(feature = "gateway")]
             self.observe_client(&context).await;
-            restore_request_meta(&mut request.meta, &context.meta);
-            let response = match labby_runtime::usage_actor::scope_attributed(
+            restore_request_meta(&mut request.meta, &context.meta, self.transport_label);
+            let ttl_ms = match request.uri.as_str() {
+                super::handlers_resources::AGENT_ERROR_CONTRACT_URI
+                | super::handlers_resources::CODE_MODE_CALL_ERROR_CONTRACT_URI => 60_000,
+                #[cfg(feature = "skills")]
+                super::handlers_resources::SKILLS_EXTENSION_CONTRACT_URI => 60_000,
+                _ => 0,
+            };
+            let response = labby_runtime::usage_actor::scope_attributed(
                 self.request_usage_attribution(&context),
                 // The native SDK response types enlarge this future. Keep the
                 // attribution wrappers from storing another full copy on stack.
                 Box::pin(self.read_resource_impl(request, context)),
             )
-            .await?
-            {
+            .await;
+            #[cfg(feature = "gateway")]
+            self.finish_stateless_relay_session().await;
+            let response = match response? {
                 ReadResourceResponse::Complete(result) => result
-                    .with_ttl_ms(0)
+                    .with_ttl_ms(ttl_ms)
                     .with_cache_scope(CacheScope::Private)
                     .into(),
                 incomplete => incomplete,
@@ -1142,7 +1209,7 @@ impl ServerHandler for LabMcpServer {
         // rmcp keeps deserialized wire metadata in RequestContext.extensions/meta
         // and intentionally leaves the typed params field empty. Restore the
         // canonical metadata before handing the envelope to proxy routing.
-        restore_request_meta(&mut request.meta, &context.meta);
+        restore_request_meta(&mut request.meta, &context.meta, self.transport_label);
         // Keep the full product-dispatch future off rmcp's transport worker
         // stack. In a multi-hop relay, nested Labby servers otherwise poll the
         // all-features dispatch state on Tokio's bounded worker stack and can
@@ -1153,7 +1220,10 @@ impl ServerHandler for LabMcpServer {
             self.request_usage_attribution(&context),
             self.boxed_call_tool_response_impl(request, context),
         )
-        .await?;
+        .await;
+        #[cfg(feature = "gateway")]
+        self.finish_stateless_relay_session().await;
+        let result = result?;
         crate::dispatch::setup::client_evidence::record_completed_tool(
             &self.access_runtime,
             client_binding,
@@ -1189,19 +1259,12 @@ impl ServerHandler for LabMcpServer {
                     labby_gateway::upstream::pool::TaskCallContext {
                         capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
                             &context.meta,
-                        ))
-                        .unwrap_or_default(),
+                        )),
                         cancellation: cancellation_guard.cancellation().token.clone(),
                     },
                 )
                 .await
-                .map_err(|message| {
-                    if message == "task not found" {
-                        ErrorData::invalid_params(message, None)
-                    } else {
-                        ErrorData::internal_error(message, None)
-                    }
-                })?;
+                .map_err(labby_gateway::upstream::pool::task_protocol_error)?;
             return Ok(provenance::stamp_get_task_result(result));
         }
         Err(ErrorData::invalid_params("task not found", None))
@@ -1233,19 +1296,12 @@ impl ServerHandler for LabMcpServer {
                     labby_gateway::upstream::pool::TaskCallContext {
                         capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
                             &context.meta,
-                        ))
-                        .unwrap_or_default(),
+                        )),
                         cancellation: cancellation_guard.cancellation().token.clone(),
                     },
                 )
                 .await
-                .map_err(|message| {
-                    if message == "task not found" {
-                        ErrorData::invalid_params(message, None)
-                    } else {
-                        ErrorData::internal_error(message, None)
-                    }
-                });
+                .map_err(labby_gateway::upstream::pool::task_protocol_error);
         }
         Err(ErrorData::invalid_params("task not found", None))
     }
@@ -1276,25 +1332,16 @@ impl ServerHandler for LabMcpServer {
                     labby_gateway::upstream::pool::TaskCallContext {
                         capabilities: crate::mcp::context::forwardable_client_capabilities(Some(
                             &context.meta,
-                        ))
-                        .unwrap_or_default(),
+                        )),
                         cancellation: cancellation_guard.cancellation().token.clone(),
                     },
                 )
                 .await
-                .map_err(|message| {
-                    if message == "task not found" {
-                        ErrorData::invalid_params(message, None)
-                    } else {
-                        ErrorData::internal_error(message, None)
-                    }
-                });
+                .map_err(labby_gateway::upstream::pool::task_protocol_error);
         }
         Err(ErrorData::invalid_params("task not found", None))
     }
 }
-
-use crate::mcp::catalog::CatalogChangeSet;
 
 /// Extension capability map, for tests that assert what `initialize` declares.
 #[cfg(test)]
@@ -1320,17 +1367,22 @@ impl LabMcpServer {
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.
-    pub(crate) async fn notify_catalog_changes(
-        &self,
-        changes: CatalogChangeSet,
-        source: &'static str,
-    ) {
+    pub(crate) async fn notify_possible_tool_change(&self, source: &'static str) {
+        if !self
+            .peers
+            .read()
+            .await
+            .iter()
+            .any(|peer| peer.target.wants_tool_list_changed())
+        {
+            return;
+        }
         // Scheduled, not sent: this runs at the tail of a tool call, and the
         // caller's turn is still open. Delivering here would invalidate the
         // binding that call is using. See `catalog_coalesce`.
         crate::mcp::catalog_coalesce::schedule_catalog_notification(
             &self.peers,
-            changes.into(),
+            crate::mcp::catalog_notifications::CatalogNotificationChanges::new(true, false, false),
             source,
         );
     }
@@ -1349,7 +1401,6 @@ mod tests {
         withhold_legacy_unusable_capabilities,
     };
     use crate::mcp::catalog_notifications::{CatalogNotificationChanges, notify_catalog_peers};
-    use crate::mcp::logging::logging_level_rank;
     use crate::registry::ToolRegistry;
     use rmcp::ServerHandler;
     use rmcp::ServiceExt;
@@ -1374,9 +1425,6 @@ mod tests {
             #[cfg(feature = "gateway")]
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(
-                logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
-            )),
             route_scope: crate::mcp::route_scope::McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
@@ -1655,7 +1703,36 @@ mod tests {
             .insert("typed.trace".to_string(), serde_json::json!("preserve-me"));
         let empty_context = rmcp::model::RequestMetaObject::new();
 
-        restore_request_meta(&mut typed, &empty_context);
+        let private_keys = [
+            labby_runtime::caller_auth::CALLER_AUTH_META_KEY,
+            labby_runtime::caller_auth::CALLER_UPSTREAM_SCOPE_META_KEY,
+        ];
+        for key in private_keys {
+            typed
+                .as_mut()
+                .unwrap()
+                .insert(key.into(), serde_json::Value::Null);
+        }
+        #[cfg(feature = "gateway")]
+        {
+            let mut internal = typed.clone();
+            restore_request_meta(
+                &mut internal,
+                &empty_context,
+                crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
+            );
+            assert_eq!(internal, typed);
+        }
+        for transport in ["http", "stdio"] {
+            let mut external = typed.clone();
+            restore_request_meta(&mut external, &empty_context, transport);
+            assert!(
+                private_keys
+                    .iter()
+                    .all(|key| !external.as_ref().unwrap().contains_key(*key))
+            );
+        }
+        restore_request_meta(&mut typed, &empty_context, "http");
 
         assert_eq!(
             typed.as_ref().and_then(|meta| meta.0.0.get("typed.trace")),
@@ -1667,7 +1744,7 @@ mod tests {
             "context.trace".to_string(),
             serde_json::json!("replace-typed"),
         );
-        restore_request_meta(&mut typed, &context);
+        restore_request_meta(&mut typed, &context, "http");
         assert_eq!(typed.as_ref(), Some(&context));
     }
 
@@ -2032,6 +2109,186 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn channel_logs_typed_renewal_and_delivery_store_failures() {
+        use crate::dispatch::codemode_notices::NoticeStore;
+        use crate::mcp::claude_channel::ChannelSession;
+        use crate::test_support::{SharedBuf, captured_logs};
+        use tracing::instrument::WithSubscriber as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = NoticeStore::open_at(dir.path()).unwrap();
+        // Registering an inbox still works; only the subsequent notice SELECT fails.
+        rusqlite::Connection::open(dir.path().join("agent-notifications/inbox.sqlite3"))
+            .unwrap()
+            .execute_batch("ALTER TABLE agent_notices RENAME COLUMN source TO missing_source")
+            .unwrap();
+        let (transport, _client) = tokio::io::duplex(1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            stateless_test_server(Default::default()),
+            transport,
+            None,
+        );
+        for (store, expected) in [
+            (NoticeStore::disabled(), "channel inbox renewal failed"),
+            (store, "channel notice delivery read failed"),
+        ] {
+            let channel = ChannelSession::new(store);
+            channel.initialized();
+            let logs = SharedBuf::default();
+            let subscriber = tracing_subscriber::fmt()
+                .without_time()
+                .with_ansi(false)
+                .with_writer(logs.clone())
+                .finish();
+            let worker = channel
+                .run(running.peer().clone(), None)
+                .with_subscriber(subscriber);
+            let observed = async {
+                loop {
+                    if captured_logs(&logs).lines().any(|line| {
+                        line.contains(expected)
+                            && line.contains("kind=")
+                            && line.contains("unavailable")
+                    }) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            };
+            tokio::select! {
+                never = worker => match never {},
+                result = tokio::time::timeout(Duration::from_secs(3), observed) => assert!(result.is_ok(), "expected {expected} in {}", captured_logs(&logs)),
+            }
+        }
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn skills_dispatch_logs_machine_kind_and_numeric_rpc_code() {
+        use crate::test_support::{SharedBuf, captured_logs};
+        use tracing::instrument::WithSubscriber as _;
+
+        let (transport, _client) = tokio::io::duplex(1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            stateless_test_server(Default::default()),
+            transport,
+            None,
+        );
+        let context =
+            rmcp::service::RequestContext::new(NumberOrString::Number(1), running.peer().clone());
+        let request = CustomRequest::new(
+            labby_runtime::skills::wire::SKILLS_LIST_METHOD,
+            Some(serde_json::json!({"cursor":true})),
+        );
+        let logs = SharedBuf::default();
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(logs.clone())
+            .finish();
+        let err = running
+            .service()
+            .handle_skills_request(&request, &context)
+            .with_subscriber(subscriber)
+            .await
+            .unwrap_err();
+        assert_eq!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        let output = captured_logs(&logs);
+        assert!(
+            output.lines().any(|line| line.contains("dispatch error")
+                && line.contains("invalid_param")
+                && line.contains("rpc_code=-32602")),
+            "{output}"
+        );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[tokio::test]
+    async fn notice_recipient_selection_uses_transport_and_verified_identity() {
+        use crate::dispatch::codemode_notices::NoticeConsumer;
+        use labby_auth::{Authenticator, VerifiedIdentity};
+        let (transport, _peer) = tokio::io::duplex(64);
+        let server = stateless_test_server(Default::default());
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        for (transport, auth, identity, expected) in [
+            ("stdio", false, None, "stdio"),
+            ("http", false, None, "denied"),
+            ("http", true, None, "denied"),
+            ("http", true, Some(Authenticator::OauthBearer), "oauth"),
+            ("http", false, Some(Authenticator::StaticBearer), "denied"),
+            (
+                "http",
+                true,
+                Some(Authenticator::StaticBearer),
+                "credential",
+            ),
+            (
+                "http",
+                true,
+                Some(Authenticator::ProductCredential),
+                "denied",
+            ),
+        ] {
+            let mut server = stateless_test_server(Default::default());
+            server.transport_label = transport;
+            let mut context = rmcp::service::RequestContext::new(
+                NumberOrString::Number(1),
+                running.peer().clone(),
+            );
+            let (mut parts, _) = axum::http::Request::new(()).into_parts();
+            if auth {
+                parts
+                    .extensions
+                    .insert(labby_auth::auth_context::AuthContext {
+                        sub: "fixture".into(),
+                        actor_key: Some("fixture-actor".into()),
+                        scopes: Vec::new(),
+                        issuer: "fixture".into(),
+                        via_session: false,
+                        csrf_token: None,
+                        email: None,
+                    });
+            }
+            if identity == Some(Authenticator::OauthBearer) {
+                let claims = labby_auth::jwt::AccessClaims {
+                    iss: "https://labby.example".into(),
+                    sub: "fixture".into(),
+                    azp: "fixture-client".into(),
+                    identity_issuer: Some("https://accounts.google.com".into()),
+                    ..Default::default()
+                };
+                parts
+                    .extensions
+                    .insert(labby_auth::auth_context::AuthorizedClientId(
+                        "fixture-client".into(),
+                    ));
+                parts.extensions.insert(
+                    labby_auth::verified_identity_from_access_claims(&claims, &Default::default())
+                        .unwrap(),
+                );
+            } else if let Some(kind) = identity {
+                parts
+                    .extensions
+                    .insert(VerifiedIdentity::local_credential(kind, "fixture").unwrap());
+            }
+            context.extensions.insert(parts);
+            let recipient = super::super::notice_identity::notice_recipient(&server, &context);
+            let actual = match recipient.map(|recipient| recipient.consumer) {
+                None => "denied",
+                Some(NoticeConsumer::Stdio { .. }) => "stdio",
+                Some(NoticeConsumer::Client { .. }) => "oauth",
+                Some(NoticeConsumer::Credential { .. }) => "credential",
+                other => panic!("unexpected consumer: {other:?}"),
+            };
+            assert_eq!(actual, expected);
+        }
+        running.cancel().await.unwrap();
+    }
+
     #[tokio::test]
     async fn resource_templates_include_required_rc_cache_metadata() {
         let server = stateless_test_server(Default::default());
@@ -2241,6 +2498,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn subscription_filter_requires_an_acknowledged_resource_uri() {
+        let server = stateless_test_server(Default::default());
+        let requested = SubscriptionFilter::builder()
+            .tools_list_changed()
+            .resource_subscriptions(vec![
+                "ui://vendor/app".to_owned(),
+                "lab://upstream/vendor/doc".to_owned(),
+            ])
+            .build();
+        let accepted = server.accepted_subscription_filter(&requested).unwrap();
+        assert_eq!(accepted.tools_list_changed, Some(true));
+        assert!(accepted.resource_subscriptions.is_none());
+    }
+
     #[tokio::test]
     async fn stateless_subscription_receives_catalog_notifications() {
         let peers = Default::default();
@@ -2295,6 +2567,45 @@ mod tests {
         })
         .await
         .expect("cancelled subscription is removed");
+        let filter = SubscriptionFilter::builder()
+            .resources_list_changed()
+            .build();
+        let mut original = client_service.peer().listen(filter.clone()).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while peers.read().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        // Fill the same owner's existing registrations without opening additional transports.
+        let registered = peers.read().await[0].clone();
+        peers.write().await.resize(8, registered.clone());
+        let rejected = client_service.peer().listen(filter).await;
+        let error = match rejected {
+            Err(error) => error,
+            Ok(mut stream) => tokio::time::timeout(Duration::from_secs(5), stream.next())
+                .await
+                .unwrap()
+                .unwrap_err(),
+        };
+        assert!(
+            matches!(error, rmcp::ServiceError::McpError(ref error) if error.data.as_ref().and_then(|data| data["kind"].as_str()) == Some("rate_limited")),
+            "{error:?}"
+        );
+        // Server-side pruning uses this same cancellation signal to release listen().
+        registered.target.cancel_subscription();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !peers.read().await.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("server cancellation releases every copy of this registration");
+        tokio::time::timeout(Duration::from_secs(5), original.next())
+            .await
+            .expect("the server closes the cancelled stream")
+            .ok();
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
     }

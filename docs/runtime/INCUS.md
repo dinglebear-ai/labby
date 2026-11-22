@@ -129,7 +129,7 @@ the installer attestation and separately downloaded digest before execution.
 For PR validation before a release exists, push a local binary instead:
 
 ```bash
-cargo build --workspace --all-features --bin labby
+cargo build --workspace --features labby/product --bin labby
 target/debug/labby host incus setup --local-binary target/debug/labby
 ```
 
@@ -176,14 +176,16 @@ restarted container serves an `index.html` whose SHA-256 matches the freshly
 built local export. This catches stale filesystem overrides, incomplete asset
 copies, and wrong-source routing before the deploy reports success.
 
-For a checkout-local UI or Rust change:
+Use the release workflow for production and retain a verified pre-upgrade
+[state export](./DISASTER_RECOVERY.md) before a schema change. Binary sync to the default production container (`labby`) also creates a named Incus snapshot before replacing files. Sync reports the snapshot name on success and stops if the snapshot fails. For a
+checkout-local build, target your staging container and its own gateway URL:
 
 ```bash
 just web-build
-cargo build --workspace --all-features --profile release-fast --bin labby
+cargo build --workspace --features labby/product --profile release-fast --bin labby
 target/release-fast/labby host incus sync \
   --binary target/release-fast/labby \
-  --check-url https://labby.dinglebear.ai/gateways/
+  --container labby-qa --check-url https://labby-qa.example.test/gateways/
 ```
 
 Pass `--no-web-assets` only for a binary-only deploy where the existing
@@ -376,9 +378,10 @@ LABBY_SERVICE_MEMORY_MAX="16G"
 LABBY_SERVICE_WRITABLE_HOME="true"
 ```
 
-Memory limits are ceilings, not reservations; size them for the host. Without
-these overrides, the Incus service retains its 7/8 GiB limits and restricted
-home-directory policy. The writable-home option permits writes throughout
+The stock host unit sets a 4 GiB memory ceiling. Incus deployment drop-ins can
+set independent limits. Inspect the active settings with
+`systemctl show labby.service -p MemoryHigh -p MemoryMax -p TasksMax` inside
+the container. The host runbook covers [OOM recovery](./HOST_GATEWAY.md). The writable-home option permits writes throughout
 `/home/labby`, subject to ownership, while retaining the system filesystem's
 read-only mounts. It does not clear other hardening such as `InaccessiblePaths`.
 The resource policy also masks `/run/user` to deny access to user-session

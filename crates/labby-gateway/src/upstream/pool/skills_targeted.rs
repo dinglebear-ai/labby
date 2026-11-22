@@ -5,8 +5,10 @@ use labby_runtime::skills::{ValidatedSkill, parse_skill_resource_uri};
 
 use super::UpstreamPool;
 use super::entries::resolve_request_skill_exposure_policy;
-use super::skills::{ExposedSkills, skills_cache_subject};
+use super::skills::skills_cache_subject;
+use super::skills_cache::CachedSkills;
 use super::skills_list::UpstreamSkillsError;
+use labby_runtime::skills::SkillDiscoverySource;
 
 impl UpstreamPool {
     pub(super) async fn targeted_skill_with_catalog(
@@ -14,7 +16,8 @@ impl UpstreamPool {
         config: &UpstreamConfig,
         subject: Option<&str>,
         uri: &str,
-    ) -> Result<(Option<ValidatedSkill>, ExposedSkills), UpstreamSkillsError> {
+    ) -> Result<(Option<ValidatedSkill>, (CachedSkills, SkillDiscoverySource)), UpstreamSkillsError>
+    {
         let canonical_uri = parse_skill_resource_uri(uri)
             .map_err(|_| UpstreamSkillsError::InvalidUri)?
             .to_uri();
@@ -37,7 +40,7 @@ impl UpstreamPool {
                     semaphore.available_permits()
                 })
                 >= 2;
-        let catalog = self.upstream_skills(config, subject);
+        let catalog = self.upstream_skills_snapshot(config, subject);
         let candidate = async {
             if let Some(skill) = self
                 .cached_direct_skill(config, subject, &canonical_uri)
@@ -63,10 +66,20 @@ impl UpstreamPool {
         } else {
             (catalog.await?, None)
         };
-        if let Some(skill) = exposed
+        let catalog = &exposed.0.skills;
+        if catalog.ambiguous_resource_uris.contains(&canonical_uri) {
+            return Ok((None, exposed));
+        }
+        let policy =
+            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
+        if let Some(skill) = catalog
             .skills
             .iter()
-            .find(|skill| skill.entry.uri == canonical_uri)
+            .find(|skill| {
+                skill.entry.uri == canonical_uri
+                    && policy.matches(&skill.name)
+                    && !catalog.has_ambiguous_claim(skill)
+            })
             .cloned()
         {
             return Ok((Some(skill), exposed));
@@ -81,8 +94,6 @@ impl UpstreamPool {
         let Some(skill) = fetched else {
             return Ok((None, exposed));
         };
-        let policy =
-            resolve_request_skill_exposure_policy(&config.name, config.expose_skills.clone());
         if !policy.matches(&skill.name) {
             return Ok((None, exposed));
         }

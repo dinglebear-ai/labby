@@ -76,6 +76,14 @@ pub(super) struct CodeModeRefreshFlight {
     pub(super) deadline: Mutex<Option<Instant>>,
 }
 
+pub(super) type EmbeddingRows = Arc<Vec<(String, Arc<[f32]>)>>;
+
+pub(super) struct CachedEmbeddingCorpus {
+    rows: EmbeddingRows,
+    by_text: std::collections::HashMap<[u8; 32], Arc<[f32]>>,
+    retained_bytes: usize,
+}
+
 #[derive(Default)]
 pub(super) struct CodeModeEmbeddingFlight {
     pub(super) build: Mutex<()>,
@@ -251,7 +259,7 @@ pub struct GatewayManager {
     /// the serialized JSON blob, and the JS proxy string on every lookup when
     /// the upstream catalog has not changed between calls.
     pub(super) code_mode_catalog_render_cache:
-        Arc<Mutex<Option<crate::gateway::code_mode::CatalogRenderCache>>>,
+        Arc<Mutex<lru::LruCache<String, crate::gateway::code_mode::CatalogRenderCache>>>,
     /// Weak keyed build flights prevent duplicate cold render construction.
     /// Weak values disappear after callers finish, bounding retained state.
     pub(super) code_mode_catalog_render_flights: Arc<
@@ -273,18 +281,16 @@ pub struct GatewayManager {
     #[cfg(test)]
     pub(super) _test_scratch_dir: Option<Arc<tempfile::TempDir>>,
     /// Cached Code Mode catalog embedding vectors, keyed separately by the
-    /// visible `(id, description)` ranking corpus. `RwLock` (not
-    /// `Mutex`), matching the `config: Arc<RwLock<GatewayConfig>>` precedent
-    /// above — this is a read-heavy cache; writes only happen on a
-    /// ranking-corpus change or the very first embed. Safety/schema-only
-    /// render changes therefore do not force an identical TEI batch.
-    ///
+    /// visible `(id, description)` ranking corpus. Both caches bound retained scope variants.
     /// The cache lock covers only reads and publication. Per-fingerprint
     /// flights below serialize TEI calls without holding this lock over I/O.
     pub(super) code_mode_embedding_cache:
-        Arc<RwLock<Option<crate::gateway::code_mode::CatalogEmbeddingCache>>>,
-    pub(super) code_mode_embedding_flights:
-        Arc<Mutex<std::collections::HashMap<String, std::sync::Weak<CodeModeEmbeddingFlight>>>>,
+        Arc<Mutex<lru::LruCache<(String, String), CachedEmbeddingCorpus>>>,
+    pub(super) code_mode_embedding_flights: Arc<
+        Mutex<
+            std::collections::HashMap<(String, String), std::sync::Weak<CodeModeEmbeddingFlight>>,
+        >,
+    >,
     /// Fail-open cooldown gate for the TEI semantic-search embedding
     /// service. `Some(instant)` = a call failed at `instant`; calls made
     /// before `instant + 30s` skip TEI entirely (falling back to
@@ -376,8 +382,7 @@ impl GatewayManager {
             .set_enabled(runtime_cfg.code_mode.mcp_ui_enabled);
         *self.protected_route_index.write().await =
             ProtectedRouteIndex::from_routes(&runtime_cfg.protected_mcp_routes);
-        *self.config.write().await = runtime_cfg;
-        self.advance_runtime_config_generation();
+        self.publish_runtime_config(runtime_cfg).await;
         Ok(())
     }
 }

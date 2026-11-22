@@ -95,7 +95,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
     ///
     /// `Done` with native clean-boundary proof returns the runner to the pool;
     /// false/missing proof preserves success but evicts without replay. A Done
-    /// with pending host calls remains a protocol error. A runner-reported `Error`
+    /// that claims a clean boundary while host calls remain is a protocol error. A runner-reported `Error`
     /// preserves the error and trace but evicts: late replies or terminal frames
     /// can outlive the failed JS runtime. Crashes, timeouts and protocol faults
     /// also evict; only confirmed pre-protocol exit permits one fresh retry.
@@ -109,26 +109,19 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
         let outcome = self.drive_runner(lease.runner_mut(), &cfg, deadline).await;
         match outcome {
             DriveOutcome::Completed(response) => {
-                if lease.runner_mut().reuse_ready {
-                    drop(tokio::time::timeout_at(deadline, lease.release()).await);
-                } else {
-                    // Success can abandon a reply. Preserve it without replay,
-                    // but discard the unqualified process and its pipe frames.
-                    drop(tokio::time::timeout_at(deadline, lease.evict()).await);
-                }
+                drop(tokio::time::timeout_at(deadline, pool.finish_response_lease(lease)).await);
                 Ok(response)
             }
             DriveOutcome::ExecutionError(err) => {
                 // Fresh JS state does not flush old protocol frames. Never
                 // release or replay a runner-reported failed execution.
-                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
+                drop(tokio::time::timeout_at(deadline, pool.finish_response_lease(lease)).await);
                 Err(err)
             }
             DriveOutcome::RunnerUnavailableBeforeActivity(err) => {
                 // A pooled runner can die while idle. Because it emitted no valid
                 // protocol event for this execution, no host-visible side effect
                 // crossed the sandbox boundary and one replay is safe.
-                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
                 tracing::warn!(
                     surface = "dispatch",
                     service = "code_mode",
@@ -138,24 +131,30 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
                     "Code Mode runner died before protocol activity; retrying once on a fresh runner"
                 );
 
-                let mut retry = pool.checkout_fresh(deadline).await?;
+                let mut retry = lease;
+                pool.replace_for_retry(&mut retry, deadline).await?;
                 let retry_outcome = self.drive_runner(retry.runner_mut(), &cfg, deadline).await;
                 match retry_outcome {
                     DriveOutcome::Completed(response) => {
-                        if retry.runner_mut().reuse_ready {
-                            drop(tokio::time::timeout_at(deadline, retry.release()).await);
-                        } else {
-                            drop(tokio::time::timeout_at(deadline, retry.evict()).await);
-                        }
+                        drop(
+                            tokio::time::timeout_at(deadline, pool.finish_response_lease(retry))
+                                .await,
+                        );
                         Ok(response)
                     }
                     DriveOutcome::ExecutionError(err) => {
-                        drop(tokio::time::timeout_at(deadline, retry.evict()).await);
+                        drop(
+                            tokio::time::timeout_at(deadline, pool.finish_response_lease(retry))
+                                .await,
+                        );
                         Err(err)
                     }
                     DriveOutcome::RunnerUnavailableBeforeActivity(err)
                     | DriveOutcome::RunnerUnhealthy(err) => {
-                        drop(tokio::time::timeout_at(deadline, retry.evict()).await);
+                        drop(
+                            tokio::time::timeout_at(deadline, pool.finish_response_lease(retry))
+                                .await,
+                        );
                         Err(err)
                     }
                 }
@@ -163,7 +162,7 @@ impl<H: CodeModeHost> CodeModeBroker<'_, H> {
             DriveOutcome::RunnerUnhealthy(err) => {
                 // Crash / timeout / protocol fault after activity: discard the
                 // runner without replaying the execution, bounded by the remaining deadline.
-                drop(tokio::time::timeout_at(deadline, lease.evict()).await);
+                drop(tokio::time::timeout_at(deadline, pool.finish_response_lease(lease)).await);
                 Err(err)
             }
         }

@@ -1,6 +1,6 @@
 //! Upstream notification subscriptions and the pool-level event bus.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -191,7 +191,7 @@ impl UpstreamPool {
 
     /// Snapshot the gateway-facing resource URIs for which an upstream has
     /// actually acknowledged notification delivery.
-    pub fn subscribable_resource_uris_snapshot(&self) -> Arc<BTreeSet<String>> {
+    pub fn subscribable_resource_uris_snapshot(&self) -> Arc<BTreeMap<String, BTreeSet<String>>> {
         self.subscribable_resource_uris.load_full()
     }
 
@@ -207,12 +207,14 @@ impl UpstreamPool {
     }
 
     fn store_subscribable_resource_snapshot(&self, accepted: &HashMap<String, BTreeSet<String>>) {
-        let mut snapshot = BTreeSet::new();
+        let mut snapshot = BTreeMap::<String, BTreeSet<String>>::new();
         for (upstream, uris) in accepted {
-            snapshot.extend(
-                uris.iter()
-                    .map(|uri| Self::gateway_resource_uri(upstream, uri)),
-            );
+            for uri in uris {
+                snapshot
+                    .entry(Self::gateway_resource_uri(upstream, uri))
+                    .or_default()
+                    .insert(upstream.clone());
+            }
         }
         self.subscribable_resource_uris.store(Arc::new(snapshot));
     }

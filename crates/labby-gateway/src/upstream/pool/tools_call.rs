@@ -147,18 +147,24 @@ pub(super) async fn refresh_tool_header_cache(
     pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
     upstream_name: &str,
+    attempt: Instant,
 ) -> Result<(), ServiceError> {
-    let schema_refresh_count = pool.record_header_schema_refresh(upstream_name);
-    tracing::info!(
-        surface = "dispatch",
-        service = "upstream.pool",
-        action = "tool.header_cache.refresh",
-        event = "start",
-        upstream = upstream_name,
-        schema_refresh_count,
-        "refreshing upstream tool schemas after SEP-2243 header mismatch"
-    );
-    match refresh_tool_header_cache_raw(peer, DISCOVERY_TIMEOUT).await {
+    let mut schema_refresh_count = None;
+    let result = refresh_tool_header_cache_raw(
+        pool,
+        peer,
+        upstream_name,
+        attempt,
+        DISCOVERY_TIMEOUT,
+        || {
+            schema_refresh_count = Some(pool.record_header_schema_refresh(upstream_name));
+        },
+    )
+    .await;
+    if matches!(&result, Ok(None)) {
+        return Ok(());
+    }
+    match result {
         Ok(tools) => {
             tracing::info!(
                 surface = "dispatch",
@@ -167,23 +173,13 @@ pub(super) async fn refresh_tool_header_cache(
                 event = "finish",
                 upstream = upstream_name,
                 schema_refresh_count,
-                tool_count = tools.len(),
+                tool_count = tools.unwrap_or(0),
                 "refreshed upstream tool schemas after SEP-2243 header mismatch"
             );
             Ok(())
         }
         Err(error) => {
-            tracing::warn!(
-                surface = "dispatch",
-                service = "upstream.pool",
-                action = "tool.header_cache.refresh",
-                event = "error",
-                upstream = upstream_name,
-                schema_refresh_count,
-                kind = error.kind(),
-                error = %error.bounded_text(),
-                "failed to refresh upstream tool schemas after SEP-2243 header mismatch"
-            );
+            tracing::warn!(surface = "dispatch", service = "upstream.pool", action = "tool.header_cache.refresh", event = "error", upstream = upstream_name, schema_refresh_count, kind = error.kind(), error = %error.bounded_text(), "failed to refresh upstream tool schemas after SEP-2243 header mismatch");
             Err(error.into_service_error(upstream_name))
         }
     }
@@ -192,10 +188,80 @@ pub(super) async fn refresh_tool_header_cache(
 /// Refresh rmcp's peer-local SEP-2243 schema hint without logs or counters.
 /// The cache is transport compatibility state, never routing authority.
 pub(super) async fn refresh_tool_header_cache_raw(
+    pool: &UpstreamPool,
     peer: &Peer<RoleClient>,
+    upstream: &str,
+    attempt: Instant,
     timeout: std::time::Duration,
-) -> Result<Vec<rmcp::model::Tool>, catalog_pagination::CatalogPaginationError> {
-    catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await
+    on_list: impl FnOnce() + Send,
+) -> Result<Option<usize>, catalog_pagination::CatalogPaginationError> {
+    tokio::time::timeout(timeout, async {
+        // A clone of one SDK peer shares its handshake allocation. Distinct initialized
+        // transports allocate their own, even when their metadata is identical.
+        let gate = if let Some(info) = peer.peer_info() {
+            let same_peer = |other: &Peer<RoleClient>| {
+                other
+                    .peer_info()
+                    .is_some_and(|candidate| std::sync::Arc::ptr_eq(&candidate, &info))
+            };
+            let raw = pool
+                .connections
+                .read()
+                .await
+                .get(upstream)
+                .filter(|entry| same_peer(&entry.peer))
+                .map(|entry| entry.header_refresh.clone());
+            if raw.is_some() {
+                raw
+            } else {
+                let subject = pool
+                    .subject_connections
+                    .read()
+                    .await
+                    .iter()
+                    .find(|((name, _), entry)| name == upstream && same_peer(&entry.peer))
+                    .map(|(_, entry)| entry._connection.header_refresh.clone());
+                if subject.is_some() {
+                    subject
+                } else {
+                    pool.relay_connections
+                        .read()
+                        .await
+                        .iter()
+                        .find(|(key, entry)| {
+                            key.0 == upstream && same_peer(&entry._connection.peer)
+                        })
+                        .map(|(_, entry)| entry._connection.header_refresh.clone())
+                }
+            }
+        } else {
+            None
+        };
+        let mut generation = match gate.as_ref() {
+            Some(gate) => Some(gate.lock().await),
+            None => None,
+        };
+        if generation
+            .as_deref()
+            .copied()
+            .flatten()
+            .is_some_and(|completed| completed >= attempt)
+        {
+            return Ok(None);
+        }
+        on_list();
+        let tools = catalog_pagination::list_tools(peer, timeout, MAX_UPSTREAM_TOOLS).await?;
+        if let Some(generation) = generation.as_deref_mut() {
+            *generation = Some(Instant::now());
+        }
+        Ok(Some(tools.len()))
+    })
+    .await
+    .unwrap_or_else(|_| {
+        Err(catalog_pagination::CatalogPaginationError::Deadline {
+            deadline_ms: timeout.as_millis(),
+        })
+    })
 }
 
 pub(super) fn call_tool_once_with_header_recovery<'a>(
@@ -207,10 +273,11 @@ pub(super) fn call_tool_once_with_header_recovery<'a>(
     // Keep RPC/recovery state off caller polling stacks while retaining lazy
     // dispatch and the existing cancellation guard and single retry contract.
     Box::pin(async move {
+        let attempt = Instant::now();
         match peer.call_tool_once(params.clone()).await {
             Err(error) if is_tool_header_mismatch(&error) => {
                 record_header_mismatch(pool, upstream_name);
-                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                refresh_tool_header_cache(pool, peer, upstream_name, attempt).await?;
                 let result = peer.call_tool_once(params).await;
                 record_header_retry(pool, upstream_name, &result);
                 result
@@ -231,10 +298,11 @@ fn call_tool_once_with_header_recovery_cancel_aware<'a>(
     // Keep RPC/recovery state off caller polling stacks while retaining lazy
     // dispatch and the existing cancellation guard and single retry contract.
     Box::pin(async move {
+        let attempt = Instant::now();
         match call_tool_once_cancel_aware(peer, upstream_name, params.clone()).await {
             Err(error) if is_tool_header_mismatch(&error) => {
                 record_header_mismatch(pool, upstream_name);
-                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                refresh_tool_header_cache(pool, peer, upstream_name, attempt).await?;
                 let result = call_tool_once_cancel_aware(peer, upstream_name, params).await;
                 record_header_retry(pool, upstream_name, &result);
                 result
@@ -253,6 +321,7 @@ pub(super) fn call_tool_with_header_recovery<'a>(
     // Keep RPC/recovery state off caller polling stacks while retaining lazy
     // dispatch and the existing cancellation guard and single retry contract.
     Box::pin(async move {
+        let attempt = Instant::now();
         // Cancel-aware unconditionally: Code Mode reaches the pool through this
         // helper and abandons the call future on cancellation
         // (`labby-codemode/src/execute.rs`), so the guard is what stops the
@@ -260,7 +329,7 @@ pub(super) fn call_tool_with_header_recovery<'a>(
         match call_tool_cancel_aware(peer, upstream_name, params.clone()).await {
             Err(error) if is_tool_header_mismatch(&error) => {
                 record_header_mismatch(pool, upstream_name);
-                refresh_tool_header_cache(pool, peer, upstream_name).await?;
+                refresh_tool_header_cache(pool, peer, upstream_name, attempt).await?;
                 let result = call_tool_cancel_aware(peer, upstream_name, params).await;
                 record_header_retry(pool, upstream_name, &result);
                 result
@@ -745,6 +814,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -860,6 +930,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -947,6 +1018,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1043,6 +1115,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1141,6 +1214,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer: peer.clone(),
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1252,6 +1326,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1339,6 +1414,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );
@@ -1420,6 +1496,7 @@ mod tests {
                 _server_task: Some(server_task),
                 peer,
                 runtime: UpstreamRuntimeMetadata::default(),
+                header_refresh: Default::default(),
                 incarnation: None,
             },
         );

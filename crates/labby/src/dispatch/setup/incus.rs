@@ -809,6 +809,11 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         steps.push(format!("resolve container `{container}`"));
         steps.push(format!("resolve binary `{}`", binary.display()));
         steps.push(format!("stop {SERVICE_NAME}"));
+        if container == DEFAULT_CONTAINER_NAME {
+            steps.push(format!(
+                "create a pre-upgrade Incus snapshot of {container}"
+            ));
+        }
         steps.push(format!(
             "push binary and atomically install to {REMOTE_BINARY_PATH}"
         ));
@@ -905,6 +910,20 @@ pub(crate) fn sync_incus_binary(options: IncusSyncOptions) -> Result<IncusSyncOu
         }
     }
     steps.push(format!("reaped lingering {SERVICE_NAME} processes"));
+
+    if container == DEFAULT_CONTAINER_NAME {
+        let snapshot = format!("labby-pre-upgrade-{}", ulid::Ulid::new());
+        activate!(command_ok(
+            Command::new("incus")
+                .args(["snapshot", "create", &container, &snapshot])
+                .bounded_output(),
+            "incus_sync_snapshot_failed",
+            "failed to create pre-upgrade Incus snapshot",
+        ));
+        steps.push(format!(
+            "created pre-upgrade Incus snapshot {container}/{snapshot}"
+        ));
+    }
 
     let remote_tmp = format!("/tmp/.labby-sync-{}", std::process::id());
     let target = format!("{container}{remote_tmp}");

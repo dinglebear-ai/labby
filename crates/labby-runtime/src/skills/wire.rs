@@ -163,13 +163,16 @@ pub enum CompleteResultType {
 /// A server whose catalog is large, generated, or otherwise unenumerable may
 /// return an empty or partial listing, and hosts must not read an empty listing
 /// as proof that a server has no skills.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SkillsListResult {
+pub type SkillsListResult = SkillsListPage<SkillEntry>;
+
+/// A list page whose entries may be decoded individually at an upstream boundary.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SkillsListPage<T> {
     /// Identifies this as a complete MCP result rather than an input request.
     #[serde(rename = "resultType", default)]
     pub result_type: CompleteResultType,
     /// Skill entries returned on this page.
-    pub skills: Vec<SkillEntry>,
+    pub skills: Vec<T>,
     #[serde(
         rename = "nextCursor",
         default,
@@ -200,6 +203,19 @@ pub struct SkillsListResult {
 pub const CACHE_SCOPE_PUBLIC: &str = "public";
 /// Cache scope for a listing whose contents depend on who asked.
 pub const CACHE_SCOPE_PRIVATE: &str = "private";
+
+impl<T> Default for SkillsListPage<T> {
+    fn default() -> Self {
+        Self {
+            result_type: Default::default(),
+            skills: Vec::new(),
+            next_cursor: None,
+            ttl_ms: None,
+            cache_scope: None,
+            meta: None,
+        }
+    }
+}
 
 impl SkillsListResult {
     /// Fold entries from another source into this listing.

@@ -20,30 +20,67 @@ pub(crate) async fn dispatch_git_method(
 ) -> Result<Value, ToolError> {
     let spec = GitCommandSpec::for_method(method, params)?;
     let workdir = git_workdir(workspace, spec.cwd.as_ref()).await?;
+    // Git must not walk up into the workspace root's parent while discovering
+    // a repository: the root itself may hold one, nothing outside it may.
+    let ceiling = workspace.root_path().parent();
     if let Some(remote) = &spec.remote_preflight {
-        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Fetch).await?;
+        ensure_remote_urls_allowed(&workdir, ceiling, remote, RemoteUrlMode::Fetch).await?;
     }
     if let Some(remote) = &spec.push_remote_preflight {
-        ensure_remote_urls_allowed(&workdir, remote, RemoteUrlMode::Push).await?;
+        ensure_remote_urls_allowed(&workdir, ceiling, remote, RemoteUrlMode::Push).await?;
     }
     if let Some(branch) = &spec.branch_preflight {
-        ensure_branch_ref_allowed(&workdir, branch).await?;
+        ensure_branch_ref_allowed(&workdir, ceiling, branch).await?;
     }
-    if let Some(destination) = &spec.clone_destination {
+    let clone_dir = if let Some(destination) = &spec.clone_destination {
         ensure_clone_destination_allowed(&workdir, destination).await?;
-    }
-    let mut stdout = run_git(&workdir, &spec.args).await?;
+        let path = workdir.join(destination.as_str());
+        workspace.check_new_destination_quota(&path).await?;
+        let parent = path.parent().expect("validated relative destination");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| ToolError::internal_message(err.to_string()))?;
+        // Git accepts an existing empty directory. Reserve exactly the requested
+        // name without clobbering another writer, and clean it up on cancellation.
+        Some(
+            tempfile::Builder::new()
+                .rand_bytes(0)
+                .prefix(path.file_name().expect("validated relative destination"))
+                .tempdir_in(parent)
+                .map_err(|err| ToolError::internal_message(err.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let mut stdout = run_git(&workdir, ceiling, &spec.args).await?;
     if matches!(method, "status" | "diff") {
         stdout = scrub_git_reserved_metadata(&stdout);
     }
-    if git_method_mutates_workspace(method) {
-        if let Err(err) = workspace.enforce_total_bytes().await {
-            if let Some(destination) = &spec.clone_destination {
-                cleanup_clone_destination(&workdir, destination, err).await?;
-            } else {
-                return Err(err);
-            }
+    if git_method_mutates_workspace(method)
+        && let Err(err) = workspace.enforce_total_bytes().await
+    {
+        if let Some(directory) = clone_dir {
+            directory.close().map_err(|cleanup| {
+                ToolError::internal_message(format!(
+                    "failed to clean incomplete git clone: {cleanup}"
+                ))
+            })?;
+            return Err(err);
         }
+        return Err(ToolError::contract(
+            err.kind(),
+            format!(
+                "git {method} completed before the workspace quota check failed: {}",
+                err.user_message()
+            ),
+            Default::default(),
+            None,
+            None,
+            Some(labby_runtime::agent_error::AgentSideEffectRisk::Possible),
+        ));
+    }
+    if let Some(directory) = clone_dir {
+        drop(directory.keep());
     }
     if method == "remoteList" {
         return Ok(json!({ "ok": true, "stdout": stdout, "remotes": parse_remote_list(&stdout) }));
@@ -60,7 +97,9 @@ async fn git_workdir(
     cwd: Option<&crate::state::path::VirtualPath>,
 ) -> Result<PathBuf, ToolError> {
     let Some(cwd) = cwd else {
-        return Ok(workspace.root_path().clone());
+        let root = workspace.root_path();
+        reject_implicit_git_directories(root, root).await?;
+        return Ok(root.clone());
     };
     let workdir = workspace.root_path().join(cwd.as_str());
     labby_runtime::path_safety::reject_existing_symlink_ancestors(workspace.root_path(), &workdir)?;
@@ -69,7 +108,10 @@ async fn git_workdir(
             sdk_kind: "permission_denied".to_string(),
             message: "git cwd is denied because it is a symlink".to_string(),
         }),
-        Ok(metadata) if metadata.is_dir() => Ok(workdir),
+        Ok(metadata) if metadata.is_dir() => {
+            reject_implicit_git_directories(workspace.root_path(), &workdir).await?;
+            Ok(workdir)
+        }
         Ok(_) => Err(ToolError::InvalidParam {
             message: "git cwd must be a directory".to_string(),
             param: "cwd".to_string(),
@@ -85,10 +127,68 @@ async fn git_workdir(
     }
 }
 
-async fn ensure_branch_ref_allowed(workspace_root: &Path, branch: &str) -> Result<(), ToolError> {
+/// Refuse a git cwd when it, or any ancestor up to the workspace root, has the
+/// on-disk layout of a git directory: entries named `HEAD`, `objects`, and
+/// `refs`, of any file type.
+///
+/// A script can write such a layout with `state.writeFile` because none of its
+/// path segments is `.git`. Git would then discover the directory as an
+/// implicit bare repository and load its attacker-written `config`, whose
+/// `core.fsmonitor` (among others) runs a host shell command. The
+/// `safe.bareRepository=explicit` fence in [`git_base_args`] already refuses
+/// that discovery; this check keeps the refusal independent of the installed
+/// git version and reports it before git runs at all.
+async fn reject_implicit_git_directories(
+    workspace_root: &Path,
+    workdir: &Path,
+) -> Result<(), ToolError> {
+    let mut dir = Some(workdir);
+    while let Some(current) = dir {
+        if looks_like_git_directory(current).await? {
+            return Err(ToolError::Sdk {
+                sdk_kind: "permission_denied".to_string(),
+                message: "git cwd is denied because it or a parent directory has the layout \
+                          of a bare git repository"
+                    .to_string(),
+            });
+        }
+        if current == workspace_root {
+            break;
+        }
+        dir = current
+            .parent()
+            .filter(|parent| parent.starts_with(workspace_root));
+    }
+    Ok(())
+}
+
+/// Whether `dir` holds all of `HEAD`, `objects`, and `refs`. Only a missing
+/// entry counts as absent: an entry that cannot be inspected fails closed
+/// rather than letting the check pass.
+async fn looks_like_git_directory(dir: &Path) -> Result<bool, ToolError> {
+    for entry in ["HEAD", "objects", "refs"] {
+        match tokio::fs::symlink_metadata(dir.join(entry)).await {
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(err) => {
+                return Err(ToolError::Sdk {
+                    sdk_kind: "permission_denied".to_string(),
+                    message: format!("git cwd is denied because it could not be inspected: {err}"),
+                });
+            }
+        }
+    }
+    Ok(true)
+}
+
+async fn ensure_branch_ref_allowed(
+    workdir: &Path,
+    ceiling: Option<&Path>,
+    branch: &str,
+) -> Result<(), ToolError> {
     let mut args = git_base_args(["check-ref-format", "--branch"]);
     args.push(branch.to_string());
-    run_git(workspace_root, &args)
+    run_git(workdir, ceiling, &args)
         .await
         .map(|_| ())
         .map_err(|_| ToolError::InvalidParam {
@@ -124,31 +224,6 @@ async fn ensure_clone_destination_allowed(
     }
 }
 
-async fn cleanup_clone_destination(
-    workspace_root: &Path,
-    destination: &crate::state::path::VirtualPath,
-    original: ToolError,
-) -> Result<(), ToolError> {
-    let path = workspace_root.join(destination.as_str());
-    let cleanup = match tokio::fs::symlink_metadata(&path).await {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            tokio::fs::remove_dir_all(&path).await
-        }
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-            tokio::fs::remove_file(&path).await
-        }
-        Ok(_) | Err(_) => return Err(original),
-    };
-    cleanup.map_err(|err| ToolError::Sdk {
-        sdk_kind: "quota_cleanup_failed".to_string(),
-        message: format!(
-            "git clone exceeded quota and cleanup of `{}` failed: {err}",
-            destination.as_str()
-        ),
-    })?;
-    Err(original)
-}
-
 fn scrub_git_reserved_metadata(stdout: &str) -> String {
     stdout
         .lines()
@@ -169,7 +244,8 @@ enum RemoteUrlMode {
 }
 
 async fn ensure_remote_urls_allowed(
-    workspace_root: &Path,
+    workdir: &Path,
+    ceiling: Option<&Path>,
     remote: &str,
     mode: RemoteUrlMode,
 ) -> Result<(), ToolError> {
@@ -178,24 +254,34 @@ async fn ensure_remote_urls_allowed(
         RemoteUrlMode::Push => git_base_args(["remote", "get-url", "--push", "--all"]),
     };
     args.push(remote.to_string());
-    let urls = run_git(workspace_root, &args).await?;
+    let urls = run_git(workdir, ceiling, &args).await?;
     for url in urls.lines().map(str::trim).filter(|line| !line.is_empty()) {
         validate_remote_url(url, "remote")?;
     }
     Ok(())
 }
 
-pub(crate) async fn run_git(workspace_root: &Path, args: &[String]) -> Result<String, ToolError> {
+/// Run git in `cwd`. `ceiling`, when set, is exported as
+/// `GIT_CEILING_DIRECTORIES` so repository discovery stops below it.
+pub(crate) async fn run_git(
+    cwd: &Path,
+    ceiling: Option<&Path>,
+    args: &[String],
+) -> Result<String, ToolError> {
     let git = super::executable::git_binary()?;
     let mut command = Command::new(git);
     command
         .args(args)
-        .current_dir(workspace_root)
+        .current_dir(cwd)
         .env_clear()
         .env("PATH", git_search_path())
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", null_device())
+        .env("GIT_CONFIG_GLOBAL", null_device());
+    if let Some(ceiling) = ceiling {
+        command.env("GIT_CEILING_DIRECTORIES", ceiling);
+    }
+    command
         .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
@@ -253,12 +339,12 @@ impl Drop for GitProcessTree {
 }
 
 async fn run_capped_command(command: Command) -> Result<CappedGitOutput, ToolError> {
-    run_capped_command_with_timeout(command, Duration::from_secs(10)).await
+    run_capped_command_with_deadline(command, tokio::time::sleep(Duration::from_secs(10))).await
 }
 
-async fn run_capped_command_with_timeout(
+async fn run_capped_command_with_deadline(
     mut command: Command,
-    timeout: Duration,
+    deadline: impl Future<Output = ()>,
 ) -> Result<CappedGitOutput, ToolError> {
     command.kill_on_drop(true);
     #[cfg(unix)]
@@ -297,7 +383,6 @@ async fn run_capped_command_with_timeout(
     let mut stdout_result = None;
     let mut stderr_result = None;
     let mut status_result = None;
-    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
 
     while stdout_result.is_none() || stderr_result.is_none() || status_result.is_none() {
@@ -433,6 +518,70 @@ mod tests {
     use super::*;
     use crate::state::quota::StateWorkspaceLimits;
 
+    #[tokio::test]
+    async fn clone_rejects_exhausted_entry_budget_before_creating_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = StateWorkspace::new(
+            root.path().to_owned(),
+            StateWorkspaceLimits {
+                max_entries: 1,
+                ..StateWorkspaceLimits::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(root.path().join("existing"), b"used").unwrap();
+        let error = dispatch_git_method(
+            &workspace,
+            "clone",
+            json!({"url":"https://github.com/example/project.git","directory":"new/project"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "quota_exceeded");
+        assert!(!root.path().join("new").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_clone_removes_its_partial_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        const FIXTURE: &str = "LABBY_TEST_PARTIAL_CLONE_ROOT";
+        if let Some(path) = std::env::var_os(FIXTURE) {
+            let workspace =
+                StateWorkspace::new(path.into(), StateWorkspaceLimits::default()).unwrap();
+            let result = dispatch_git_method(
+                &workspace,
+                "clone",
+                json!({"url":"https://github.com/example/project.git","directory":"project"}),
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(workspace.root_path().join("fixture-ran").is_file());
+            assert!(!workspace.root_path().join("project").exists());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("git-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf started > fixture-ran\nprintf partial > project/file\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = dir.path().join("workspace");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::provider::tests::failed_clone_removes_its_partial_destination",
+            ])
+            .env(FIXTURE, root)
+            .env("LABBY_CODE_MODE_GIT_EXE", executable)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[cfg(unix)]
     fn descendant_command(marker: &Path, ready: &Path, noisy: bool) -> Command {
         let mut command = Command::new("/bin/sh");
@@ -463,30 +612,31 @@ wait"#,
             let temp = tempfile::tempdir().unwrap();
             let marker = temp.path().join("survived");
             let ready = temp.path().join("ready");
-            let mut running = Box::pin(run_capped_command_with_timeout(
+            let (expire, expired) = tokio::sync::oneshot::channel::<()>();
+            let mut running = Box::pin(run_capped_command_with_deadline(
                 descendant_command(&marker, &ready, false),
-                Duration::from_millis(100),
+                async {
+                    let _ = expired.await;
+                },
             ));
-            if cancel {
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    loop {
-                        tokio::select! {
-                            _ = &mut running => panic!("fixture returned before cancellation"),
-                            () = tokio::time::sleep(Duration::from_millis(5)) => {
-                                if ready.exists() { break; }
-                            }
-                        }
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !ready.exists() {
+                    tokio::select! {
+                        _ = &mut running => panic!("fixture returned before readiness"),
+                        () = tokio::time::sleep(Duration::from_millis(5)) => {}
                     }
-                })
-                .await
-                .unwrap();
+                }
+            })
+            .await
+            .expect("fixture must become ready");
+            if cancel {
                 drop(running);
             } else {
-                let result = tokio::time::timeout(Duration::from_millis(400), running)
+                expire.send(()).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(2), running)
                     .await
                     .expect("cleanup must not wait for descendant pipe EOF");
                 assert_eq!(result.err().expect("deadline must fail").kind(), "timeout");
-                assert!(ready.exists());
             }
             tokio::time::sleep(Duration::from_millis(600)).await;
             assert!(!marker.exists(), "descendant continued after Git ended");
@@ -560,6 +710,28 @@ wait"#,
     }
 
     #[tokio::test]
+    async fn post_mutation_quota_error_reports_possible_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = StateWorkspace::new(
+            temp.path().to_owned(),
+            StateWorkspaceLimits {
+                max_total_bytes: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let error = dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap_err();
+        assert!(temp.path().join(".git").is_dir());
+        assert_eq!(error.kind(), "quota_exceeded");
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["side_effects"],
+            "possible"
+        );
+    }
+
+    #[tokio::test]
     async fn git_v2_branch_checkout_and_remote_list_work_locally() {
         let temp = tempfile::tempdir().unwrap();
         let workspace =
@@ -600,6 +772,16 @@ wait"#,
         dispatch_git_method(&workspace, "checkout", json!({"ref": "feature/demo"}))
             .await
             .unwrap();
+        let readme = crate::state::path::VirtualPath::parse("README.md").unwrap();
+        workspace.write_file(&readme, "uncommitted").await.unwrap();
+        let error = dispatch_git_method(&workspace, "checkout", json!({"ref": "README.md"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "git_failed");
+        assert_eq!(
+            workspace.read_file(&readme).await.unwrap().content,
+            "uncommitted"
+        );
         let remotes = dispatch_git_method(&workspace, "remoteList", json!({}))
             .await
             .unwrap();
@@ -648,19 +830,203 @@ wait"#,
         assert_eq!(err.kind(), "invalid_param");
     }
 
+    /// Writes, through the `state` provider, an implicit bare repository at
+    /// `dir/` whose config makes `git log` run `marker_script` on the host.
+    #[cfg(unix)]
+    async fn write_hostile_bare_layout(
+        workspace: &StateWorkspace,
+        dir: &str,
+        marker_script: &Path,
+    ) -> PathBuf {
+        use crate::state::provider::dispatch_state_method;
+        let bare = workspace.root_path().join(dir);
+        for (path, content) in [
+            (format!("{dir}/HEAD"), "ref: refs/heads/main\n".to_string()),
+            (format!("{dir}/objects/.keep"), String::new()),
+            (format!("{dir}/refs/.keep"), String::new()),
+            (
+                format!("{dir}/config"),
+                format!(
+                    "[core]\n\tbare = false\n\tworktree = .\n\tfsmonitor = \"{script}\"\n\
+                     [log]\n\tshowSignature = true\n[gpg]\n\tprogram = {script}\n",
+                    script = marker_script.display()
+                ),
+            ),
+        ] {
+            dispatch_state_method(
+                workspace,
+                "writeFile",
+                json!({"path": path, "content": content}),
+            )
+            .await
+            .unwrap();
+        }
+        // A signed commit on `main` so `log` consults `gpg.program`.
+        let git_dir = bare.to_string_lossy().to_string();
+        let tree = run_git(
+            &bare,
+            None,
+            &[
+                format!("--git-dir={git_dir}"),
+                "hash-object".into(),
+                "-t".into(),
+                "tree".into(),
+                "-w".into(),
+                "/dev/null".into(),
+            ],
+        )
+        .await
+        .unwrap();
+        let commit_file = bare.parent().unwrap().join("commit.txt");
+        std::fs::write(
+            &commit_file,
+            format!(
+                "tree {}\nauthor a <a@b> 0 +0000\ncommitter a <a@b> 0 +0000\n\
+                 gpgsig -----BEGIN PGP SIGNATURE-----\n \n -----END PGP SIGNATURE-----\n\nmsg\n",
+                tree.trim()
+            ),
+        )
+        .unwrap();
+        let commit = run_git(
+            &bare,
+            None,
+            &[
+                format!("--git-dir={git_dir}"),
+                "hash-object".into(),
+                "-t".into(),
+                "commit".into(),
+                "-w".into(),
+                commit_file.to_string_lossy().to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        std::fs::remove_file(&commit_file).unwrap();
+        std::fs::create_dir_all(bare.join("refs/heads")).unwrap();
+        std::fs::write(bare.join("refs/heads/main"), commit).unwrap();
+        bare
+    }
+
+    async fn git_supports_safe_bare_repository() -> bool {
+        let temp = tempfile::tempdir().unwrap();
+        let version = run_git(temp.path(), None, &["--version".to_string()])
+            .await
+            .unwrap();
+        let numbers = version
+            .split_whitespace()
+            .nth(2)
+            .unwrap_or_default()
+            .split('.')
+            .map(|part| part.parse::<u32>().unwrap_or(0))
+            .collect::<Vec<_>>();
+        let (major, minor) = (
+            numbers.first().copied().unwrap_or(0),
+            numbers.get(1).copied().unwrap_or(0),
+        );
+        (major, minor) >= (2, 38)
+    }
+
+    #[cfg(unix)]
+    fn marker_script(dir: &Path) -> (PathBuf, PathBuf) {
+        use std::os::unix::fs::PermissionsExt;
+        let marker = dir.join("marker");
+        let script = dir.join("hostile.sh");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        (script, marker)
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_refuses_script_written_bare_repository() {
+        let outside = tempfile::tempdir().unwrap();
+        let (script, marker) = marker_script(outside.path());
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        write_hostile_bare_layout(&workspace, "x", &script).await;
+        std::fs::create_dir_all(workspace.root_path().join("x/sub")).unwrap();
+
+        for (method, cwd) in [
+            ("status", "x"),
+            ("log", "x"),
+            ("diff", "x"),
+            ("log", "x/sub"),
+        ] {
+            let err = dispatch_git_method(&workspace, method, json!({"cwd": cwd}))
+                .await
+                .unwrap_err();
+            assert_eq!(err.kind(), "permission_denied", "{method} in {cwd}: {err}");
+        }
+        assert!(!marker.exists(), "hostile git config ran a host command");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn git_fence_refuses_implicit_bare_repository_without_the_layout_check() {
+        // `safe.bareRepository` exists from git 2.38. Older git ignores the
+        // fence (the layout check still refuses the cwd, see the test above).
+        if !git_supports_safe_bare_repository().await {
+            eprintln!("skipping: installed git predates safe.bareRepository (2.38)");
+            return;
+        }
+        let outside = tempfile::tempdir().unwrap();
+        let (script, marker) = marker_script(outside.path());
+        let temp = tempfile::tempdir().unwrap();
+        let workspace =
+            StateWorkspace::new(temp.path().to_path_buf(), StateWorkspaceLimits::default())
+                .unwrap();
+        let bare = write_hostile_bare_layout(&workspace, "x", &script).await;
+
+        // Run the fenced argv directly, bypassing `reject_implicit_git_directories`,
+        // so the git-level fence is proven on its own.
+        let err = run_git(&bare, None, &git_base_args(["log", "--oneline", "-n", "1"]))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "git_failed");
+        assert!(err.to_string().contains("safe.bareRepository"), "{err}");
+        assert!(!marker.exists(), "hostile git config ran a host command");
+    }
+
+    #[tokio::test]
+    async fn git_does_not_discover_a_repository_outside_the_workspace() {
+        let outer = tempfile::tempdir().unwrap();
+        run_git(outer.path(), None, &["init".to_string()])
+            .await
+            .unwrap();
+        let root = outer.path().join("workspace");
+        std::fs::create_dir_all(&root).unwrap();
+        let workspace = StateWorkspace::new(root, StateWorkspaceLimits::default()).unwrap();
+
+        let err = dispatch_git_method(&workspace, "status", json!({}))
+            .await
+            .unwrap_err();
+        assert_eq!(err.kind(), "git_failed");
+        assert!(err.to_string().contains("not a git repository"), "{err}");
+    }
+
     #[tokio::test]
     async fn git_v2_can_operate_inside_cloned_child_repo() {
         let source = tempfile::tempdir().unwrap();
-        run_git(source.path(), &["init".to_string()]).await.unwrap();
+        run_git(source.path(), None, &["init".to_string()])
+            .await
+            .unwrap();
         std::fs::write(source.path().join("README.md"), "hi\n").unwrap();
         run_git(
             source.path(),
+            None,
             &["add".to_string(), "--".to_string(), "README.md".to_string()],
         )
         .await
         .unwrap();
         run_git(
             source.path(),
+            None,
             &[
                 "-c".to_string(),
                 "user.name=Lab".to_string(),
@@ -681,6 +1047,7 @@ wait"#,
                 .unwrap();
         run_git(
             workspace.root_path(),
+            None,
             &[
                 "clone".to_string(),
                 "--".to_string(),

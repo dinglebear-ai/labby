@@ -21,6 +21,7 @@ skills = []
 testkit = []
 
 [dependencies]
+lru = "0.18"
 labby-primitives = { path = "../labby-primitives" }
 labby-apis = { path = "../labby-apis" }
 labby-runtime = { path = "../labby-runtime" }

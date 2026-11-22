@@ -40,9 +40,9 @@ use std::{borrow::Cow, future::Future};
 
 use rmcp::model::{
     CallToolRequest, CallToolRequestParams, CallToolResponse, CancelTaskParams, CancelTaskRequest,
-    CancelledNotificationParam, ClientConfig, ClientNotification, ClientRequest, CompleteRequest,
-    CompleteRequestParams, CompleteResult, CustomNotification, CustomRequest, CustomResult,
-    DiscoverResult, GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetSkillRequest,
+    ClientConfig, ClientNotification, ClientRequest, CompleteRequest, CompleteRequestParams,
+    CompleteResult, CustomNotification, CustomRequest, CustomResult, DiscoverResult,
+    GetPromptRequest, GetPromptRequestParams, GetPromptResponse, GetSkillRequest,
     GetSkillRequestParams, GetSkillResult, GetTaskParams, GetTaskRequest, GetTaskResult,
     Implementation, InitializeRequestParams, InitializeResult, ListPromptsRequest,
     ListPromptsResult, ListResourceTemplatesRequest, ListResourceTemplatesResult,
@@ -69,11 +69,15 @@ use crate::mcp::agent_error::internal as internal_agent_error;
 /// `input_required` result for its downstream client. It does not implement
 /// the removed server-initiated request callbacks.
 #[derive(Clone)]
-pub struct BridgeClientHandler;
+pub struct BridgeClientHandler {
+    progress: tokio::sync::broadcast::Sender<ProgressNotificationParam>,
+}
 
 impl BridgeClientHandler {
     pub fn new() -> Self {
-        Self
+        Self {
+            progress: tokio::sync::broadcast::Sender::new(64),
+        }
     }
 }
 
@@ -84,6 +88,14 @@ impl Default for BridgeClientHandler {
 }
 
 impl ClientHandler for BridgeClientHandler {
+    async fn on_progress(
+        &self,
+        notification: ProgressNotificationParam,
+        _context: NotificationContext<RoleClient>,
+    ) {
+        drop(self.progress.send(notification));
+    }
+
     /// The bridge itself claims no fixed client capabilities. Each forwarded
     /// request carries the current downstream request metadata explicitly, so
     /// task and MRTR support are negotiated per request rather than frozen at
@@ -101,19 +113,17 @@ impl ClientHandler for BridgeClientHandler {
 pub struct BridgeServerHandler {
     _service: Option<RunningService<RoleClient, BridgeClientHandler>>,
     peer: Peer<RoleClient>,
+    client: BridgeClientHandler,
     tool_security_schemes: Option<serde_json::Value>,
     local_messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
-    stdio_channel: Option<(
-        std::sync::Arc<super::claude_channel::ChannelSession>,
-        usize,
-        usize,
-    )>,
+    stdio_channel: Option<(std::sync::Arc<super::claude_channel::ChannelSession>, usize)>,
 }
 
 impl BridgeServerHandler {
     pub fn new(service: RunningService<RoleClient, BridgeClientHandler>) -> Self {
         let peer = service.peer().clone();
         Self {
+            client: service.service().clone(),
             _service: Some(service),
             peer,
             tool_security_schemes: None,
@@ -134,9 +144,8 @@ impl BridgeServerHandler {
         mut self,
         channel: Option<std::sync::Arc<super::claude_channel::ChannelSession>>,
         max_bytes: usize,
-        max_tokens: usize,
     ) -> Self {
-        self.stdio_channel = channel.map(|channel| (channel, max_bytes, max_tokens));
+        self.stdio_channel = channel.map(|channel| (channel, max_bytes));
         self
     }
 
@@ -150,9 +159,10 @@ impl BridgeServerHandler {
     /// Build a transparent bridge over a peer whose connection ownership is
     /// retained by another runtime supervisor.
     #[must_use]
-    pub fn from_peer(peer: Peer<RoleClient>) -> Self {
+    pub fn from_peer(peer: Peer<RoleClient>, client: BridgeClientHandler) -> Self {
         Self {
             _service: None,
+            client,
             peer,
             tool_security_schemes: None,
             stdio_channel: None,
@@ -249,31 +259,42 @@ impl BridgeServerHandler {
             meta.set_client_info(client_info);
         }
         let options = PeerRequestOptions::no_options().with_meta(meta);
+        let downstream_token = context.meta.get_progress_token();
+        let mut updates = self.client.progress.subscribe();
         let mut handle = self
             .peer
             .send_cancellable_request(request, options)
             .await
             .map_err(|error| bridge_error(action, error))?;
 
-        tokio::select! {
-            biased;
-            () = context.ct.cancelled() => {
-                handle
-                    .cancel(Some("downstream request cancelled".to_string()))
-                    .await
-                    .map_err(|error| bridge_error(action, error))?;
-                let context = bridge_context(action);
-                Err(internal_agent_error(
-                    "cancelled",
-                    format!("Bridge request `{action}` was cancelled by the downstream caller."),
-                    None,
-                    &context,
-                ))
-            }
-            response = &mut handle.rx => {
-                response
-                    .map_err(|_| bridge_error(action, ServiceError::TransportClosed))?
-                    .map_err(|error| bridge_error(action, error))
+        loop {
+            tokio::select! {
+                () = context.ct.cancelled() => {
+                    handle
+                        .cancel(Some("downstream request cancelled".to_string()))
+                        .await
+                        .map_err(|error| bridge_error(action, error))?;
+                    let context = bridge_context(action);
+                    return Err(internal_agent_error(
+                        "cancelled",
+                        format!("Bridge request `{action}` was cancelled by the downstream caller."),
+                        None,
+                        &context,
+                    ))
+                }
+                update = updates.recv(), if downstream_token.is_some() => {
+                    if let Ok(mut update) = update
+                        && update.progress_token == handle.progress_token
+                        && let Some(token) = &downstream_token {
+                        update.progress_token = token.clone();
+                        context.peer.notify_progress(update).await.map_err(|error| bridge_error(action, error))?;
+                    }
+                }
+                response = &mut handle.rx => {
+                    return response
+                        .map_err(|_| bridge_error(action, ServiceError::TransportClosed))?
+                        .map_err(|error| bridge_error(action, error))
+                }
             }
         }
     }
@@ -399,7 +420,7 @@ impl ServerHandler for BridgeServerHandler {
         if let Some(meta) = &mut info.meta {
             meta.remove(super::claude_channel::BRIDGE_BINDING_META);
         }
-        if let Some((_, _, _)) = &self.stdio_channel {
+        if self.stdio_channel.is_some() {
             super::claude_channel::ChannelSession::advertise(&mut info.capabilities);
             super::claude_channel::ChannelSession::add_instructions(
                 &mut info.instructions,
@@ -411,7 +432,7 @@ impl ServerHandler for BridgeServerHandler {
 
     async fn on_initialized(&self, context: NotificationContext<RoleServer>) {
         if context.peer.peer_info().is_some()
-            && let Some((channel, _, _)) = &self.stdio_channel
+            && let Some((channel, _)) = &self.stdio_channel
         {
             channel.initialized();
         }
@@ -486,7 +507,7 @@ impl ServerHandler for BridgeServerHandler {
                 .map_err(super::session_messages::tool_error)?;
             return super::session_messages::execute(&local.store, binding, request).await;
         }
-        let control = if let Some((channel, max_bytes, max_tokens)) = &self.stdio_channel
+        let control = if let Some((channel, max_bytes)) = &self.stdio_channel
             && matches!(
                 request.name.as_ref(),
                 super::catalog::CODE_MODE_TOOL_NAME
@@ -507,7 +528,7 @@ impl ServerHandler for BridgeServerHandler {
                 request.name.as_ref() == super::catalog::CODE_MODE_READ_TOOL_NAME,
             )
             .map_err(|error| ErrorData::invalid_params(error.to_string(), None))?;
-            Some((channel, input, *max_bytes, *max_tokens))
+            Some((channel, input, *max_bytes))
         } else {
             None
         };
@@ -522,7 +543,7 @@ impl ServerHandler for BridgeServerHandler {
             ServerResult::CallToolResult(mut result) => {
                 // Code Mode adds an execution ID only after admitting the
                 // call. Validation errors must leave local controls untouched.
-                if let Some((channel, input, max_bytes, max_tokens)) = control
+                if let Some((channel, input, max_bytes)) = control
                     && result.structured_content.as_ref().is_some_and(|trace| {
                         trace.get("kind").and_then(serde_json::Value::as_str)
                             == Some("code_mode_execute_trace")
@@ -540,7 +561,7 @@ impl ServerHandler for BridgeServerHandler {
                     )
                     .await
                     {
-                        Ok(control) => control.attach(&mut result, max_bytes, max_tokens).await,
+                        Ok(control) => control.attach(&mut result, max_bytes).await,
                         Err(error) => {
                             tracing::warn!(
                                 subsystem = "agent_notifications",
@@ -556,7 +577,6 @@ impl ServerHandler for BridgeServerHandler {
                                 &mut result,
                                 error,
                                 max_bytes,
-                                max_tokens,
                             );
                         }
                     }
@@ -862,27 +882,8 @@ impl ServerHandler for BridgeServerHandler {
         }
     }
 
-    /// Forward a downstream cancellation onto the real connection so an
-    /// in-flight remote call (e.g. a long-running `codemode` execution)
-    /// actually gets interrupted, instead of running to completion
-    /// unaffected while the caller thinks they cancelled it.
-    async fn on_cancelled(
-        &self,
-        notification: CancelledNotificationParam,
-        _context: NotificationContext<RoleServer>,
-    ) {
-        if let Err(error) = self.peer.notify_cancelled(notification).await {
-            tracing::warn!(
-                surface = "mcp",
-                service = "labby",
-                action = "bridge.notify_cancelled",
-                subsystem = "mcp_bridge",
-                error = %error,
-                "failed to forward cancellation to live daemon"
-            );
-        }
-    }
-
+    // rmcp cancels the matching context.ct. forward_request then cancels the
+    // daemon request by its outbound handle, which has a separate ID.
     async fn on_progress(
         &self,
         notification: ProgressNotificationParam,
@@ -983,16 +984,67 @@ mod tests {
     /// method deterministically so the tests can assert exact round-trip
     /// fidelity through the bridge instead of a no-op stub.
     #[derive(Clone)]
-    struct FakeDaemonHandler;
+    struct FakeDaemonHandler(tokio::sync::mpsc::Sender<String>);
 
     impl ServerHandler for FakeDaemonHandler {
         fn get_info(&self) -> ServerConfig {
             ServerConfig::new(
                 ServerCapabilities::builder()
                     .enable_tools()
+                    .enable_tool_list_changed()
                     .enable_tasks()
                     .build(),
             )
+        }
+
+        async fn list_tools(
+            &self,
+            _: Option<PaginatedRequestParams>,
+            _: RequestContext<RoleServer>,
+        ) -> Result<ListToolsResult, McpError> {
+            let tools = ["messages", "public"]
+                .into_iter()
+                .map(|name| {
+                    serde_json::from_value(json!({"name": name, "inputSchema": {"type":"object"}}))
+                        .unwrap()
+                })
+                .collect();
+            Ok(ListToolsResult::with_all_items(tools))
+        }
+
+        fn accepted_subscription_filter(
+            &self,
+            requested: &SubscriptionFilter,
+        ) -> Option<SubscriptionFilter> {
+            Some(requested.clone())
+        }
+
+        async fn listen(&self, context: SubscriptionContext) -> Result<(), McpError> {
+            context.sink().notify_tool_list_changed().await.unwrap();
+            context.cancelled().await;
+            Ok(())
+        }
+
+        async fn call_tool(
+            &self,
+            request: CallToolRequestParams,
+            context: RequestContext<RoleServer>,
+        ) -> Result<CallToolResponse, McpError> {
+            let token = context
+                .meta
+                .get_progress_token()
+                .expect("daemon progress token");
+            context
+                .peer
+                .notify_progress(
+                    ProgressNotificationParam::new(token, 0.5)
+                        .with_message(request.name.to_string()),
+                )
+                .await
+                .unwrap();
+            context.ct.cancelled().await;
+            self.0.send(request.name.to_string()).await.unwrap();
+            Ok(rmcp::model::CallToolResult::success(vec![]).into())
         }
 
         async fn get_task(
@@ -1043,9 +1095,16 @@ mod tests {
     /// unit-level behavior and by `labby-gateway`'s `RelayClientHandler`
     /// tests for the analogous relay path.
     #[derive(Clone)]
-    struct TestDownstreamClient;
+    struct TestDownstreamClient(tokio::sync::broadcast::Sender<ProgressNotificationParam>);
 
     impl ClientHandler for TestDownstreamClient {
+        async fn on_progress(
+            &self,
+            update: ProgressNotificationParam,
+            _context: NotificationContext<RoleClient>,
+        ) {
+            drop(self.0.send(update));
+        }
         fn get_info(&self) -> ClientConfig {
             let mut info = ClientConfig::default();
             info.client_info = Implementation::new("legacy-operator", "1.2.3");
@@ -1061,6 +1120,7 @@ mod tests {
     /// `BridgeServerHandler::_service`, so it doesn't need a separate
     /// binding here).
     struct BridgeHarness {
+        cancelled: tokio::sync::mpsc::Receiver<String>,
         peer: Peer<RoleClient>,
         _client_service: RunningService<RoleClient, TestDownstreamClient>,
         _bridge_task: tokio_util::task::AbortOnDropHandle<()>,
@@ -1075,8 +1135,9 @@ mod tests {
         // `live_gateway::connect_service`).
         let (daemon_transport, bridge_outbound_transport) =
             tokio::io::duplex(IN_PROCESS_PEER_BUFFER_BYTES);
+        let (cancel_tx, cancelled) = tokio::sync::mpsc::channel(2);
         tokio::spawn(async move {
-            if let Ok(running) = FakeDaemonHandler.serve(daemon_transport).await {
+            if let Ok(running) = FakeDaemonHandler(cancel_tx).serve(daemon_transport).await {
                 running.waiting().await.ok();
             }
         });
@@ -1091,6 +1152,8 @@ mod tests {
                 .await
                 .expect("bridge connects to fake daemon");
 
+        // Consume an outbound request ID to keep the two hops' counters distinct.
+        bridge_client_service.peer().list_tools(None).await.unwrap();
         let bridge_handler = BridgeServerHandler::new(bridge_client_service);
 
         // Hop 2: test client -> bridge, served with the bridge's own
@@ -1110,7 +1173,8 @@ mod tests {
         let client_service: RunningService<RoleClient, TestDownstreamClient> =
             tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                TestDownstreamClient.serve_with_lifecycle(client_transport, mode),
+                TestDownstreamClient(tokio::sync::broadcast::Sender::new(8))
+                    .serve_with_lifecycle(client_transport, mode),
             )
             .await
             .expect("test client handshake finishes within its deadline")
@@ -1118,10 +1182,80 @@ mod tests {
         let peer = client_service.peer().clone();
 
         BridgeHarness {
+            cancelled,
             peer,
             _client_service: client_service,
             _bridge_task: bridge_task,
         }
+    }
+
+    #[tokio::test]
+    async fn bridge_relays_subscriptions_and_filters_transport_local_tools() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let bridge = wire_bridge().await;
+            let rows = bridge.peer.list_tools(None).await.unwrap().tools;
+            assert_eq!(
+                rows.iter()
+                    .map(|tool| tool.name.as_ref())
+                    .collect::<Vec<_>>(),
+                vec!["public"]
+            );
+            let mut subscription = bridge
+                .peer
+                .listen(SubscriptionFilter::builder().tools_list_changed().build())
+                .await
+                .unwrap();
+            assert!(matches!(
+                subscription.next().await.unwrap(),
+                Some(ServerNotification::ToolListChangedNotification(_))
+            ));
+            subscription.cancel().await.unwrap();
+        })
+        .await
+        .expect("subscription and list complete across both hops");
+    }
+
+    #[tokio::test]
+    async fn bridge_routes_progress_and_cancellation_to_the_matching_call() {
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            let mut bridge = wire_bridge().await;
+            let mut progress = bridge._client_service.service().0.subscribe();
+            let first = bridge
+                .peer
+                .send_cancellable_request(
+                    ClientRequest::CallToolRequest(CallToolRequest::new(
+                        CallToolRequestParams::new("first"),
+                    )),
+                    PeerRequestOptions::no_options(),
+                )
+                .await
+                .unwrap();
+            let second = bridge
+                .peer
+                .send_cancellable_request(
+                    ClientRequest::CallToolRequest(CallToolRequest::new(
+                        CallToolRequestParams::new("second"),
+                    )),
+                    PeerRequestOptions::no_options(),
+                )
+                .await
+                .unwrap();
+            let mut updates = [
+                progress.recv().await.unwrap(),
+                progress.recv().await.unwrap(),
+            ];
+            updates.sort_by(|a, b| a.message.cmp(&b.message));
+            assert_eq!(updates[0].message.as_deref(), Some("first"));
+            assert_eq!(updates[0].progress_token, first.progress_token);
+            assert_eq!(updates[1].message.as_deref(), Some("second"));
+            assert_eq!(updates[1].progress_token, second.progress_token);
+            second.cancel(None).await.unwrap();
+            assert_eq!(bridge.cancelled.recv().await.as_deref(), Some("second"));
+            first.cancel(None).await.unwrap();
+            assert_eq!(bridge.cancelled.recv().await.as_deref(), Some("first"));
+        })
+        .await
+        .expect("bridge forwards both progress and cancellation");
     }
 
     async fn wire_bridge() -> BridgeHarness {

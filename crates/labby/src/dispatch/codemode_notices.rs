@@ -19,7 +19,8 @@ const MAX_PER_RECIPIENT: i64 = 32;
 const MAX_INBOXES: i64 = 2_000;
 const MAX_BATCH: usize = 3;
 const INBOX_TTL_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
+const MAX_CONVERSATION_INBOXES_PER_ACTOR: i64 = 32;
 const MESSAGE_INBOX_SCOPE: &str = "message_session";
 pub(super) const MESSAGE_RETENTION_MS: i64 = 86_400_000;
 mod schema;
@@ -74,6 +75,16 @@ impl NoticeRecipient {
         }
         let encoded = serde_json::to_vec(self).map_err(|_| NoticeError::Invalid)?;
         Ok(hex::encode(Sha256::digest(encoded)))
+    }
+
+    pub(super) fn conversation_owner(&self) -> Option<String> {
+        (self.scope() == "conversation_routing")
+            .then(|| {
+                self.actor
+                    .as_ref()
+                    .map(|actor| hex::encode(Sha256::digest(actor.as_bytes())))
+            })
+            .flatten()
     }
 
     pub(crate) fn scope(&self) -> &'static str {
@@ -536,7 +547,13 @@ impl NoticeStore {
             let now = now_ms();
             let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let address = if register {
-                Some(register_in(&tx, &key, recipient.scope(), now)?)
+                Some(register_in(
+                    &tx,
+                    &key,
+                    recipient.scope(),
+                    recipient.conversation_owner().as_deref(),
+                    now,
+                )?)
             } else {
                 None
             };
@@ -769,7 +786,7 @@ fn register_at(
     now: i64,
 ) -> Result<InboxAddress, NoticeError> {
     let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    let address = register_in(&tx, key, scope, now)?;
+    let address = register_in(&tx, key, scope, None, now)?;
     tx.commit()?;
     Ok(address)
 }
@@ -777,6 +794,7 @@ pub(super) fn register_in(
     tx: &Connection,
     key: &str,
     scope: &str,
+    owner: Option<&str>,
     now: i64,
 ) -> Result<InboxAddress, NoticeError> {
     prune(tx, now)?;
@@ -795,8 +813,12 @@ pub(super) fn register_in(
         }
         id
     } else {
-        let count: i64 = tx.query_row("SELECT count(*) FROM agent_inboxes", [], |r| r.get(0))?;
-        if count >= MAX_INBOXES {
+        let (count, owned): (i64, i64) = tx.query_row(
+            "SELECT count(*), count(CASE WHEN conversation_owner=? THEN 1 END) FROM agent_inboxes",
+            [owner],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if count >= MAX_INBOXES || owned >= MAX_CONVERSATION_INBOXES_PER_ACTOR {
             return Err(NoticeError::Full);
         }
         format!("inbox_{}", ulid::Ulid::new())
@@ -808,9 +830,9 @@ pub(super) fn register_in(
     };
     let expires = now.saturating_add(ttl);
     tx.execute(
-        "INSERT INTO agent_inboxes(id,recipient,scope,expires) VALUES(?,?,?,?)
-        ON CONFLICT(recipient) DO UPDATE SET expires=excluded.expires",
-        params![id, key, scope, expires],
+        "INSERT INTO agent_inboxes(id,recipient,scope,expires,conversation_owner) VALUES(?,?,?,?,?)
+        ON CONFLICT(recipient) DO UPDATE SET expires=excluded.expires, conversation_owner=coalesce(agent_inboxes.conversation_owner,excluded.conversation_owner)",
+        params![id, key, scope, expires, owner],
     )?;
     Ok(InboxAddress {
         id,

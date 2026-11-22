@@ -23,7 +23,7 @@
 //! logs and records nothing.
 //!
 //! Other side effects: `notify_catalog_changes` ×3 (raw arms only),
-//! `emit_dispatch_notification` at the resolution-fail, three raw arms, two
+//! `trace_dispatch_outcome` at the resolution-fail, three raw arms, two
 //! subject-scoped arms, and the fallback.
 //!
 //! `normalize_upstream_result` lives in `upstream.rs`.
@@ -44,6 +44,7 @@ use tracing::Instrument as _;
 
 use crate::mcp::context::{
     auth_context_from_extensions, oauth_upstream_subject_for_request, redacted_oauth_subject_label,
+    tool_execute_scope_allowed, upstream_tool_allowed_for_scope,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
 use crate::mcp::error::canonical_kind;
@@ -75,11 +76,13 @@ fn prepare_upstream_tool_request(
     request
 }
 
-fn relay_capabilities_for_request(request: &CallToolRequestParams) -> Option<ClientCapabilities> {
+fn relay_capabilities_for_request(request: &CallToolRequestParams) -> ClientCapabilities {
     crate::mcp::context::forwardable_client_capabilities(request.meta.as_ref())
 }
 
-fn relay_cancellation_token(context: &RequestContext<RoleServer>) -> CancellationToken {
+pub(super) fn request_cancellation_token(
+    context: &RequestContext<RoleServer>,
+) -> CancellationToken {
     context
         .extensions
         .get::<LabRequestCancellation>()
@@ -339,6 +342,7 @@ fn upstream_classified_error_envelope(
         // classification (including the oauth_needs_reauth refinement).
         CapabilityCallError::Transport { message }
         | CapabilityCallError::Protocol { message }
+        | CapabilityCallError::NotExposed { message }
         | CapabilityCallError::Other { message } => {
             return upstream_transport_error_envelope(service, action, upstream_name, message);
         }
@@ -382,6 +386,45 @@ impl LabMcpServer {
             actor_key,
             context,
         ))
+    }
+
+    /// Deny a direct upstream tool call that exceeds a read-only caller's
+    /// ceiling, with the same `forbidden` shape as the other scope gates.
+    async fn read_only_ceiling_denial(
+        &self,
+        service: &str,
+        upstream_name: &str,
+        start: Instant,
+        context: &RequestContext<RoleServer>,
+    ) -> CallToolResponse {
+        let elapsed_ms = start.elapsed().as_millis();
+        tracing::warn!(
+            surface = "mcp",
+            service,
+            action = "call_tool",
+            upstream = %upstream_name,
+            elapsed_ms,
+            kind = "forbidden",
+            "upstream tool call denied: caller lacks an execute scope and the tool is not read-only"
+        );
+        self.trace_dispatch_outcome(
+            context,
+            service,
+            "call_tool",
+            elapsed_ms,
+            DispatchLogOutcome::Failure {
+                level: LoggingLevel::Warning,
+                kind: "forbidden".into(),
+            },
+        );
+        error_result_from_envelope(build_error_extra(
+            service,
+            "call_tool",
+            "forbidden",
+            "this upstream tool is not read-only; it requires one of scopes: lab, lab:admin",
+            &serde_json::json!({ "required_scopes": ["lab", "lab:admin"] }),
+        ))
+        .into()
     }
 
     /// Upstream-proxy tail. Reached by fall-through from `call_tool_impl`
@@ -442,19 +485,10 @@ impl LabMcpServer {
             auth_context_from_extensions(&context.extensions),
             self.request_subject(context),
         ));
-        let pre_resolved_upstream = resolved_upstream_tool
-            .as_ref()
-            .map(|resolved| resolved.upstream_name.clone());
-        let route_scoped_oauth_configs = self.route_scoped_oauth_upstream_configs().await;
-        let pre_resolved_oauth_config: Option<UpstreamConfig> = raw_oauth_subject
-            .as_ref()
-            .and(pre_resolved_upstream.as_ref())
-            .and_then(|upstream_name| {
-                route_scoped_oauth_configs
-                    .iter()
-                    .find(|config| config.name == *upstream_name && config.oauth.is_some())
-                    .cloned()
-            });
+        // A widget-gate pre-resolution has already applied the MCP App scope
+        // policy (render entries open for readers, destructive callbacks need
+        // an execute scope). Only a raw bare-name call takes the ceiling below.
+        let widget_resolved = resolved_upstream_tool.is_some();
         let raw_resolved = if let Some(resolved) = resolved_upstream_tool {
             Some(Ok((resolved.upstream_name, resolved.tool, resolved.route)))
         } else if let Some(manager) = &self.gateway_manager {
@@ -472,11 +506,49 @@ impl LabMcpServer {
         } else {
             None
         };
+        let confirm_resolved = raw_resolved.as_ref().is_some_and(|resolved| {
+            resolved.as_ref().is_ok_and(|(_, tool, _)| {
+                tool.destructive
+                    && !(widget_resolved && super::call_tool::upstream_tool_is_app_only(&tool.tool))
+            })
+        });
         let pre_resolved_safety = raw_resolved
             .as_ref()
             .and_then(|resolved| resolved.as_ref().ok())
             .map(|(_, tool, _)| safety_hints_from_annotations(tool.tool.annotations.as_ref()))
             .unwrap_or_default();
+        // An OAuth upstream's tool must run on the caller's subject connection,
+        // whether it was pre-resolved (widget callback) or found by its bare
+        // name above: the raw branch has no subject, so it would fail closed
+        // with a misleading transport error.
+        let pre_resolved_oauth_config = if let Some(Ok((upstream, _, _))) = &raw_resolved
+            && let Some(config) = self.oauth_upstream_config(upstream).await
+        {
+            if raw_oauth_subject.is_none() || !self.route_team_credential_valid(upstream).await {
+                return Ok(error_result_from_envelope(build_error(
+                    service,
+                    upstream_action,
+                    "forbidden",
+                    "Gateway credential is unavailable",
+                ))
+                .into());
+            }
+            Some(config)
+        } else {
+            None
+        };
+        // The read/execute ceiling applies to direct calls, not only to the
+        // listing: a caller without an execute scope may only run tools that
+        // declare themselves read-only.
+        let caller_auth = auth_context_from_extensions(&context.extensions);
+        if !widget_resolved
+            && let Some(Ok((upstream_name, resolved_tool, _))) = &raw_resolved
+            && !upstream_tool_allowed_for_scope(caller_auth, &resolved_tool.tool)
+        {
+            return Ok(self
+                .read_only_ceiling_denial(service, upstream_name, start, context)
+                .await);
+        }
         if let Some(Err(err)) = &raw_resolved
             && !matches!(err.kind(), "unknown_tool" | "not_found")
         {
@@ -493,7 +565,7 @@ impl LabMcpServer {
                 "upstream proxy resolution failed"
             );
             let envelope = tool_error_envelope(service, upstream_action, err);
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 context,
                 service,
                 upstream_action,
@@ -502,28 +574,20 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: kind.into(),
                 },
-            )
-            .await;
+            );
             return Ok(error_result_from_envelope(envelope).into());
         }
         if let Some(pool) = self.current_upstream_pool().await
             && let Some(Ok((upstream_name, resolved_tool, route))) = raw_resolved
             && pre_resolved_oauth_config.is_none()
         {
-            if self.route_scope.team_credential_subject().is_some()
-                && self.oauth_upstream_config(&upstream_name).await.is_some()
-                && !self.route_team_credential_valid(&upstream_name).await
+            if confirm_resolved
+                && let Some(response) = self.confirm_destructive_request(&upstream_request, context)
             {
-                return Ok(error_result_from_envelope(build_error(
-                    service,
-                    upstream_action,
-                    "forbidden",
-                    "Gateway credential is unavailable",
-                ))
-                .into());
+                return Ok(response);
             }
             let safety = safety_hints_from_annotations(resolved_tool.tool.annotations.as_ref());
-            let before = self.snapshot_tool_catalog_for_request(context).await;
+
             tracing::info!(
                 surface = "mcp",
                 service,
@@ -568,20 +632,14 @@ impl LabMcpServer {
             );
 
             // The 2026-07-28 protocol declares client capabilities per request.
-            // Relay only when this request carries capabilities that the normal
-            // unit-handler connection cannot represent, and snapshot the exact
-            // capability set for the dedicated upstream connection.
-            let relay_capabilities = relay_capabilities_for_request(&upstream_params);
-            let relay_config = if relay_capabilities.is_some() {
-                match &self.gateway_manager {
-                    Some(manager) => manager
-                        .upstream_config(&upstream_name)
-                        .await
-                        .filter(crate::mcp::context::upstream_uses_capability_relay),
-                    None => None,
-                }
-            } else {
-                None
+            // Use the current request snapshot on dedicated relay connections.
+            let capabilities = relay_capabilities_for_request(&upstream_params);
+            let relay_config = match &self.gateway_manager {
+                Some(manager) => manager
+                    .upstream_config(&upstream_name)
+                    .await
+                    .filter(crate::mcp::context::upstream_uses_capability_relay),
+                None => None,
             };
             // Both call paths own ALL circuit-breaker recording for this call:
             // `call_tool_relayed`/`acquire_or_connect_relay` for the relay path
@@ -592,77 +650,54 @@ impl LabMcpServer {
             // it — but only for the pooled path, else a relayed connect failure
             // would be counted twice.
             let used_relay = relay_config.is_some();
-            let call_outcome: Option<Result<CallToolResponse, UpstreamCallFailure>> = match (
-                relay_config,
-                relay_capabilities,
-            ) {
-                (Some(config), Some(capabilities)) => {
-                    tracing::debug!(
-                    surface = "mcp",
-                    service,
-                    action = upstream_action,
-                    tool = %service,
-                    upstream = %upstream_name,
-                    route = "relayed",
-                    "proxying to upstream over relayed dedicated connection"
-                    );
-                    let cancellation = relay_cancellation_token(context);
-                    let cancellation_token = cancellation.clone();
-                    let relay_timeout = pool.relay_timeout();
-                    let call = call_tool_relayed_on_fresh_stack(
-                        Arc::clone(&pool),
-                        config,
-                        None,
-                        upstream_params,
-                        context.peer.clone(),
-                        context.id.clone(),
-                        cancellation,
-                        self.relay_session_id,
-                        capabilities,
-                        self.request_subject(context).map(str::to_owned),
-                        self.route_scope.task_authorization(),
-                    )
-                    .instrument(outbound_span.clone());
-                    tokio::pin!(call);
-                    tokio::select! {
-                        // At the deadline the timeout classification wins over
-                        // the cancellation result produced while the relay is
-                        // tearing down. An explicit cancellation that arrives
-                        // before the deadline still completes `call` first and
-                        // retains its `cancelled` classification.
-                        biased;
-                        () = tokio::time::sleep(relay_timeout) => {
-                            cancellation_token.cancel();
-                            drop(tokio::time::timeout(
-                                std::time::Duration::from_secs(2),
-                                &mut call,
-                            ).await);
-                            Some(Err(UpstreamCallFailure::classified(
-                                CapabilityCallError::Timeout {
-                                    message: format!("upstream `{upstream_name}` relay request timed out"),
-                                },
-                            )))
-                        }
-                        result = &mut call => result.map(|result| result.map_err(UpstreamCallFailure::classified)),
+            let call_outcome: Option<Result<CallToolResponse, UpstreamCallFailure>> =
+                match relay_config {
+                    Some(config) => {
+                        tracing::debug!(
+                        surface = "mcp",
+                        service,
+                        action = upstream_action,
+                        tool = %service,
+                        upstream = %upstream_name,
+                        route = "relayed",
+                        "proxying to upstream over relayed dedicated connection"
+                        );
+                        call_tool_relayed_on_fresh_stack(
+                            Arc::clone(&pool),
+                            config,
+                            None,
+                            upstream_params,
+                            context.peer.clone(),
+                            context.id.clone(),
+                            request_cancellation_token(context),
+                            self.relay_session_id,
+                            capabilities,
+                            self.request_subject(context).map(str::to_owned),
+                            self.route_scope.task_authorization(),
+                        )
+                        .instrument(outbound_span.clone())
+                        .await
+                        .map(|result| result.map_err(UpstreamCallFailure::classified))
                     }
-                }
-                // The pooled path carries the same cancellation token as the
-                // relayed one above. Without it a downstream client that
-                // disconnects (or whose request the HTTP transport times
-                // out) leaves this call running to completion unheard, and
-                // the upstream is never told to stop — so a client that
-                // retries can execute a side-effecting tool twice.
-                _ => pool
-                    .call_tool_once_classified(
-                        &upstream_name,
-                        upstream_params,
-                        Some(&relay_cancellation_token(context)),
-                    )
-                    .instrument(outbound_span.clone())
-                    .await
-                    .map(|result| result.map_err(UpstreamCallFailure::classified)),
-            };
+                    // The pooled path carries the same cancellation token as the
+                    // relayed one above. Without it a downstream client that
+                    // disconnects (or whose request the HTTP transport times
+                    // out) leaves this call running to completion unheard, and
+                    // the upstream is never told to stop — so a client that
+                    // retries can execute a side-effecting tool twice.
+                    _ => pool
+                        .call_tool_once_classified(
+                            &upstream_name,
+                            upstream_params,
+                            Some(&request_cancellation_token(context)),
+                        )
+                        .instrument(outbound_span.clone())
+                        .await
+                        .map(|result| result.map_err(UpstreamCallFailure::classified)),
+                };
 
+            self.notify_possible_tool_change(SOURCE_MCP_CALL_UPSTREAM)
+                .await;
             match call_outcome {
                 Some(Ok(result)) => {
                     // The pool already recorded circuit-breaker success for
@@ -717,20 +752,13 @@ impl LabMcpServer {
                         elapsed_ms,
                         "upstream proxy ok"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         context,
                         service,
                         upstream_action,
                         elapsed_ms,
                         outcome,
-                    )
-                    .await;
-                    let after = self.snapshot_tool_catalog_for_request(context).await;
-                    self.notify_catalog_changes(
-                        after.changes_since(&before),
-                        SOURCE_MCP_CALL_UPSTREAM,
-                    )
-                    .await;
+                    );
                     return Ok(result.into());
                 }
                 Some(Err(failure)) => {
@@ -742,12 +770,6 @@ impl LabMcpServer {
                     // transport-class failures it already recorded the breaker
                     // failure — recording again would double-count and halve
                     // the effective `CIRCUIT_BREAKER_THRESHOLD`.
-                    let after = self.snapshot_tool_catalog_for_request(context).await;
-                    self.notify_catalog_changes(
-                        after.changes_since(&before),
-                        SOURCE_MCP_CALL_UPSTREAM,
-                    )
-                    .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     let (envelope, kind) = upstream_call_failure_envelope(
                         service,
@@ -769,7 +791,7 @@ impl LabMcpServer {
                         error_kind = "upstream_call_failed",
                         "upstream proxy failed"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         context,
                         service,
                         upstream_action,
@@ -778,8 +800,7 @@ impl LabMcpServer {
                             level: LoggingLevel::Error,
                             kind: kind.into(),
                         },
-                    )
-                    .await;
+                    );
                     return Ok(error_result_from_envelope(envelope).into());
                 }
                 None => {
@@ -796,12 +817,6 @@ impl LabMcpServer {
                         )
                         .await;
                     }
-                    let after = self.snapshot_tool_catalog_for_request(context).await;
-                    self.notify_catalog_changes(
-                        after.changes_since(&before),
-                        SOURCE_MCP_CALL_UPSTREAM,
-                    )
-                    .await;
                     let elapsed_ms = start.elapsed().as_millis();
                     tracing::warn!(
                         surface = "mcp",
@@ -823,7 +838,7 @@ impl LabMcpServer {
                         &upstream_name,
                         "upstream is not connected",
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         context,
                         service,
                         upstream_action,
@@ -832,8 +847,7 @@ impl LabMcpServer {
                             level: LoggingLevel::Error,
                             kind: kind.into(),
                         },
-                    )
-                    .await;
+                    );
                     return Ok(error_result_from_envelope(envelope).into());
                 }
             }
@@ -845,31 +859,34 @@ impl LabMcpServer {
             self.request_subject(context),
         )) && let Some(pool) = self.current_upstream_pool().await
         {
-            let mut owner = pre_resolved_oauth_config
-                .as_ref()
-                .map(|config| config.name.clone());
+            let mut owner_config = pre_resolved_oauth_config;
             let mut safety = pre_resolved_safety.clone();
-            if owner.is_none() {
-                for (upstream_name, tools) in pool
-                    .subject_scoped_tools(&route_scoped_oauth_configs, oauth_subject.as_ref())
+            let mut confirm_destructive = confirm_resolved;
+            if owner_config.is_none() {
+                let configs = self.route_scoped_oauth_upstream_configs().await;
+                if let Some((name, candidate)) = pool
+                    .cached_subject_tool_candidates(configs.iter(), oauth_subject.as_ref(), service)
                     .await
+                    .into_iter()
+                    .next()
                 {
-                    if let Some(tool) = tools.iter().find(|tool| tool.name.as_ref() == service) {
-                        safety = safety_hints_from_annotations(tool.annotations.as_ref());
-                        owner = Some(upstream_name);
-                        break;
-                    }
+                    safety = safety_hints_from_annotations(candidate.tool.annotations.as_ref());
+                    confirm_destructive = candidate.destructive;
+                    owner_config = configs.into_iter().find(|config| config.name == name);
                 }
             }
 
-            if let Some(upstream_name) = owner
-                && let Some(config) = pre_resolved_oauth_config.or_else(|| {
-                    route_scoped_oauth_configs
-                        .iter()
-                        .find(|config| config.name == upstream_name)
-                        .cloned()
-                })
+            if !widget_resolved
+                && let Some(config) = &owner_config
+                && !tool_execute_scope_allowed(caller_auth)
+                && !(safety.read_only_hint == Some(true) && safety.destructive_hint != Some(true))
             {
+                return Ok(self
+                    .read_only_ceiling_denial(service, &config.name, start, context)
+                    .await);
+            }
+            if let Some(config) = owner_config {
+                let upstream_name = config.name.clone();
                 tracing::info!(
                     surface = "mcp",
                     service,
@@ -880,6 +897,12 @@ impl LabMcpServer {
                     oauth_subject = redacted_oauth_subject_label(),
                     "dispatch route selected"
                 );
+                if confirm_destructive
+                    && let Some(response) =
+                        self.confirm_destructive_request(&upstream_request, context)
+                {
+                    return Ok(response);
+                }
                 let input_tokens = upstream_request
                     .arguments
                     .as_ref()
@@ -911,12 +934,12 @@ impl LabMcpServer {
                 // MRTR input requirements are preserved for the downstream
                 // agent. The relay connect forwards `oauth_subject` so the
                 // dedicated connection authenticates as this caller.
-                let relay_capabilities = relay_capabilities_for_request(&upstream_params);
+                let capabilities = relay_capabilities_for_request(&upstream_params);
                 // Health accounting is owned by the callee on both paths
                 // (`call_tool_relayed` / `timed_capability_call`); this branch
                 // records nothing, as before.
                 let call_result: Result<CallToolResponse, UpstreamCallFailure> =
-                    if let Some(capabilities) = relay_capabilities {
+                    if crate::mcp::context::upstream_uses_capability_relay(&config) {
                         tracing::debug!(
                             surface = "mcp",
                             service,
@@ -933,7 +956,7 @@ impl LabMcpServer {
                             upstream_params,
                             context.peer.clone(),
                             context.id.clone(),
-                            relay_cancellation_token(context),
+                            request_cancellation_token(context),
                             self.relay_session_id,
                             capabilities,
                             self.request_subject(context).map(str::to_owned),
@@ -956,7 +979,7 @@ impl LabMcpServer {
                             &config,
                             oauth_subject.as_ref(),
                             upstream_params,
-                            Some(&relay_cancellation_token(context)),
+                            Some(&request_cancellation_token(context)),
                         )
                         .instrument(outbound_span.clone())
                         .await
@@ -1031,14 +1054,13 @@ impl LabMcpServer {
                             );
                             DispatchLogOutcome::Success
                         };
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             context,
                             service,
                             upstream_action,
                             elapsed_ms,
                             outcome,
-                        )
-                        .await;
+                        );
                         return Ok(result.into());
                     }
                     Err(failure) => {
@@ -1069,7 +1091,7 @@ impl LabMcpServer {
                             error_kind = "upstream_call_failed",
                             "upstream dispatch error"
                         );
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             context,
                             service,
                             upstream_action,
@@ -1078,8 +1100,7 @@ impl LabMcpServer {
                                 level: LoggingLevel::Error,
                                 kind: kind.into(),
                             },
-                        )
-                        .await;
+                        );
                         return Ok(error_result_from_envelope(envelope).into());
                     }
                 }
@@ -1102,8 +1123,7 @@ impl LabMcpServer {
             actor_key,
             input_tokens,
         );
-        self.emit_dispatch_notification(context, service, action, elapsed_ms, outcome)
-            .await;
+        self.trace_dispatch_outcome(context, service, action, elapsed_ms, outcome);
         Ok(result.into())
     }
 }
@@ -1171,14 +1191,13 @@ mod tests {
     #[test]
     fn relay_capabilities_come_from_the_current_request() {
         let request = interactive_request();
-        let capabilities = relay_capabilities_for_request(&request)
-            .expect("current request advertises elicitation");
+        let capabilities = relay_capabilities_for_request(&request);
         assert!(capabilities.elicitation.is_some());
 
         let no_capabilities = CallToolRequestParams::new("echo");
         assert_eq!(
             relay_capabilities_for_request(&no_capabilities),
-            Some(ClientCapabilities::default())
+            ClientCapabilities::default()
         );
     }
 
@@ -1500,7 +1519,9 @@ mod tests {
             });
             let mut pool = UpstreamPool::new().with_in_process_connector(connector);
             if let Some(timeout) = request_timeout {
-                pool = pool.with_request_timeout(timeout);
+                pool = pool
+                    .with_request_timeout(timeout)
+                    .with_relay_timeout(timeout);
             }
             let pool = Arc::new(pool);
             pool.register_in_process_service_peers(&seam_registry())
@@ -1537,11 +1558,6 @@ mod tests {
                 route_runtime: Default::default(),
                 client_registry: Default::default(),
                 transport_label: "test",
-                logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-                    crate::mcp::logging::logging_level_rank(
-                        crate::mcp::logging::LoggingLevel::Emergency,
-                    ),
-                )),
                 route_scope: crate::mcp::route_scope::McpRouteScope::Root,
                 relay_session_id: 0,
                 code_mode_widget_callbacks_enabled_for_test: false,
@@ -1685,6 +1701,53 @@ mod tests {
                 ),
                 "valid MCP error response must leave the upstream Healthy"
             );
+        }
+
+        #[tokio::test]
+        async fn configured_relay_reports_hidden_oauth_tool_without_changing_health() {
+            let pool =
+                pool_with_upstream(in_process_connection(McpRejectingServer).await, None).await;
+            let server = proxy_test_server(Arc::clone(&pool)).await;
+            let manager = server.gateway_manager.as_ref().unwrap();
+            let mut config = manager.current_config().await;
+            config.upstream = vec![serde_json::from_value(json!({
+                "name":UPSTREAM_NAME, "url":"http://127.0.0.1:1/mcp", "expose_tools":["allowed"],
+                "oauth":{"mode":"authorization_code_pkce","registration":{"strategy":"preregistered","client_id":"fixture"}}
+            })).unwrap()];
+            pool.seed_lazy_upstreams(&config.upstream).await;
+            manager.seed_config_unchecked_for_tests(config).await;
+            let envelope = call_through_proxy(server).await;
+            assert_eq!(envelope["error"]["kind"], "unknown_tool", "{envelope}");
+            assert!(matches!(
+                pool.upstream_tool_health(UPSTREAM_NAME).await,
+                Some(UpstreamHealth::Healthy)
+            ));
+        }
+
+        #[tokio::test]
+        async fn configured_relay_connect_timeout_records_one_health_failure() {
+            let stalled = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let pool = pool_with_upstream(
+                in_process_connection(McpRejectingServer).await,
+                Some(Duration::from_millis(300)),
+            )
+            .await;
+            let server = proxy_test_server(Arc::clone(&pool)).await;
+            let manager = server.gateway_manager.as_ref().unwrap();
+            let mut config = manager.current_config().await;
+            config.upstream = vec![serde_json::from_value(json!({
+                "name":UPSTREAM_NAME, "url":format!("http://{}/mcp", stalled.local_addr().unwrap())
+            })).unwrap()];
+            pool.seed_lazy_upstreams(&config.upstream).await;
+            manager.seed_config_unchecked_for_tests(config).await;
+            let envelope = call_through_proxy(server).await;
+            assert_eq!(envelope["error"]["kind"], "timeout", "{envelope}");
+            assert!(matches!(
+                pool.upstream_tool_health(UPSTREAM_NAME).await,
+                Some(UpstreamHealth::Unhealthy {
+                    consecutive_failures: 1
+                })
+            ));
         }
 
         /// (b) A genuine transport failure (timeout) is recorded EXACTLY once

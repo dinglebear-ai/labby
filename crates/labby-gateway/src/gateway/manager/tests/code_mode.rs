@@ -11,6 +11,42 @@ use super::*;
 use crate::gateway::code_mode::catalog_cache;
 
 #[tokio::test]
+async fn code_mode_host_prompt_rechecks_visibility_before_connecting() {
+    for (priority, proxy, prompt, args, kind) in [
+        (1.0, true, "malformed", json!({}), "invalid_param"),
+        (0.0, true, "alpha/fixture", json!({}), "not_found"),
+        (1.0, false, "alpha/fixture", json!({}), "forbidden"),
+        (1.0, true, "alpha/fixture", json!(false), "invalid_param"),
+        (1.0, true, "prompt::alpha::fixture", json!({}), "forbidden"),
+    ] {
+        let mut config = fixture_oauth_upstream("alpha", "http://unused.invalid/mcp");
+        config.priority = priority;
+        config.proxy_prompts = proxy;
+        let (manager, pool) = code_mode_manager_with_pool(config).await;
+        let error = CodeModeHost::get_prompt(
+            &manager,
+            prompt.into(),
+            args,
+            &CodeModeCaller::Scoped {
+                host_context: Default::default(),
+                capabilities: Default::default(),
+                sub: None,
+            },
+            CodeModeSurface::Mcp,
+            &ToolScope::default(),
+        )
+        .await
+        .expect_err("request must be refused");
+        assert_eq!(
+            error.kind(),
+            kind,
+            "{prompt}, priority={priority}, proxy={proxy}"
+        );
+        assert_eq!(pool.connection_count_for_tests().await, 0);
+    }
+}
+
+#[tokio::test]
 async fn code_mode_resource_discovery_returns_readable_exposed_uris() {
     let server = wiremock::MockServer::start().await;
     let fallback = OneShotHttpResponder::new("status", Duration::ZERO);
@@ -49,6 +85,34 @@ async fn code_mode_resource_discovery_returns_readable_exposed_uris() {
     let (manager, pool) = code_mode_manager_with_pool(config).await;
     assert_eq!(pool.connection_count_for_tests().await, 0);
     let scope = ToolScope::scoped_namespaces(vec!["alpha".to_string()], Vec::new()).read_only();
+    let blocked = scope.clone().with_resources_visible(false);
+    assert_eq!(
+        CodeModeHost::list_resources(
+            &manager,
+            "alpha".into(),
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &blocked
+        )
+        .await
+        .unwrap_err()
+        .kind(),
+        "forbidden"
+    );
+    assert_eq!(
+        CodeModeHost::read_resource(
+            &manager,
+            "lab://upstream/alpha/fixture://skill?revision=1".into(),
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &blocked
+        )
+        .await
+        .unwrap_err()
+        .kind(),
+        "forbidden"
+    );
+    assert_eq!(pool.connection_count_for_tests().await, 0);
     let discovered = CodeModeHost::list_resources(
         &manager,
         "alpha".to_string(),
@@ -72,6 +136,48 @@ async fn code_mode_resource_discovery_returns_readable_exposed_uris() {
     .await
     .expect("use discovered URI unchanged");
     assert_eq!(read["contents"][0]["text"], "fixture contract");
+    let listings = || async {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|request| {
+                serde_json::from_slice::<serde_json::Value>(&request.body)
+                    .is_ok_and(|body| body["method"] == "resources/list")
+            })
+            .count()
+    };
+    let first = listings().await;
+    assert!(first > 0);
+    assert_eq!(
+        CodeModeHost::list_resources(
+            &manager,
+            "alpha".into(),
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &scope
+        )
+        .await
+        .unwrap(),
+        discovered
+    );
+    assert_eq!(listings().await, first);
+    pool.set_resource_last_error_for_tests("alpha", Some("fixture unavailable".into()))
+        .await;
+    assert_eq!(
+        CodeModeHost::list_resources(
+            &manager,
+            "alpha".into(),
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Mcp,
+            &scope
+        )
+        .await
+        .unwrap_err()
+        .kind(),
+        "provider_unavailable"
+    );
 }
 
 #[tokio::test]
@@ -131,6 +237,7 @@ async fn code_mode_resource_discovery_uses_callers_oauth_connection() {
     }
     for subject in ["alice", "bob"] {
         let caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: false,
@@ -170,6 +277,7 @@ async fn code_mode_resource_discovery_rejects_empty_oauth_subject() {
         &manager,
         "alpha".to_string(),
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: false,
@@ -197,6 +305,7 @@ async fn code_mode_oauth_resource_read_rejects_empty_subject_before_connecting()
         &manager,
         "lab://upstream/alpha/fixture://skill".to_string(),
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: false,
@@ -581,6 +690,42 @@ async fn resolve_raw_upstream_tool_resolves_cached_tool_without_code_mode() {
 }
 
 #[tokio::test]
+async fn raw_tool_lookup_does_not_probe_ambiguous_cold_upstreams() {
+    let (alpha_server, alpha) =
+        cold_http_upstream("alpha", OneShotHttpResponder::new("ping", Duration::ZERO)).await;
+    let (beta_server, beta) =
+        cold_http_upstream("beta", OneShotHttpResponder::new("pong", Duration::ZERO)).await;
+    let (manager, _) = code_mode_manager_with_upstreams(vec![alpha, beta]).await;
+
+    let error = manager
+        .resolve_raw_upstream_tool("unknown", None, None)
+        .await
+        .expect_err("an unknown bare name cannot select a cold owner");
+    assert_eq!(error.kind(), "unknown_tool");
+    assert!(alpha_server.received_requests().await.unwrap().is_empty());
+    assert!(beta_server.received_requests().await.unwrap().is_empty());
+
+    let allowed = std::collections::BTreeSet::from(["alpha".to_owned()]);
+    let (owner, _) = manager
+        .resolve_raw_upstream_tool_scoped("ping", Some(&allowed), None, None)
+        .await
+        .expect("one eligible cold owner can serve the first call");
+    assert_eq!(owner, "alpha");
+    let requests = alpha_server.received_requests().await.unwrap().len();
+    assert!(requests > 0);
+    let error = manager
+        .resolve_raw_upstream_tool_scoped("unknown", Some(&allowed), None, None)
+        .await
+        .expect_err("a warm catalog miss needs no network probe");
+    assert_eq!(error.kind(), "unknown_tool");
+    assert_eq!(
+        alpha_server.received_requests().await.unwrap().len(),
+        requests
+    );
+    assert!(beta_server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn resolve_raw_upstream_tool_honors_qualified_upstream_name() {
     let (manager, pool) = code_mode_manager_with_upstreams(vec![
         fixture_http_upstream("alpha"),
@@ -649,6 +794,7 @@ async fn advertised_subject_scoped_oauth_tool_normalizes_metadata_and_executes()
     )
     .await;
     let caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: labby_codemode::CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -755,6 +901,7 @@ async fn annotated_read_only_fixture_is_searchable_describable_and_callable() {
     )
     .await;
     let caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: labby_codemode::CodeModeCallerCapabilities {
             can_read: true,
             can_execute: false,
@@ -1045,6 +1192,7 @@ async fn code_mode_host_list_tools_for_mcp_cold_connects_with_a_finite_budget() 
         CodeModeHost::list_tools(
             &manager,
             &CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: labby_codemode::CodeModeCallerCapabilities {
                     can_read: true,
                     can_execute: false,
@@ -1204,7 +1352,7 @@ async fn warm_non_cold_catalog_skips_tasks_for_healthy_upstreams() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
     let public = fixture_http_upstream("public");
     let private = fixture_oauth_upstream("private", "http://127.0.0.1:9/mcp");
@@ -1233,23 +1381,14 @@ async fn warm_public_catalog_bounds_cold_oauth_subject_enumeration() {
     let guard = lock.lock().await;
 
     for _ in 0..2 {
-        let started = tokio::time::Instant::now();
-        let tools = tokio::time::timeout(
-            Duration::from_millis(1_500),
-            manager.code_mode_catalog_tools(true, None, Some("alice")),
-        )
-        .await
-        .expect("hanging OAuth enumeration has a finite Code Mode budget")
-        .expect("warm public catalog remains available");
+        let catalog = manager.code_mode_catalog_tools(true, None, Some("alice"));
+        tokio::pin!(catalog);
+        assert!(futures::poll!(&mut catalog).is_pending());
+        let tools = tokio::time::timeout(Duration::from_secs(2), catalog)
+            .await
+            .expect("OAuth enumeration has a finite virtual-time budget")
+            .expect("warm public catalog remains available");
         assert_eq!(tool_ids(&tools), vec!["public::ping"]);
-        assert!(
-            started.elapsed() >= Duration::from_millis(800),
-            "fixture must actually hold the subject connection"
-        );
-        assert!(
-            started.elapsed() < Duration::from_millis(1_500),
-            "subject discovery must stay within its one-second budget"
-        );
     }
     drop(guard);
 }
@@ -1569,6 +1708,7 @@ async fn code_mode_host_mcp_refresh_budget_fails_closed_without_a_real_upstream(
     let error = CodeModeHost::list_tools(
         &manager,
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: false,
@@ -1614,6 +1754,7 @@ async fn code_mode_host_blocks_destructive_calls_for_read_only_callers() {
         "alpha::delete",
         json!({}),
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
             sub: Some("user-1".to_string()),
         },
@@ -1649,6 +1790,7 @@ async fn code_mode_host_blocks_unannotated_tools_for_read_only_callers() {
         "alpha::ping",
         json!({}),
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
             sub: Some("user-1".to_string()),
         },
@@ -1692,6 +1834,7 @@ async fn code_mode_host_admits_annotated_read_only_tools_without_an_operator_all
         "alpha::ping",
         json!({}),
         &CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
             sub: Some("user-1".to_string()),
         },
@@ -1771,7 +1914,7 @@ async fn cortex_exact_schema_rejects_bad_fields_before_upstream_dispatch() {
                 "cortex".to_string(),
                 UpstreamTool {
                     tool,
-                    input_schema: Some(schema),
+                    input_schema: Some(schema.into()),
                     output_schema: None,
                     upstream_name,
                     destructive: false,
@@ -1792,6 +1935,7 @@ async fn cortex_exact_schema_rejects_bad_fields_before_upstream_dispatch() {
             "cortex::cortex",
             params,
             &CodeModeCaller::Scoped {
+                host_context: Default::default(),
                 capabilities: labby_codemode::CodeModeCallerCapabilities::default(),
                 sub: Some("user-1".to_string()),
             },
@@ -1906,7 +2050,7 @@ async fn palette_catalog_caps_cross_upstream_projection_but_exact_lookup_remains
                     name,
                     UpstreamTool {
                         tool,
-                        input_schema: Some(json!({"type": "object"})),
+                        input_schema: Some(json!({"type": "object"}).into()),
                         output_schema: None,
                         upstream_name: Arc::clone(&upstream_name),
                         destructive: false,
@@ -2360,7 +2504,7 @@ async fn palette_catalog_scope_and_fingerprint_follow_visible_schema() {
                 "ping".to_string(),
                 UpstreamTool {
                     tool,
-                    input_schema: Some(json!({"type": "object", "required": ["q"]})),
+                    input_schema: Some(json!({"type": "object", "required": ["q"]}).into()),
                     output_schema: None,
                     upstream_name,
                     destructive: false,
@@ -2501,13 +2645,8 @@ async fn palette_execute_does_not_reuse_an_invalidated_oauth_subject_connection(
         )
         .await
         .expect_err("revoked subject connection must not be reused");
-    assert!(
-        matches!(
-            error.kind(),
-            "upstream_connect_error" | "network_error" | "auth_failed"
-        ),
-        "unexpected revocation error: {error:?}"
-    );
+    assert_eq!(error.kind(), "upstream_connect_error", "{error:?}");
+    assert_eq!(error.to_agent_value()["side_effects"], "none_expected");
 }
 
 #[tokio::test]
@@ -2568,10 +2707,13 @@ async fn palette_execute_fails_closed_when_the_previewed_contract_changes() {
     let old_hash = palette_contract_hash(&catalog, id);
 
     let mut changed = pool.healthy_tools_for_upstream("github").await;
-    changed[0].input_schema = Some(json!({
-        "type": "object",
-        "properties": {"query": {"type": "string"}}
-    }));
+    changed[0].input_schema = Some(
+        json!({
+            "type": "object",
+            "properties": {"query": {"type": "string"}}
+        })
+        .into(),
+    );
     pool.insert_entry_for_tests(
         "github",
         fixture_upstream_entry(
@@ -2627,6 +2769,7 @@ async fn palette_execute_rejects_cross_upstream_scope_and_destructive_reclassifi
         .await;
     let caller = crate::gateway::palette::PaletteCaller {
         caller: CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -2865,6 +3008,31 @@ async fn catalog_embeddings_stay_cold_when_semantic_search_unconfigured() {
 }
 
 #[tokio::test]
+async fn catalog_proxy_source_cache_belongs_to_the_exact_render() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let render = manager
+        .list_tools(
+            &CodeModeCaller::TrustedLocal,
+            CodeModeSurface::Cli,
+            &ToolScope::default(),
+            false,
+            false,
+        )
+        .await
+        .unwrap();
+    let cache = manager.catalog_proxy_cache(&render).await.unwrap();
+    assert!(Arc::ptr_eq(
+        &cache,
+        &manager.catalog_proxy_cache(&render.clone()).await.unwrap()
+    ));
+    let mut merged = render.clone();
+    merged.entries = Arc::from(vec![labby_codemode::CatalogDescriptor::tool(
+        "other", "new", "new", None, None,
+    )]);
+    assert!(manager.catalog_proxy_cache(&merged).await.is_none());
+}
+
+#[tokio::test]
 async fn semantic_rank_never_returns_ids_outside_scope_filtered_catalog() {
     // semantic_rank's own internal build_tools_render call uses the SAME
     // `scope` parameter it was given, and its ranking set is additionally
@@ -2904,12 +3072,18 @@ async fn warm_embedding_cache_shares_vectors_without_copying() {
             ..GatewayConfig::default()
         })
         .await;
-    let vectors = Arc::new(vec![("alpha::ping".to_string(), vec![0.25, 0.75])]);
-    *manager.code_mode_embedding_cache.write().await =
-        Some(crate::gateway::code_mode::CatalogEmbeddingCache {
-            fingerprint: "warm".to_string(),
-            vectors: Arc::clone(&vectors),
-        });
+    let vectors: crate::gateway::manager::EmbeddingRows =
+        Arc::new(vec![("alpha::ping".into(), Arc::from([0.25, 0.75]))]);
+    for fingerprint in ["warm", "other-scope"] {
+        manager.code_mode_embedding_cache.lock().await.put(
+            ("http://127.0.0.1:1".into(), fingerprint.to_owned()),
+            crate::gateway::manager::CachedEmbeddingCorpus {
+                rows: vectors.clone(),
+                by_text: Default::default(),
+                retained_bytes: 8,
+            },
+        );
+    }
     let entries = vec![labby_codemode::CatalogDescriptor::tool(
         "alpha", "ping", "Ping", None, None,
     )];
@@ -2921,6 +3095,81 @@ async fn warm_embedding_cache_shares_vectors_without_copying() {
         .await;
     assert!(Arc::ptr_eq(&vectors, &first));
     assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn overlapping_embedding_scopes_only_embed_new_text_at_the_same_endpoint() {
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let first = wiremock::MockServer::start().await;
+    let second = wiremock::MockServer::start().await;
+    for (server, model_value) in [(&first, 1.0), (&second, 2.0)] {
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/info"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({"max_client_batch_size":128})),
+            )
+            .mount(server)
+            .await;
+        wiremock::Mock::given(wiremock::matchers::method("POST"))
+            .and(wiremock::matchers::path("/embed"))
+            .respond_with(move |request: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&request.body).unwrap();
+                let count = body["inputs"].as_array().unwrap().len();
+                wiremock::ResponseTemplate::new(200).set_body_json(vec![vec![model_value]; count])
+            })
+            .mount(server)
+            .await;
+    }
+    let entry = |id, text| labby_codemode::CatalogDescriptor::tool("fixture", id, text, None, None);
+    let first_entries = [entry("alpha", "shared"), entry("other", "other")];
+    let second_entries = [
+        entry("beta", "shared"),
+        entry("delta", "new"),
+        entry("gamma", "shared"),
+    ];
+    let a = manager
+        .ensure_embeddings_at(&first.uri(), "one", &first_entries)
+        .await;
+    let b = manager
+        .ensure_embeddings_at(&first.uri(), "two", &second_entries)
+        .await;
+    assert_eq!(
+        b.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(),
+        ["fixture::beta", "fixture::delta", "fixture::gamma"]
+    );
+    assert!(Arc::ptr_eq(&a[0].1, &b[0].1) && Arc::ptr_eq(&b[0].1, &b[2].1));
+    let posted: Vec<_> = first
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.url.path() == "/embed")
+        .map(|r| serde_json::from_slice::<serde_json::Value>(&r.body).unwrap()["inputs"].clone())
+        .collect();
+    assert_eq!(posted, [json!(["shared", "other"]), json!(["new"])]);
+    // Exercise retained-byte eviction without building a 16 MiB TEI fixture.
+    // The oldest entry plus either small corpus is now over the shared limit.
+    let oldest = (first.uri(), "one".to_owned());
+    manager
+        .code_mode_embedding_cache
+        .lock()
+        .await
+        .peek_mut(&oldest)
+        .unwrap()
+        .retained_bytes = crate::gateway::code_mode::embeddings::TEI_MAX_RESPONSE_BYTES;
+    let changed = manager
+        .ensure_embeddings_at(&second.uri(), "two", &second_entries)
+        .await;
+    assert_eq!(changed[0].1.as_ref(), &[2.0]);
+    assert!(!Arc::ptr_eq(&b[0].1, &changed[0].1));
+    assert!(
+        !manager
+            .code_mode_embedding_cache
+            .lock()
+            .await
+            .contains(&oldest)
+    );
 }
 
 #[tokio::test]
@@ -2977,6 +3226,66 @@ async fn slow_embedding_does_not_block_another_fingerprint() {
     .expect("unrelated corpus must not wait for slow TEI request");
     assert_eq!(fast_vectors.len(), 1);
     assert_eq!(slow_call.await.expect("slow task joins").len(), 1);
+}
+
+#[tokio::test]
+async fn slow_single_item_batches_warm_the_corpus_and_bad_cardinality_starts_cooldown() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+    let server = MockServer::start().await;
+    Mock::given(path("/corpus/info"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(serde_json::json!({"max_client_batch_size": 1})),
+        )
+        .mount(&server)
+        .await;
+    let (manager, _pool) = code_mode_manager_with_upstreams(Vec::new()).await;
+    let mut cfg = manager.code_mode_config().await;
+    cfg.semantic_search.tei_url = Some(format!("{}/corpus", server.uri()));
+    manager
+        .seed_config_unchecked_for_tests(GatewayConfig {
+            code_mode: cfg,
+            ..GatewayConfig::default()
+        })
+        .await;
+    let entries: Vec<_> = (0..96)
+        .map(|i| {
+            let name = format!("text-{i}");
+            labby_codemode::CatalogDescriptor::tool("fixture", &name, &name, None, None)
+        })
+        .collect();
+    {
+        let _embed = Mock::given(path("/corpus/embed"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_delay(Duration::from_millis(100))
+                    .set_body_json(serde_json::json!([[1.0]])),
+            )
+            .expect(96)
+            .mount_as_scoped(&server)
+            .await;
+        assert_eq!(
+            manager
+                .ensure_embeddings_for_fingerprint("warm", &entries)
+                .await
+                .len(),
+            entries.len()
+        );
+    }
+    Mock::given(path("/corpus/embed"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let extra = labby_codemode::CatalogDescriptor::tool("fixture", "extra", "uncached", None, None);
+    assert!(
+        manager
+            .ensure_embeddings_for_fingerprint("bad", &[extra])
+            .await
+            .is_empty()
+    );
+    assert!(!manager.semantic_search_available().await);
 }
 
 #[tokio::test]
@@ -3275,6 +3584,13 @@ fn budget_warning(logs: &str) -> Option<&str> {
 /// `one_shot_cli_catalog_errors_when_every_uncached_upstream_fails_fast`.
 #[tokio::test(flavor = "current_thread")]
 async fn one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstreams() {
+    // Keep this process-wide tracing callsite isolated while checking the emitted event.
+    if crate::upstream::test_isolation::run(
+        "gateway::manager::tests::code_mode::one_shot_cli_catalog_bounds_cold_connects_and_persists_completed_upstreams",
+        &[],
+    ).await {
+        return;
+    }
     let stalled = stalled_http_upstream("alpha").await;
     // `fixture_http_upstream` points at 127.0.0.1:9, which nothing listens on.
     let dead = fixture_http_upstream("beta");

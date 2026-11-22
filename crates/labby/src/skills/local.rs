@@ -47,7 +47,7 @@ const LOCAL_SKILLS_DIR: &str = "skills";
 #[derive(Debug, Clone)]
 pub(crate) struct LocalSkill {
     pub(crate) entry: SkillEntry,
-    pub(crate) files: BTreeMap<String, String>,
+    pub(crate) files: std::sync::Arc<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,7 +121,7 @@ fn local_skills_root() -> PathBuf {
 fn collect_files(
     dir: &Path,
     root: &Path,
-    out: &mut Vec<(String, PathBuf, usize)>,
+    out: &mut Vec<(String, PathBuf, std::fs::Metadata)>,
     counters: &mut LocalLoadCounters,
 ) -> Result<(), String> {
     let entries = std::fs::read_dir(dir).map_err(|error| format!("{}: {error}", dir.display()))?;
@@ -136,6 +136,9 @@ fn collect_files(
         if metadata.is_dir() {
             collect_files(&path, root, out, counters)?;
             continue;
+        }
+        if !metadata.is_file() {
+            return Err(format!("{} is not a regular file", path.display()));
         }
         counters.files_scanned += 1;
         if metadata.len() > MAX_LOCAL_SKILL_FILE_BYTES {
@@ -153,12 +156,13 @@ fn collect_files(
         // Reject traversal in the relative path before it becomes a URI segment.
         labby_runtime::path_safety::reject_path_traversal(relative)
             .map_err(|error| format!("{}: {error}", path.display()))?;
-        out.push((relative.replace('\\', "/"), path, metadata.len() as usize));
+        out.push((relative.replace('\\', "/"), path, metadata));
     }
     Ok(())
 }
 
 fn open_local_skill_file(
+    _root: &Path,
     path: &Path,
     _expected: &std::fs::Metadata,
 ) -> std::io::Result<std::fs::File> {
@@ -168,13 +172,21 @@ fn open_local_skill_file(
 
         use rustix::fs::{Mode, OFlags, openat};
 
+        let dir_flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mut parent = openat(rustix::fs::CWD, _root, dir_flags, Mode::empty())?;
+        let relative = path.strip_prefix(_root).map_err(std::io::Error::other)?;
+        for component in relative.parent().into_iter().flat_map(Path::components) {
+            parent = openat(&parent, component.as_os_str(), dir_flags, Mode::empty())?;
+        }
+        let name = relative
+            .file_name()
+            .ok_or_else(|| std::io::Error::other("missing file name"))?;
         let fd = openat(
-            rustix::fs::CWD,
-            path,
-            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            &parent,
+            name,
+            OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK,
             Mode::empty(),
-        )
-        .map_err(std::io::Error::from)?;
+        )?;
         let file = std::fs::File::from(fd);
         let actual = file.metadata()?;
         if !actual.is_file() || actual.dev() != _expected.dev() || actual.ino() != _expected.ino() {
@@ -185,15 +197,8 @@ fn open_local_skill_file(
 
     #[cfg(windows)]
     {
-        use std::os::windows::fs::OpenOptionsExt as _;
-
-        // FILE_FLAG_OPEN_REPARSE_POINT makes the open itself refuse to follow
-        // a symlink/reparse-point swap between lstat and read.
-        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-            .open(path)?;
+        let _ancestors = labby_winjob::fs::AncestorGuard::for_file(path)?;
+        let file = labby_winjob::fs::open_read(path, false)?;
         let actual = file.metadata()?;
         if !actual.is_file() || actual.file_type().is_symlink() {
             return Err(std::io::Error::other("skill file changed before read"));
@@ -234,7 +239,10 @@ fn load_skill(
         )));
     }
     found.sort_by(|a, b| a.0.cmp(&b.0));
-    let skill_bytes = found.iter().map(|(_, _, bytes)| bytes).sum::<usize>();
+    let skill_bytes = found
+        .iter()
+        .map(|(_, _, meta)| meta.len() as usize)
+        .sum::<usize>();
     let resource_count = found.len();
     if let Some((limits, local_skills, local_bytes, local_resources)) = admission {
         if let Some(violation) = limits.admission_limits().first_violation(AdmissionTotals {
@@ -259,15 +267,10 @@ fn load_skill(
     let mut skill_md = None;
     let mut retained_bytes = 0usize;
 
-    for (relative, path, _) in found {
-        let current_metadata = std::fs::symlink_metadata(&path)
-            .map_err(|error| SkillLoadError::Invalid(format!("{}: {error}", path.display())))?;
-        if current_metadata.file_type().is_symlink() {
-            return Err(SkillLoadError::Invalid(format!(
-                "{} became a symlink before read",
-                path.display()
-            )));
-        }
+    let root = dir
+        .parent()
+        .ok_or_else(|| SkillLoadError::Invalid("missing skill root".into()))?;
+    for (relative, path, initial_metadata) in found {
         let allowed = admission.map_or(
             MAX_LOCAL_SKILL_FILE_BYTES as usize,
             |(limits, _, local_bytes, _)| {
@@ -286,7 +289,7 @@ fn load_skill(
         );
         let mut bytes = Vec::with_capacity(allowed.min(64 * 1024));
         let read_started = Instant::now();
-        open_local_skill_file(&path, &current_metadata)
+        open_local_skill_file(root, &path, &initial_metadata)
             .and_then(|file| {
                 file.take(allowed.saturating_add(1) as u64)
                     .read_to_end(&mut bytes)
@@ -367,7 +370,10 @@ fn load_skill(
         .validate_nanos
         .saturating_add(validate_started.elapsed().as_nanos() as u64);
 
-    Ok(LocalSkill { entry, files })
+    Ok(LocalSkill {
+        entry,
+        files: files.into(),
+    })
 }
 
 #[derive(Debug)]
@@ -434,6 +440,8 @@ fn load_local_skills_bounded_with_hook(
         }
     }
     paths.sort();
+    let mut local_bytes = 0;
+    let mut local_resources = 0;
     for path in paths {
         let metadata = match std::fs::symlink_metadata(&path) {
             Ok(metadata) => metadata,
@@ -456,12 +464,12 @@ fn load_local_skills_bounded_with_hook(
             continue;
         };
         loaded.counters.directories_scanned += 1;
-        let local_bytes = loaded.skills.values().map(LocalSkill::byte_len).sum();
-        let local_resources = loaded.skills.values().map(LocalSkill::resource_len).sum();
         let admission =
             limits.map(|limits| (limits, loaded.skills.len(), local_bytes, local_resources));
         match load_skill(name, &path, &mut loaded.counters, admission, after_stat) {
             Ok(skill) => {
+                local_bytes += skill.byte_len();
+                local_resources += skill.resource_len();
                 loaded.skills.insert(name.to_string(), skill);
             }
             Err(SkillLoadError::Limit(mut limit)) => {
@@ -492,7 +500,7 @@ fn load_local_skills_bounded_with_hook(
 }
 
 impl LocalSkill {
-    fn byte_len(&self) -> usize {
+    pub(super) fn byte_len(&self) -> usize {
         self.files.values().map(String::len).sum()
     }
 
@@ -618,7 +626,7 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(out, Vec::<(String, PathBuf, usize)>::new());
+        assert!(out.is_empty());
         let loaded = load_local_skills_bounded(missing, None).expect("missing root is normal");
         assert!(loaded.skills.is_empty());
         assert_eq!(loaded.rejections, Vec::<LocalSkillRejection>::new());
@@ -659,6 +667,23 @@ mod tests {
         assert_eq!(rejection.counters.files_scanned, 1);
         assert_eq!(rejection.counters.files_read, 0);
         assert_eq!(rejection.counters.bytes_read, 0);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn changed_directory_after_scan_is_rejected_before_read() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("skills");
+        let dir = root.join("racy");
+        write(&dir, "SKILL.md", &valid_skill_md("racy"));
+        let loaded = load_local_skills_bounded_with_hook(&root, None, &|path| {
+            fs::rename(path, temp.path().join("old")).unwrap();
+            write(path, "SKILL.md", &valid_skill_md("racy"));
+        })
+        .unwrap();
+        assert!(loaded.skills.is_empty());
+        assert_eq!(loaded.rejections.len(), 1);
+        assert_eq!(loaded.counters.bytes_read, 0);
     }
 
     #[test]

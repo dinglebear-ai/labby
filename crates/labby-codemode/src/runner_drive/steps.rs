@@ -62,12 +62,29 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
     seq: u64,
     name: String,
     execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
     state: &mut DriveState,
 ) -> Result<(), CodeModeExecutionError> {
+    if let Err(error) = crate::protocol::check_step_name_bytes(&name) {
+        // Reject before `allocate_step` retains the name, and never echo it.
+        drop(name);
+        let reply = CodeModeRunnerInput::ToolError {
+            seq,
+            error: Box::new(error.with_tool("code_mode::step".to_string())),
+        };
+        return write_runner_input_by_deadline(
+            stdin,
+            &reply,
+            deadline,
+            child,
+            child_pid,
+            &state.calls,
+        )
+        .await;
+    }
     let step_ordinal = match state.allocate_step(seq, name.clone()) {
         Ok(ordinal) => ordinal,
         Err(error) => {
@@ -96,7 +113,9 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
         step_ordinal: Some(step_ordinal),
     };
     let decision = match broker.host {
-        Some(host) => host.decide_step(ctx, &name).await,
+        Some(host) => tokio::time::timeout_at(deadline, host.decide_step(ctx, &name))
+            .await
+            .map_err(|_| code_mode_timeout_error(&state.calls))?,
         None => StepDecision::Execute,
     };
     let reply = match decision {
@@ -128,7 +147,7 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
     seq: u64,
     value: Value,
     execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -144,7 +163,11 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
                 step_ordinal: Some(step_ordinal),
             };
             match broker.host {
-                Some(host) => host.record_step(ctx, &name, &value).await,
+                Some(host) => {
+                    tokio::time::timeout_at(deadline, host.record_step(ctx, &name, &value))
+                        .await
+                        .map_err(|_| code_mode_timeout_error(&state.calls))?
+                }
                 None => Ok(()),
             }
         }

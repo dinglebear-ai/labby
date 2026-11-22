@@ -1,13 +1,10 @@
 //! Fixture-first snippet testing shared by CLI, MCP and HTTP.
-use super::dispatch::{SnippetDispatchContext, snippet_test_result};
+use super::dispatch::{SnippetDispatchContext, snippet_test_result, store_operation};
 use super::execution::execute_snippet_outcome;
 use super::store::{builtin_snippet_dir, list_snippets, resolve_snippet};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::dispatch::helpers::lab_home;
-use labby_codemode::snippet::harness::{
-    MAX_FIXTURE_BYTES, SnippetFixture, run_fixture_with_source_limit,
-};
+use labby_codemode::snippet::harness::{MAX_FIXTURE_BYTES, SnippetFixture, run_fixture_in_pool};
 use labby_codemode::{CodeModeCaller, CodeModeSurface, ToolScope};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -62,9 +59,11 @@ pub(super) async fn test(
 ) -> Result<Value, ToolError> {
     let params: TestParams = serde_json::from_value(params).map_err(|e| invalid(e.to_string()))?;
     params.validate()?;
+    let gateway_pool = manager.map(labby_codemode::CodeModeHost::runner_pool);
     if let Some(name) = &params.name {
         return test_one(
             manager,
+            gateway_pool,
             name,
             &params,
             scope,
@@ -75,19 +74,26 @@ pub(super) async fn test(
         )
         .await;
     }
-    let names: BTreeSet<_> = list_snippets(&lab_home(), &builtin_snippet_dir())?
-        .into_iter()
-        .map(|snippet| snippet.name)
-        .collect();
+    let names: BTreeSet<_> =
+        store_operation(|home| Ok(list_snippets(home, &builtin_snippet_dir())?))
+            .await?
+            .into_iter()
+            .map(|snippet| snippet.name)
+            .collect();
     if names.len() > 100 {
         return Err(invalid(
             "test --all is bounded to 100 snippets; test named subsets instead",
         ));
     }
+    let local_pool = (gateway_pool.is_none() && !params.live && !names.is_empty())
+        .then(labby_codemode::RunnerPool::from_env)
+        .transpose()?;
+    let pool = gateway_pool.or(local_pool.as_ref());
     let mut results = Vec::new();
     for name in names {
         let mut report = match test_one(
             manager,
+            pool,
             &name,
             &params,
             scope,
@@ -109,12 +115,16 @@ pub(super) async fn test(
         }
         results.push(report);
     }
+    if let Some(pool) = local_pool {
+        pool.shutdown().await;
+    }
     let passed = !results.is_empty() && results.iter().all(|r| r["passed"] == true);
     Ok(json!({"passed":passed,"results":results}))
 }
 
 async fn test_one(
     manager: Option<&GatewayManager>,
+    pool: Option<&labby_codemode::RunnerPool>,
     name: &str,
     params: &TestParams,
     scope: &ToolScope,
@@ -124,33 +134,48 @@ async fn test_one(
     context: Option<&SnippetDispatchContext>,
 ) -> Result<Value, ToolError> {
     if !params.live {
-        let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
-        let fixture = match &params.fixture {
-            Some(fixture) => fixture.clone(),
-            None => {
-                let path = snippet.path.with_extension("test.json");
-                let file = std::fs::File::open(&path).map_err(|error| invalid(format!(
-                    "cannot read fixture {}: {error}; supply a fixture object or explicitly set live: true", path.display())))?;
-                let mut bytes = Vec::new();
-                file.take((MAX_FIXTURE_BYTES + 1) as u64)
-                    .read_to_end(&mut bytes)
-                    .map_err(|error| invalid(format!("cannot read fixture: {error}")))?;
-                if bytes.len() > MAX_FIXTURE_BYTES {
-                    return Err(invalid("fixture exceeds 512 KiB"));
+        let name = name.to_owned();
+        let fixture = params.fixture.clone();
+        let (snippet, fixture) = store_operation(move |home| {
+            let snippet = resolve_snippet(home, &builtin_snippet_dir(), &name)?;
+            let fixture = match fixture {
+                Some(fixture) => fixture,
+                None => {
+                    let path = snippet.path.with_extension("test.json");
+                    let file: Box<dyn Read> = if path.parent() == Some(builtin_snippet_dir().as_path())
+                    {
+                        Box::new(
+                            labby_codemode::snippet::store::builtin_snippet_asset(&path).ok_or_else(
+                                || invalid(format!("built-in fixture {} is missing", path.display())),
+                            )?,
+                        )
+                    } else {
+                        Box::new(std::fs::File::open(&path).map_err(|error| invalid(format!(
+                            "cannot read fixture {}: {error}; supply a fixture object or explicitly set live: true", path.display())))?)
+                    };
+                    let mut bytes = Vec::new();
+                    file.take((MAX_FIXTURE_BYTES + 1) as u64)
+                        .read_to_end(&mut bytes)
+                        .map_err(|error| invalid(format!("cannot read fixture: {error}")))?;
+                    if bytes.len() > MAX_FIXTURE_BYTES {
+                        return Err(invalid("fixture exceeds 512 KiB"));
+                    }
+                    serde_json::from_slice(&bytes)
+                        .map_err(|error| invalid(format!("invalid fixture JSON: {error}")))?
                 }
-                serde_json::from_slice(&bytes)
-                    .map_err(|error| invalid(format!("invalid fixture JSON: {error}")))?
-            }
-        };
+            };
+            Ok((snippet, fixture))
+        }).await?;
         let max_source_bytes = match manager {
             Some(manager) => manager.code_mode_config().await.max_source_bytes,
             None => source_limit_override.unwrap_or(labby_codemode::MAX_SOURCE_BYTES),
         };
-        let report = run_fixture_with_source_limit(
+        let report = run_fixture_in_pool(
             &snippet,
             params.params.clone(),
             &fixture,
             max_source_bytes,
+            pool,
         )
         .await?;
         return serde_json::to_value(report).map_err(|error| invalid(error.to_string()));

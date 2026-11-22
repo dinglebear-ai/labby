@@ -89,11 +89,11 @@ impl Cache {
     ) {
         let charge = name.capacity() + digest.capacity() + metadata_bytes(&metadata);
         // A changed revision of the same snippet replaces its previous charge.
-        if let Some(index) = self
+        let previous = self
             .entries
             .iter()
-            .position(|entry| entry.0 == name && entry.2 == builtin)
-        {
+            .position(|entry| entry.0 == name && entry.2 == builtin);
+        if let Some(index) = previous {
             let old = self.entries.remove(index).expect("existing cache position");
             self.bytes -= old.4;
         }
@@ -109,8 +109,14 @@ impl Cache {
             }
         }
         self.bytes += charge;
-        self.entries
-            .push_back((name, digest, builtin, metadata, charge));
+        let entry = (name, digest, builtin, metadata, charge);
+        if previous.is_some() {
+            self.entries.push_back(entry);
+        } else {
+            // Admit a first sighting at the eviction end. A catalog scan larger
+            // than the cache cannot displace every previously reused entry.
+            self.entries.push_front(entry);
+        }
     }
 }
 pub(super) fn digest(body: &str) -> String {
@@ -129,20 +135,24 @@ pub(super) fn metadata(
     // of the content digest returned to callers.
     let revision = format!("{format:?}:{digest}");
     let builtin = source == SnippetSource::Builtin;
-    let mut cache = CACHE
-        .get_or_init(|| Mutex::new(Cache::default()))
-        .lock()
-        .map_err(|_| ToolError::internal_message("snippet metadata cache poisoned"))?;
-    if let Some(index) = cache
+    let cache = CACHE.get_or_init(|| Mutex::new(Cache::default()));
+    let lock = || {
+        cache
+            .lock()
+            .map_err(|_| ToolError::internal_message("snippet metadata cache poisoned"))
+    };
+    let mut entries = lock()?;
+    if let Some(index) = entries
         .entries
         .iter()
         .position(|entry| entry.0 == name && entry.1 == revision && entry.2 == builtin)
     {
-        let entry = cache.entries.remove(index).expect("cache hit position");
+        let entry = entries.entries.remove(index).expect("entries hit position");
         let metadata = entry.3.clone();
-        cache.entries.push_back(entry);
+        entries.entries.push_back(entry);
         return metadata;
     }
+    drop(entries);
     let metadata = (|| {
         if builtin && !has_frontmatter(body) {
             return Err(ToolError::InvalidParam {
@@ -160,7 +170,7 @@ pub(super) fn metadata(
             digest.clone(),
         ))
     })();
-    cache.insert(name.to_string(), revision, builtin, metadata.clone());
+    lock()?.insert(name.to_string(), revision, builtin, metadata.clone());
     metadata
 }
 #[cfg(test)]

@@ -48,8 +48,8 @@ impl GitCommandSpec {
             }
             "add" => {
                 let params: PathParams = parse_params(params)?;
-                let path = VirtualPath::parse(&params.path)?;
-                let mut args = git_base_args(["add", "--"]);
+                let path = literal_git_path(&params.path)?;
+                let mut args = git_base_args(["--literal-pathspecs", "add", "--"]);
                 args.push(path.as_str().to_string());
                 Ok(Self {
                     args,
@@ -106,13 +106,13 @@ impl GitCommandSpec {
             }
             "diff" => {
                 let params: OptionalPathParams = parse_params(params)?;
-                let mut args = git_base_args(["diff", "--"]);
-                if let Some(path) = params.path {
-                    args.push(VirtualPath::parse(&path)?.as_str().to_string());
+                let args = if let Some(path) = params.path {
+                    let mut args = git_base_args(["--literal-pathspecs", "diff", "--"]);
+                    args.push(literal_git_path(&path)?.as_str().to_string());
+                    args
                 } else {
-                    args.push(".".to_string());
-                    args.push(":(exclude).labby-state".to_string());
-                }
+                    git_base_args(["diff", "--", ".", ":(exclude).labby-state"])
+                };
                 Ok(Self {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
@@ -166,6 +166,7 @@ impl GitCommandSpec {
                     git_base_args(["checkout"])
                 };
                 args.push(params.git_ref.clone());
+                args.push("--".to_string());
                 Ok(Self {
                     args,
                     cwd: parse_optional_cwd(params.cwd)?,
@@ -246,6 +247,15 @@ pub(crate) fn git_base_args<const N: usize>(tail: [&str; N]) -> Vec<String> {
         "protocol.file.allow=never".to_string(),
         "-c".to_string(),
         "protocol.ext.allow=never".to_string(),
+        // Never discover a bare repository implicitly: a script can write a
+        // `HEAD`/`objects`/`refs`/`config` layout without a `.git` segment, and
+        // git would load that attacker-written config.
+        "-c".to_string(),
+        "safe.bareRepository=explicit".to_string(),
+        // Repository config may name an fsmonitor hook, which git runs through
+        // the shell during index refresh.
+        "-c".to_string(),
+        "core.fsmonitor=false".to_string(),
     ];
     args.extend(tail.into_iter().map(str::to_string));
     args
@@ -256,6 +266,17 @@ fn parse_params<T: for<'de> Deserialize<'de>>(params: Value) -> Result<T, ToolEr
         message: format!("invalid git params: {err}"),
         param: "params".to_string(),
     })
+}
+
+fn literal_git_path(raw: &str) -> Result<VirtualPath, ToolError> {
+    let path = VirtualPath::parse(raw)?;
+    if path.as_str().starts_with(':') {
+        return Err(ToolError::InvalidParam {
+            message: "git path must be a literal workspace path".into(),
+            param: "path".into(),
+        });
+    }
+    Ok(path)
 }
 
 fn parse_cwd(params: Value) -> Result<Option<VirtualPath>, ToolError> {
@@ -445,6 +466,10 @@ mod tests {
                 "protocol.file.allow=never",
                 "-c",
                 "protocol.ext.allow=never",
+                "-c",
+                "safe.bareRepository=explicit",
+                "-c",
+                "core.fsmonitor=false",
                 "status",
                 "--short",
                 "--",
@@ -458,6 +483,20 @@ mod tests {
     #[test]
     fn git_rejects_unsupported_method() {
         assert!(GitCommandSpec::for_method("rebase", serde_json::json!({})).is_err());
+    }
+
+    #[test]
+    fn explicit_paths_use_git_literal_mode() {
+        for method in ["add", "diff"] {
+            let spec =
+                GitCommandSpec::for_method(method, serde_json::json!({"path": "file[1].txt"}))
+                    .unwrap();
+            assert!(spec.args.iter().any(|arg| arg == "--literal-pathspecs"));
+            assert_eq!(spec.args.last().unwrap(), "file[1].txt");
+            assert!(
+                GitCommandSpec::for_method(method, serde_json::json!({"path": ":name"})).is_err()
+            );
+        }
     }
 
     #[test]
@@ -500,11 +539,11 @@ mod tests {
         let checkout =
             GitCommandSpec::for_method("checkout", serde_json::json!({"ref": "feature/demo"}))
                 .unwrap();
-        assert!(
-            checkout
-                .args
-                .ends_with(&["checkout".to_string(), "feature/demo".to_string()])
-        );
+        assert!(checkout.args.ends_with(&[
+            "checkout".to_string(),
+            "feature/demo".to_string(),
+            "--".to_string()
+        ]));
 
         let remote = GitCommandSpec::for_method(
             "remoteAdd",

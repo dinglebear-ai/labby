@@ -480,6 +480,32 @@ pub(super) fn upstream_target_redacted(config: &UpstreamConfig) -> String {
     }
 }
 
+/// Longest a listing caller waits for never-listed capability snapshots before
+/// serving what is published. The warm-up keeps running and publishes later.
+pub(super) const COLD_SNAPSHOT_WAIT: Duration = Duration::from_millis(250);
+
+/// Per-upstream single-flight gates for a snapshot warm-up. Only the registry
+/// lookup holds the inner lock; disjoint upstreams never queue behind each
+/// other's network I/O.
+#[derive(Default)]
+pub(super) struct SnapshotFlights(
+    tokio::sync::Mutex<HashMap<String, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+);
+
+impl SnapshotFlights {
+    /// The live flight for `name`, created if none is in progress.
+    pub(super) async fn acquire(&self, name: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut flights = self.0.lock().await;
+        flights.retain(|_, value| value.strong_count() > 0);
+        if let Some(flight) = flights.get(name).and_then(std::sync::Weak::upgrade) {
+            return flight;
+        }
+        let flight = Arc::new(tokio::sync::Mutex::new(()));
+        flights.insert(name.to_string(), Arc::downgrade(&flight));
+        flight
+    }
+}
+
 /// Namespace an upstream prompt name with its owning upstream, mirroring how
 /// `rewrite_resource_uri` prefixes resources. This keeps prompts with the same
 /// bare name from different upstreams distinct (e.g. two `quick_start` prompts
@@ -639,12 +665,12 @@ pub(super) fn cached_upstream_tool(
         name,
         UpstreamTool {
             input_schema: (!tool.input_schema.is_empty())
-                .then(|| Value::Object((*tool.input_schema).clone())),
+                .then(|| Arc::new(Value::Object((*tool.input_schema).clone()))),
             output_schema: tool
                 .output_schema
                 .as_ref()
                 .filter(|schema| !schema.is_empty())
-                .map(|schema| Value::Object((**schema).clone())),
+                .map(|schema| Arc::new(Value::Object((**schema).clone()))),
             tool,
             upstream_name: Arc::clone(upstream_name),
             destructive,
@@ -804,7 +830,10 @@ mod tests {
 
         let (_name, cached) = cached_upstream_tool(tool, &upstream_name);
 
-        assert_eq!(cached.output_schema, Some(Value::Object(output_schema)));
+        assert_eq!(
+            cached.output_schema.as_deref(),
+            Some(&Value::Object(output_schema))
+        );
     }
 
     /// FR-9a (issue #210, lab-41e7m.6) test (a): documentation-bearing text is

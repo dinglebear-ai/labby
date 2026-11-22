@@ -109,6 +109,10 @@ pub struct SnippetCreateArgs {
     /// Overwrite an existing user snippet.
     #[arg(long, short = 'f', default_value_t = false)]
     pub force: bool,
+    /// Allow a user snippet whose name matches a built-in snippet, so it
+    /// resolves in place of the built-in.
+    #[arg(long, default_value_t = false)]
+    pub shadow_builtin: bool,
 }
 
 #[derive(Debug, Args)]
@@ -181,6 +185,7 @@ pub async fn run(
                 "body": read_snippet_body(args.code, args.file)?,
                 "description": args.description,
                 "force": args.force,
+                "shadow_builtin": args.shadow_builtin,
             }),
             true,
             false,

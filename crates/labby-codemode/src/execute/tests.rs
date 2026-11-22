@@ -33,6 +33,7 @@ fn response_with_result(result: Value) -> CodeModeExecutionResponse {
 /// hide exactly the class of bug this is meant to catch.
 struct FixtureHost {
     pool: crate::pool::RunnerPool,
+    proxy_sources: Arc<crate::host::CatalogProxyCache>,
     entries: Arc<[CatalogDescriptor]>,
     search_entries: Arc<[CatalogDescriptor]>,
     catalog_json: Arc<str>,
@@ -47,6 +48,7 @@ impl FixtureHost {
     fn new(entries: Vec<CatalogDescriptor>) -> Self {
         let catalog_json = serde_json::to_string(&entries).unwrap_or_else(|_| "[]".to_string());
         Self {
+            proxy_sources: Default::default(),
             pool: crate::pool::RunnerPool::from_env()
                 .expect("test process must expose current executable"),
             entries: Arc::from(entries),
@@ -115,6 +117,13 @@ impl CodeModeHost for FixtureHost {
             serialized_size: self.catalog_json.len(),
             withheld: Arc::from([]),
         })
+    }
+
+    async fn catalog_proxy_cache(
+        &self,
+        render: &ToolsRender,
+    ) -> Option<Arc<crate::host::CatalogProxyCache>> {
+        Arc::ptr_eq(&self.entries, &render.entries).then(|| self.proxy_sources.clone())
     }
 
     async fn call_tool(

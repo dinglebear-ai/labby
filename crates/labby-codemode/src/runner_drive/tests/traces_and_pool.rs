@@ -384,6 +384,8 @@ async fn run_via_pool_retries_pre_protocol_exit_on_fresh_runner() {
     let marker = marker_dir.path().join("first-run");
     let script = format!(
         r#"
+IFS= read -r hello
+printf '%s\n' '{{"type":"protocol_version","version":1}}'
 if [ ! -e "{marker}" ]; then
   IFS= read -r _
   : > "{marker}"

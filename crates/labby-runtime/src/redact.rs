@@ -120,6 +120,28 @@ pub fn sanitize_error_text(input: &str, max_len: usize) -> String {
     output
 }
 
+/// Neutralize and bound human-readable text received from an upstream catalog.
+#[must_use]
+pub fn sanitize_tool_text(input: &str, max_len: usize) -> String {
+    let mut sanitized = input.to_string();
+    sanitized.retain(|ch| {
+        !matches!(
+            ch,
+            '\u{0000}'..='\u{001F}'
+                | '\u{007F}'..='\u{009F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2066}'..='\u{2069}'
+        )
+    });
+    for marker in ["<system>", "[INST]", "###", "<<"] {
+        sanitized = sanitized.replace(marker, "");
+    }
+    redact_secret_like_segments(&sanitized)
+        .chars()
+        .take(max_len)
+        .collect()
+}
+
 /// Redact secret-shaped tokens from free-form text.
 ///
 /// First pass: whitespace-split prefix heuristic (fast path for standalone

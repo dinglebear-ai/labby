@@ -8,6 +8,86 @@
 
 use std::collections::BTreeSet;
 
+use crate::error::ToolError;
+use crate::util::{invalid_code_mode_id, lab_action_unknown_tool};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodeModeToolId {
+    pub(crate) raw: String,
+    pub(crate) reference: CodeModeToolRef,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum CodeModeToolRef {
+    Tool { namespace: String, tool: String },
+}
+
+impl CodeModeToolId {
+    /// Parse a raw `<namespace>::<tool>` string into a `CodeModeToolId`.
+    ///
+    /// This is an inherent shim over the `FromStr` impl so call sites that
+    /// already use `.parse(…)` or `CodeModeToolId::parse(…)` continue to
+    /// compile without churn.
+    pub(crate) fn parse(raw: &str) -> Result<Self, ToolError> {
+        raw.parse()
+    }
+}
+
+impl std::str::FromStr for CodeModeToolId {
+    type Err = ToolError;
+
+    fn from_str(raw: &str) -> Result<Self, Self::Err> {
+        let raw = raw.trim();
+        if raw.is_empty() {
+            return Err(invalid_code_mode_id("Code Mode tool id must not be empty"));
+        }
+
+        if raw.starts_with("lab::") {
+            return Err(lab_action_unknown_tool());
+        }
+
+        // Shared `<namespace>::<tool>` splitter — also used by `ToolExecuteSelector`.
+        if let Some((namespace, tool)) = split_namespaced_id(raw) {
+            return Ok(Self {
+                raw: raw.to_string(),
+                reference: CodeModeToolRef::Tool {
+                    namespace: namespace.to_string(),
+                    tool: tool.to_string(),
+                },
+            });
+        }
+
+        Err(invalid_code_mode_id(
+            "Code Mode ids must use <namespace>::<tool>",
+        ))
+    }
+}
+
+/// Split a `<namespace>::<tool>` string into its two trimmed parts.
+///
+/// Returns `None` when the string has a wrong number of `::` separators or
+/// when either part is empty after trimming. Used by both `CodeModeToolId` and
+/// `ToolExecuteSelector` to avoid duplicating the splitting logic.
+pub fn split_namespaced_id(raw: &str) -> Option<(&str, &str)> {
+    let mut parts = raw.split("::");
+    let namespace = parts.next()?.trim();
+    let tool = parts.next()?.trim();
+    // Ensure there is no third segment (e.g. `a::b::c` is invalid).
+    if parts.next().is_some() {
+        return None;
+    }
+    if namespace.is_empty() || tool.is_empty() {
+        return None;
+    }
+    Some((namespace, tool))
+}
+
+/// Build the canonical `<namespace>::<tool>` identifier used by Code Mode.
+#[must_use]
+pub fn namespaced_tool_id(namespace: &str, tool: &str) -> String {
+    format!("{namespace}::{tool}")
+}
+
 /// Most names listed in an unknown-namespace message.
 const MAX_LISTED_NAMES: usize = 25;
 

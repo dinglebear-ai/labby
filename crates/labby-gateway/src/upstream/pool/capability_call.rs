@@ -153,6 +153,12 @@ pub enum CapabilityCallError {
     InputRequiredRoundsExceeded {
         message: String,
     },
+    /// Gateway configuration or exposure policy keeps this capability from the
+    /// caller (for example `proxy_resources = false`). A policy outcome, not an
+    /// upstream fault: nothing was sent upstream and retrying cannot help.
+    NotExposed {
+        message: String,
+    },
     Other {
         message: String,
     },
@@ -190,6 +196,7 @@ impl CapabilityCallError {
             | Self::Protocol { message }
             | Self::Cancelled { message }
             | Self::InputRequiredRoundsExceeded { message }
+            | Self::NotExposed { message }
             | Self::Other { message } => message,
         }
     }

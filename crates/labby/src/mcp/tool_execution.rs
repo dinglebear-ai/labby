@@ -50,6 +50,8 @@ impl ToolExecutionResolutionInput {
 pub(crate) enum ToolExecutionResolutionError {
     #[error("tool execution target is unavailable")]
     Unavailable,
+    #[error("tool authority changed after dispatch")]
+    AuthorityChanged,
     #[error("tool execution queue is unavailable")]
     QueueUnavailable,
     #[error("upstream tool returned an MCP {kind} error (code {code})")]
@@ -216,21 +218,50 @@ async fn execute_exact_project_tool_scoped(
             outbound,
         )
         .await;
-    let second = bind_asset_use_access_context(
-        runtime,
-        manager,
-        input.identity.clone(),
-        &input.route_name,
-        &input.resource,
-        &input.project_id,
-    )
-    .await
-    .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
-    let second_target = resolve(&second).ok_or(ToolExecutionResolutionError::Unavailable)?;
-    if !first.same_publication_as(&second) || target != second_target {
-        return Err(ToolExecutionResolutionError::Unavailable);
+    // A refused admission has no upstream effects. Every other result must
+    // withhold its payload if publication or authorization changed in flight.
+    let result = map_manager_result(result);
+    if matches!(
+        result,
+        Err(ToolExecutionResolutionError::Unavailable
+            | ToolExecutionResolutionError::QueueUnavailable)
+    ) {
+        return result;
     }
-    map_manager_result(result)
+    // The original binding already proves a common interval. Re-read each
+    // monotonic publication once to confirm that interval spanned dispatch.
+    use ToolExecutionResolutionError::AuthorityChanged;
+    let access = first.catalog().access();
+    let catalog = manager
+        .published_loadout_mcp_catalog_snapshot(&access.loadout_name)
+        .await
+        .map_err(|_| AuthorityChanged)?;
+    let route = manager
+        .published_project_route_snapshot(
+            &input.route_name,
+            &input.project_id,
+            &access.loadout_name,
+        )
+        .await
+        .map_err(|_| AuthorityChanged)?;
+    let current_access = runtime
+        .store()
+        .await
+        .map_err(|_| AuthorityChanged)?
+        .authorize_project(crate::access::AuthorizeProjectInput::new(
+            input.identity,
+            input.project_id,
+            Permission::AssetUse,
+        ))
+        .await
+        .map_err(|_| AuthorityChanged)?;
+    if access != &current_access
+        || !first.catalog().catalog().same_publication_as(&catalog)
+        || !first.route().same_publication_as(&route)
+    {
+        return Err(AuthorityChanged);
+    }
+    result
 }
 
 async fn execute_transport_bound_project_tool_with_clock(
@@ -269,11 +300,14 @@ fn finish_transport_bound_tool_result(
     now: SystemTime,
     result: Result<CallToolResponse, ToolExecutionResolutionError>,
 ) -> Result<CallToolResponse, ToolExecutionResolutionError> {
-    transport
-        .validate_not_expired(now)
-        .map_err(|_| ToolExecutionResolutionError::Unavailable)?;
-    if !transport.matches_identity(identity) {
-        return Err(ToolExecutionResolutionError::Unavailable);
+    if transport.validate_not_expired(now).is_err() || !transport.matches_identity(identity) {
+        return Err(match result {
+            Err(
+                ToolExecutionResolutionError::Unavailable
+                | ToolExecutionResolutionError::QueueUnavailable,
+            ) => ToolExecutionResolutionError::Unavailable,
+            _ => ToolExecutionResolutionError::AuthorityChanged,
+        });
     }
     result
 }
@@ -348,12 +382,13 @@ pub(crate) async fn execute_tailcat_project_complete_tool(
             "expectedOwner".into(),
             serde_json::Value::String(session.owner_label().into()),
         );
-    }
-    if target.native_name != "sandbox_create" && target.native_name != "sandbox_remove" {
         return execute_transport_bound_project_complete_tool(
             runtime, manager, transport, identity, request,
         )
         .await;
+    }
+    if target.native_name != "sandbox_create" && target.native_name != "sandbox_remove" {
+        return Err(Unavailable);
     }
     let make_input = |request| {
         ToolExecutionResolutionInput::new(
@@ -568,6 +603,7 @@ fn map_manager_result(
 fn map_manager_error(error: PublishedToolCallError) -> ToolExecutionResolutionError {
     match error {
         PublishedToolCallError::Unavailable => ToolExecutionResolutionError::Unavailable,
+        PublishedToolCallError::AuthorityChanged => ToolExecutionResolutionError::AuthorityChanged,
         PublishedToolCallError::QueueUnavailable => ToolExecutionResolutionError::QueueUnavailable,
         PublishedToolCallError::Mcp(data) => ToolExecutionResolutionError::Mcp {
             kind: mcp_error_data_kind(&data),
@@ -633,7 +669,6 @@ mod tests {
         ADD_SERVER_TOOL_NAME, CODE_MODE_READ_TOOL_NAME, CODE_MODE_TOOL_NAME,
         CODE_MODE_UI_TOOL_NAME, GATEWAY_STATUS_TOOL_NAME, MCP_APP_TOOL_NAME, SETTINGS_TOOL_NAME,
     };
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::route_scope::McpRouteScope;
     use crate::mcp::server::LabMcpServer;
     use labby_gateway::gateway::manager::PublishedToolCallError;
@@ -808,11 +843,14 @@ mod tests {
         async fn call_tool(
             &self,
             _request: CallToolRequestParams,
-            _context: RequestContext<RoleServer>,
+            context: RequestContext<RoleServer>,
         ) -> Result<CallToolResponse, ErrorData> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.started.notify_one();
-            self.release.notified().await;
+            tokio::select! {
+                () = self.release.notified() => {},
+                () = context.ct.cancelled() => self.release.notify_one(),
+            }
             if self.fail {
                 return Err(ErrorData::internal_error("private delayed failure", None));
             }
@@ -948,7 +986,7 @@ mod tests {
                     .destructive(destructive),
             );
         UpstreamTool {
-            input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+            input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone()).into()),
             output_schema: None,
             destructive,
             upstream_name: Arc::from("alpha"),
@@ -992,9 +1030,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-                LoggingLevel::Emergency,
-            ))),
             route_scope: McpRouteScope::protected_subset(
                 "project-route",
                 ["alpha"],
@@ -1056,9 +1091,6 @@ mod tests {
             route_runtime: Default::default(),
             client_registry: Default::default(),
             transport_label: "test",
-            logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-                LoggingLevel::Emergency,
-            ))),
             route_scope: McpRouteScope::Root,
             relay_session_id: 0,
             code_mode_widget_callbacks_enabled_for_test: false,
@@ -1302,6 +1334,7 @@ mod tests {
             "alpha",
             vec![
                 upstream_tool("sandbox_create", false),
+                upstream_tool("sandbox_stop", false),
                 {
                     let mut tool = upstream_tool("sandbox_inspect", false);
                     tool.tool.meta = Some(
@@ -1344,8 +1377,10 @@ mod tests {
                             .clone()
                             .into(),
                     );
-                    tool.input_schema =
-                        Some(serde_json::json!({"properties":{"expectedOwner":{"type":"string"}}}));
+                    tool.input_schema = Some(
+                        serde_json::json!({"properties":{"expectedOwner":{"type":"string"}}})
+                            .into(),
+                    );
                     tool
                 },
             ],
@@ -1400,6 +1435,18 @@ mod tests {
         )
         .await
         .unwrap();
+        assert!(matches!(
+            execute_tailcat_project_complete_tool(
+                &runtime,
+                &manager,
+                &transport,
+                &identity,
+                request("sandbox_stop", name),
+                &owner
+            )
+            .await,
+            Err(ToolExecutionResolutionError::Unavailable)
+        ));
         for tool in ["sandbox_exec", "sandbox_inspect"] {
             assert!(
                 execute_tailcat_project_complete_tool(
@@ -1606,9 +1653,15 @@ mod tests {
             )
         };
 
+        let store = runtime.store().await.unwrap();
+        let before = store.authorization_transaction_count();
         let response = execute_exact_project_tool(&runtime, &manager, make_input("nested/tool"))
             .await
             .unwrap();
+        assert!(
+            store.authorization_transaction_count() - before <= 5,
+            "initial common-interval binding needs four authorization reads and post-dispatch revalidation needs one"
+        );
         let CallToolResponse::Complete(result) = response else {
             panic!("regular fixture must complete")
         };
@@ -1746,7 +1799,7 @@ mod tests {
         release.notify_one();
         assert!(matches!(
             task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(delayed_calls.load(Ordering::SeqCst), 1);
 
@@ -1800,7 +1853,7 @@ mod tests {
         access_release.notify_one();
         assert!(matches!(
             access_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(delayed_calls.load(Ordering::SeqCst), 2);
 
@@ -1826,7 +1879,7 @@ mod tests {
         tool_release.notify_one();
         assert!(matches!(
             tool_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
 
         let (safety_task, safety_started, safety_release) = start_delayed_call(
@@ -1846,7 +1899,7 @@ mod tests {
         safety_release.notify_one();
         assert!(matches!(
             safety_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
 
         let (service_task, service_started, service_release) = start_delayed_call(
@@ -1863,7 +1916,7 @@ mod tests {
         service_release.notify_one();
         assert!(matches!(
             service_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(delayed_calls.load(Ordering::SeqCst), 5);
         // The initial success and config/access/service changes reach the pool's
@@ -1915,7 +1968,7 @@ mod tests {
         pool_release.notify_one();
         assert!(matches!(
             pool_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(
             pool.upstream_tool_last_error("alpha").await.as_deref(),
@@ -1946,7 +1999,7 @@ mod tests {
         pool_error_release.notify_one();
         assert!(matches!(
             pool_error_task.await.unwrap(),
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(
             pool.upstream_tool_last_error("alpha").await.as_deref(),
@@ -2110,7 +2163,7 @@ mod tests {
                 || times.next().unwrap(),
             )
             .await,
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 4);
 
@@ -2198,7 +2251,7 @@ mod tests {
         ] {
             assert!(matches!(
                 finish_transport_bound_tool_result(&expiring, &identity, after, Err(error),),
-                Err(ToolExecutionResolutionError::Unavailable)
+                Err(ToolExecutionResolutionError::AuthorityChanged)
             ));
         }
 
@@ -2385,7 +2438,7 @@ mod tests {
                 || variant_times.next().unwrap(),
             )
             .await,
-            Err(ToolExecutionResolutionError::Unavailable)
+            Err(ToolExecutionResolutionError::AuthorityChanged)
         ));
         assert_eq!(expired_variant_calls.load(Ordering::SeqCst), 1);
 
@@ -2406,26 +2459,38 @@ mod tests {
             .await;
         let transport =
             transport_binding(&runtime, &manager, identity.clone(), usize::MAX, before).await;
-        let cancel_runtime = Arc::clone(&runtime);
-        let cancel_manager = Arc::clone(&manager);
-        let cancel_identity = identity.clone();
-        let transport_cancel_task = tokio::spawn(async move {
-            execute_transport_bound_project_complete_tool_with_clock(
-                &cancel_runtime,
-                &cancel_manager,
-                &transport,
-                &cancel_identity,
-                CallToolRequestParams::new("nested/tool"),
-                || before,
-            )
-            .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), transport_cancel_started.notified())
-            .await
-            .expect("transport-bound exact call must reach upstream before cancellation");
-        transport_cancel_task.abort();
-        assert!(transport_cancel_task.await.unwrap_err().is_cancelled());
-        transport_cancel_release.notify_one();
+        let (io, _client) = tokio::io::duplex(64 * 1024);
+        let cancel_server = rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(
+            handler_server(Arc::clone(&runtime), Arc::clone(&manager)),
+            io,
+            None,
+        );
+        let ctx = handler_context(
+            cancel_server.peer().clone(),
+            Some(identity.clone()),
+            Ok(transport),
+        );
+        let cancellation = ctx.ct.clone();
+        let call = cancel_server
+            .service()
+            .call_tool_response_impl(CallToolRequestParams::new("nested/tool"), ctx);
+        let withdraw = async {
+            transport_cancel_started.notified().await;
+            cancellation.cancel();
+            transport_cancel_release.notified().await;
+        };
+        let (result, ()) = tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::join!(call, withdraw)
+        })
+        .await
+        .expect("upstream receives cancellation on the exact request");
+        let CallToolResponse::Complete(result) = result.unwrap() else {
+            panic!("expected completed cancellation");
+        };
+        assert_eq!(
+            result.structured_content.unwrap()["error"]["kind"],
+            "cancelled"
+        );
         assert_eq!(transport_cancel_calls.load(Ordering::SeqCst), 1);
 
         let handler_calls = Arc::new(AtomicUsize::new(0));
@@ -2713,6 +2778,7 @@ mod tests {
             .retain(|upstream| upstream.name == "alpha");
         let mut oauth = oauth_config.upstream[0].clone();
         oauth.name = "oauth".into();
+        oauth.env.remove("MCP_UPSTREAM_RELAY_MODE");
         oauth.command = None;
         oauth.url = Some("http://127.0.0.1:9/mcp".into());
         oauth.oauth = Some(UpstreamOauthConfig {
@@ -2793,16 +2859,19 @@ mod tests {
             ),
         )
         .await
-        .expect("Legacy OAuth subject Tool must reach its existing branch")
+        .expect("Legacy OAuth subject Tool must reach the subject-scoped branch")
         .unwrap();
         let CallToolResponse::Complete(legacy_oauth_response) = legacy_oauth_response else {
             panic!("Legacy OAuth error must remain Complete")
         };
         let legacy_oauth_json = serde_json::to_string(&legacy_oauth_response).unwrap();
+        // A bare-name OAuth tool now runs on the caller's subject relay rather
+        // than the subject-less raw branch; this fixture's subject connect
+        // fails, so the call reports that relay connection.
         assert!(
             legacy_oauth_json.contains("\"kind\":\"upstream_error\"")
                 && legacy_oauth_json.contains("\"upstream\":\"oauth\"")
-                && legacy_oauth_json.contains("upstream is not connected"),
+                && legacy_oauth_json.contains("relayed upstream `oauth` connect failed"),
             "{legacy_oauth_json}"
         );
         assert!(!legacy_oauth_json.contains("private oauth subject failure"));

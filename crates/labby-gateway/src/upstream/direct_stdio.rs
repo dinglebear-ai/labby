@@ -54,6 +54,11 @@ where
     }
 
     #[must_use]
+    pub fn handler(&self) -> &H {
+        self.inner.handler()
+    }
+
+    #[must_use]
     pub fn child_pid(&self) -> Option<u32> {
         self.inner.runtime.pid
     }

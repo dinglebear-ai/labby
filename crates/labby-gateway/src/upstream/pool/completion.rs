@@ -35,6 +35,13 @@ fn estimate_complete_result_size(result: &CompleteResult) -> usize {
     serde_json::to_vec(result).map_or(0, |bytes| bytes.len())
 }
 
+/// The exact catalog family authorized for a Project completion.
+#[derive(Clone, Copy)]
+pub enum CompletionCatalogGeneration {
+    Prompt(super::PromptCatalogGeneration),
+    ResourceTemplate(super::ResourceTemplateCatalogGeneration),
+}
+
 impl UpstreamPool {
     /// Whether a rewritten completion reference is exposed by the cached policy.
     ///
@@ -113,6 +120,79 @@ impl UpstreamPool {
             )
             .await,
         )
+    }
+
+    /// Complete a native reference only on the observed peer for its exact published route.
+    pub async fn complete_published_reference(
+        &self,
+        upstream: &str,
+        generation: CompletionCatalogGeneration,
+        params: CompleteRequestParams,
+    ) -> Option<Result<CompleteResult, super::CapabilityCallError>> {
+        use super::CapabilityCallError;
+        let deadline = tokio::time::Instant::now() + self.request_timeout;
+        let Ok(Ok(_permit)) =
+            tokio::time::timeout_at(deadline, self.acquire_upstream_call_permit(upstream)).await
+        else {
+            return Some(Err(CapabilityCallError::QueueSaturated {
+                message: "completion queue unavailable".into(),
+            }));
+        };
+        let observed = self.observe_connection_catalog_entry(upstream).await?;
+        let native_name = match (&params.r#ref, generation) {
+            (Reference::Prompt(prompt), CompletionCatalogGeneration::Prompt(_)) => {
+                prompt.name.as_str()
+            }
+            (Reference::Resource(resource), CompletionCatalogGeneration::ResourceTemplate(_)) => {
+                resource.uri.as_str()
+            }
+            _ => return None,
+        }
+        .to_owned();
+        let is_published = || async {
+            match generation {
+                CompletionCatalogGeneration::Prompt(expected) => self
+                    .catalog
+                    .read()
+                    .await
+                    .contains_prompt_route(expected, upstream, &native_name),
+                CompletionCatalogGeneration::ResourceTemplate(expected) => self
+                    .published_resource_template_catalog()
+                    .await
+                    .is_ok_and(|snapshot| {
+                        snapshot.generation() == expected
+                            && snapshot.routes().iter().any(|route| {
+                                route.upstream_name.as_ref() == upstream
+                                    && route.native_uri_template.as_ref() == native_name
+                            })
+                    }),
+            }
+        };
+        if !is_published().await || !self.observed_entry_is_current(&observed).await {
+            return None;
+        }
+        let result = tokio::time::timeout_at(deadline, observed.peer.complete(params)).await;
+        if !self.observed_entry_is_current(&observed).await || !is_published().await {
+            return None;
+        }
+        Some(match result {
+            Ok(Ok(response))
+                if estimate_complete_result_size(&response)
+                    <= super::helpers::max_response_bytes() =>
+            {
+                Ok(response)
+            }
+            Ok(Ok(_)) => Err(CapabilityCallError::ResponseTooLarge {
+                message: "completion exceeded the gateway cap".into(),
+            }),
+            Ok(Err(error)) => Err(CapabilityCallError::from_service_error(
+                error,
+                "upstream completion failed".into(),
+            )),
+            Err(_) => Err(CapabilityCallError::Timeout {
+                message: "upstream completion timed out".into(),
+            }),
+        })
     }
 
     /// Proxy completion over the cached OAuth subject connection.

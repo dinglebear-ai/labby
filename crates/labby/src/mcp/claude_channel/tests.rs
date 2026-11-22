@@ -44,7 +44,6 @@ async fn fixture(
         route_runtime: Arc::new(runtime),
         client_registry: Default::default(),
         transport_label: "stdio",
-        logging_level: Default::default(),
         route_scope: super::super::route_scope::McpRouteScope::Root,
         relay_session_id: super::super::server::next_relay_session_id(),
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -247,31 +246,23 @@ async fn message_call(
     action: &str,
     params: Value,
 ) -> Value {
-    for attempt in 0..4 {
-        let request_id = id * 10 + attempt;
-        write(
-            pipe,
-            json!({
-                "jsonrpc":"2.0", "id":request_id, "method":"tools/call",
-                "params":{"name":"messages","arguments":{"action":action,"params":params}}
-            }),
-        )
-        .await;
-        let result = tokio::time::timeout(Duration::from_secs(3), read(pipe))
-            .await
-            .unwrap();
-        assert_eq!(result["id"], request_id, "{result}");
-        if result["error"]["message"] == "message store busy" && attempt < 3 {
-            tokio::time::sleep(Duration::from_millis(25 * (attempt + 1))).await;
-            continue;
-        }
-        assert!(
-            result["result"]["structuredContent"].is_object(),
-            "{result}"
-        );
-        return result["result"]["structuredContent"].clone();
-    }
-    unreachable!("the final attempt returns or reports its failure")
+    write(
+        pipe,
+        json!({
+            "jsonrpc":"2.0", "id":id, "method":"tools/call",
+            "params":{"name":"messages","arguments":{"action":action,"params":params}}
+        }),
+    )
+    .await;
+    let result = tokio::time::timeout(Duration::from_secs(3), read(pipe))
+        .await
+        .unwrap();
+    assert_eq!(result["id"], id, "{result}");
+    assert!(
+        result["result"]["structuredContent"].is_object(),
+        "{result}"
+    );
+    result["result"]["structuredContent"].clone()
 }
 
 #[tokio::test]

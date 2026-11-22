@@ -22,6 +22,36 @@ use super::protocol::{
 };
 use super::wrapper::{CODE_MODE_VALUE_CODEC_JS, code_mode_main_invoker};
 
+/// Destination for Javy's two console streams, owned by one Start/Done frame.
+#[derive(Clone, Default)]
+struct ConsoleOutput(std::rc::Rc<std::cell::RefCell<Vec<u8>>>);
+
+impl io::Write for ConsoleOutput {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        let mut output = self.0.borrow_mut();
+        let room = (8 * 1024 * 1024 + 1usize).saturating_sub(output.len());
+        output.extend_from_slice(&bytes[..bytes.len().min(room)]);
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl ConsoleOutput {
+    fn lines(&self) -> Vec<String> {
+        let bytes = self.0.borrow();
+        let text = String::from_utf8_lossy(&bytes[..bytes.len().min(8 * 1024 * 1024)]);
+        let mut lines = text.lines();
+        let mut output: Vec<_> = lines.by_ref().take(100_000).map(str::to_owned).collect();
+        if bytes.len() > 8 * 1024 * 1024 || lines.next().is_some() {
+            output.push("[labby] runner console truncated after 100000 lines or 8 MiB".into());
+        }
+        output
+    }
+}
+
 /// Run the long-lived Code Mode runner protocol loop over process stdio.
 pub fn run_code_mode_runner_stdio() -> ExitCode {
     // Security: prevent /proc/<pid>/environ readback of the runner process.
@@ -33,7 +63,7 @@ pub fn run_code_mode_runner_stdio() -> ExitCode {
             // Non-fatal — execution continues but /proc/<pid>/environ may be readable.
             // This runs inside the runner SUBPROCESS, which has no tracing
             // subscriber installed; tracing::warn! here would be dropped. The
-            // parent drains this child's stderr into the response logs, so
+            // parent drains this child's stderr for process diagnostics, so
             // eprintln! is the channel that actually surfaces the warning.
             #[allow(clippy::print_stderr)]
             {
@@ -316,10 +346,17 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     // Read the next Start. EOF here is the normal pool-shutdown path (the parent
     // dropped this runner), NOT an error — return InputClosed so the caller can
     // exit cleanly without emitting a spurious `Error` line.
-    let input = match runner_read_input() {
-        Ok(input) => input,
-        Err(RunnerReadError::InputClosed) => return Ok(RunnerLoopOutcome::InputClosed),
-        Err(RunnerReadError::Other(message)) => return Err(message.into()),
+    let input = loop {
+        match runner_read_input() {
+            Ok(CodeModeRunnerInput::ProtocolVersion) => {
+                runner_emit(CodeModeRunnerOutput::ProtocolVersion {
+                    version: crate::protocol::RUNNER_PROTOCOL_VERSION,
+                })?
+            }
+            Ok(input) => break input,
+            Err(RunnerReadError::InputClosed) => return Ok(RunnerLoopOutcome::InputClosed),
+            Err(RunnerReadError::Other(message)) => return Err(message.into()),
+        }
     };
     let CodeModeRunnerInput::Start { code, proxy } = input else {
         return Err("runner expected start message".to_string().into());
@@ -336,10 +373,12 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     // non-fatal: the spawn cwd is already an isolated TempDir.
     reset_execution_jail();
 
+    let console = ConsoleOutput::default();
     let mut config = javy::Config::default();
     config
-        .redirect_stdout_to_stderr(true)
-        .memory_limit(64 * 1024 * 1024)
+        .log_stream(Box::new(console.clone()))
+        .err_stream(Box::new(console.clone()))
+        .memory_limit(crate::protocol::CODE_MODE_HEAP_SIZE_LIMIT)
         .max_stack_size(CODE_MODE_STACK_SIZE_LIMIT);
     let runtime = javy::Runtime::new(config).map_err(|err| err.to_string())?;
 
@@ -441,7 +480,7 @@ fn run_code_mode_runner() -> Result<RunnerLoopOutcome, CodeModeRunnerError> {
     });
     runner_emit(CodeModeRunnerOutput::Done {
         result: CodeModeRunnerResult::from_response_result(resolved_result),
-        logs: Vec::new(),
+        logs: console.lines(),
         reuse_ready,
     })
     .map_err(CodeModeRunnerError::from)?;

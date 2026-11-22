@@ -73,9 +73,14 @@ pub(crate) async fn embed_via_tei(url: &str, texts: &[String]) -> Result<Vec<Vec
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    // One deadline covers /info and every batch wave. Per-request timeouts
-    // alone would multiply the optional-search wait with corpus size.
-    tokio::time::timeout(TEI_REQUEST_TIMEOUT, async {
+    // A query has one request budget. A large corpus can need multiple
+    // waves even when every individual HTTP request completes on time.
+    let budget = if texts.len() == 1 {
+        TEI_REQUEST_TIMEOUT
+    } else {
+        Duration::from_secs(8)
+    };
+    tokio::time::timeout(budget, async {
         let batch_size = resolve_tei_batch_size(url).await;
         let parallel_batches = TEI_MAX_INPUT_WINDOW
             .div_ceil(batch_size)
@@ -175,6 +180,11 @@ async fn embed_batch(url: &str, texts: &[String]) -> Result<Vec<Vec<f32>>, ToolE
             message: format!("TEI request failed: {err}"),
         })?;
     if !response.status().is_success() {
+        if matches!(response.status().as_u16(), 413 | 422)
+            && let Ok(mut cache) = TEI_BATCH_SIZE_CACHE.lock()
+        {
+            cache.remove(url.trim_end_matches('/'));
+        }
         return Err(ToolError::Sdk {
             sdk_kind: "upstream_error".to_string(),
             message: format!("TEI returned HTTP {}", response.status()),
@@ -289,14 +299,19 @@ pub(crate) fn rank_top_k_by_similarity(
 /// Score only visible ids without copying their embedding vectors.
 pub(crate) fn rank_top_k_by_similarity_where(
     query_vector: &[f32],
-    catalog_vectors: &[(String, Vec<f32>)],
+    catalog_vectors: &[(String, impl AsRef<[f32]>)],
     top_k: usize,
     visible: impl Fn(&str) -> bool,
 ) -> Vec<(String, f32)> {
     let mut scored: Vec<(&str, f32)> = catalog_vectors
         .iter()
         .filter(|(id, _)| visible(id))
-        .map(|(id, vector)| (id.as_str(), cosine_similarity(query_vector, vector)))
+        .map(|(id, vector)| {
+            (
+                id.as_str(),
+                cosine_similarity(query_vector, vector.as_ref()),
+            )
+        })
         .collect();
     let limit = top_k.max(1).min(scored.len());
     if scored.len() > limit {
@@ -531,6 +546,35 @@ mod tests {
                 body["inputs"].as_array().map(Vec::len),
                 Some(TEI_FALLBACK_MAX_CLIENT_BATCH_SIZE)
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn rejected_batch_rediscovers_the_endpoint_limit_on_the_next_call() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::path};
+
+        let server = MockServer::start().await;
+        let url = format!("{}/reconfigured", server.uri());
+        let texts = vec!["first".to_owned(), "second".to_owned()];
+        for (limit, status) in [(2, 422), (1, 200)] {
+            let _info = Mock::given(path("/reconfigured/info"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "max_client_batch_size": limit
+                })))
+                .expect(1)
+                .mount_as_scoped(&server)
+                .await;
+            let _embed = Mock::given(path("/reconfigured/embed"))
+                .respond_with(ResponseTemplate::new(status).set_body_json(json!([[1.0]])))
+                .expect((texts.len() / limit) as u64)
+                .mount_as_scoped(&server)
+                .await;
+            let result = embed_via_tei(&url, &texts).await;
+            if status == 422 {
+                assert!(result.is_err());
+            } else {
+                assert_eq!(result.unwrap(), vec![vec![1.0]; 2]);
+            }
         }
     }
 

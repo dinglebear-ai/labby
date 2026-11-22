@@ -10,7 +10,7 @@ use rmcp::service::RequestContext;
 use rmcp::{ErrorData, RoleServer};
 use serde_json::Value;
 
-use crate::registry::ToolRegistry;
+use crate::catalog::Catalog;
 
 /// JSON Schema for every service tool's input: `action` (required) + `params` (optional object).
 #[allow(clippy::expect_used)]
@@ -46,34 +46,119 @@ pub(crate) fn completion_info(values: Vec<String>) -> CompletionInfo {
 }
 
 pub(crate) fn complete_prompt_arg(
-    registry: &ToolRegistry,
+    catalog: &Catalog,
     prompt_name: &str,
     argument_name: &str,
     prefix: &str,
 ) -> CompletionInfo {
-    match (prompt_name, argument_name) {
-        ("run-action", "action") => completion_info(registry.action_name_completions(prefix)),
-        ("run-action" | "service-discover", "service") => {
-            completion_info(service_name_completions(registry, prefix))
-        }
-        _ => completion_info(Vec::new()),
-    }
-}
-
-pub(crate) fn service_name_completions(registry: &ToolRegistry, prefix: &str) -> Vec<String> {
-    registry
-        .services()
-        .iter()
-        .map(|service| service.name)
-        .filter(|name| name.starts_with(prefix))
-        .map(str::to_string)
-        .collect()
+    let mut names: Vec<String> = match (prompt_name, argument_name) {
+        ("run-action", "action") => catalog
+            .services
+            .iter()
+            .flat_map(|service| &service.actions)
+            .filter(|action| action.name.starts_with(prefix))
+            .map(|action| action.name.clone())
+            .collect(),
+        ("run-action" | "service-discover", "service") => catalog
+            .services
+            .iter()
+            .filter(|service| service.name.starts_with(prefix))
+            .map(|service| service.name.clone())
+            .collect(),
+        _ => Vec::new(),
+    };
+    names.sort_unstable();
+    names.dedup();
+    completion_info(names)
 }
 
 #[cfg(feature = "gateway")]
 use crate::mcp::context::{auth_context_from_extensions, oauth_upstream_subject_for_request};
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::server::LabMcpServer;
+
+/// Revalidate AssetUse and the exact catalog around the upstream RPC.
+#[cfg(feature = "gateway")]
+pub(crate) async fn complete_project_reference(
+    runtime: &crate::access::AccessRuntime,
+    manager: &labby_gateway::gateway::manager::GatewayManager,
+    transport: &crate::mcp::bound_access::TransportBoundAccessContext,
+    identity: &labby_auth::VerifiedIdentity,
+    mut request: CompleteRequestParams,
+) -> Option<Result<CompleteResult, labby_gateway::upstream::pool::CapabilityCallError>> {
+    use crate::mcp::bound_access::bind_asset_use_access_context;
+    use labby_gateway::upstream::pool::CompletionCatalogGeneration;
+    use std::time::SystemTime;
+    let route = transport.core().route();
+    let bind = || {
+        bind_asset_use_access_context(
+            runtime,
+            manager,
+            identity.clone(),
+            route.route_name(),
+            route.resource(),
+            route.project_id(),
+        )
+    };
+    if !transport.matches_identity(identity) {
+        return None;
+    }
+    let before = bind().await.ok()?;
+    if !before.authorizes_from(transport.core(), crate::access::Permission::AssetUse) {
+        return None;
+    }
+    transport.validate_not_expired(SystemTime::now()).ok()?;
+    let catalog = before.catalog().catalog();
+    let (upstream, generation, pool_generation) = match &mut request.r#ref {
+        rmcp::model::Reference::Prompt(reference) => {
+            let prompts = catalog.prompts();
+            let published = prompts.unique_route_for_wire_name(&reference.name)?;
+            if !before.allows_upstream_prompt_pair(&published.upstream_name, &published.native_name)
+            {
+                return None;
+            }
+            reference.name = published.native_name.to_string();
+            (
+                published.upstream_name.to_string(),
+                CompletionCatalogGeneration::Prompt(prompts.prompt_catalog_generation()),
+                prompts.pool_publication_generation(),
+            )
+        }
+        rmcp::model::Reference::Resource(reference) => {
+            let templates = catalog.resource_templates();
+            let (upstream, native) = reference
+                .uri
+                .strip_prefix("lab://upstream/")?
+                .split_once('/')?;
+            if !before.allows_upstream_resource_template_pair(upstream, native) {
+                return None;
+            }
+            let upstream = upstream.to_owned();
+            reference.uri = native.to_owned();
+            (
+                upstream,
+                CompletionCatalogGeneration::ResourceTemplate(
+                    templates.resource_template_catalog_generation(),
+                ),
+                templates.pool_publication_generation(),
+            )
+        }
+        _ => return None,
+    };
+    let pool = manager.current_pool_sync()?;
+    if manager.current_pool_publication_generation() != pool_generation {
+        return None;
+    }
+    let result = pool
+        .complete_published_reference(&upstream, generation, request)
+        .await;
+    let after = bind().await.ok()?;
+    transport.validate_not_expired(SystemTime::now()).ok()?;
+    before
+        .same_publication_as(&after)
+        .then_some(result)
+        .flatten()
+}
 
 impl LabMcpServer {
     pub(crate) async fn complete_impl(
@@ -97,25 +182,73 @@ impl LabMcpServer {
             "dispatch start"
         );
 
+        if (prompt_name.is_some() && !self.route_scope.exposes_prompts())
+            || (request.r#ref.as_resource_uri().is_some() && !self.route_scope.exposes_resources())
+        {
+            return Ok(CompleteResult::new(completion_info(Vec::new())));
+        }
+        #[cfg(feature = "gateway")]
+        match crate::mcp::bound_access::project_execution_binding(
+            &context.extensions,
+            std::time::SystemTime::now(),
+        ) {
+            crate::mcp::bound_access::ProjectExecutionBinding::Legacy => {}
+            crate::mcp::bound_access::ProjectExecutionBinding::Unavailable => {
+                return Ok(CompleteResult::new(completion_info(Vec::new())));
+            }
+            crate::mcp::bound_access::ProjectExecutionBinding::Bound {
+                transport,
+                identity,
+            } => {
+                let result = match &self.gateway_manager {
+                    Some(manager) => {
+                        complete_project_reference(
+                            &self.access_runtime,
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                return match result {
+                    Some(Ok(result)) => Ok(result),
+                    Some(Err(error)) => {
+                        let (kind, _) = crate::mcp::resource_errors::classify_fetch_failure(&error);
+                        Err(crate::mcp::agent_error::internal(
+                            kind,
+                            "Upstream completion failed",
+                            None,
+                            &labby_runtime::agent_error::AgentErrorContext::for_service_action(
+                                "labby",
+                                "completion.complete",
+                            ),
+                        ))
+                    }
+                    None => Ok(CompleteResult::new(completion_info(Vec::new()))),
+                };
+            }
+        }
         let local_prompt = prompt_name
             .as_deref()
             .is_some_and(|name| matches!(name, "run-action" | "service-discover"));
         if local_prompt {
             let completion = complete_prompt_arg(
-                &self.registry,
+                &self.visible_catalog().await,
                 prompt_name.as_deref().expect("known local prompt"),
                 &request.argument.name,
                 &request.argument.value,
             );
             let elapsed_ms = start.elapsed().as_millis();
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 &context,
                 "lab",
                 "completion.complete",
                 elapsed_ms,
                 DispatchLogOutcome::Success,
-            )
-            .await;
+            );
             return Ok(CompleteResult::new(completion));
         }
 
@@ -175,12 +308,14 @@ impl LabMcpServer {
                 None
             };
 
-            if let Some(owner) = raw_owner {
+            if let Some(owner) = raw_owner
+                && self.route_team_credential_valid(&owner).await
+            {
                 match pool.complete_reference(&owner, request).await {
                     Some(Ok(result)) => return Ok(result),
                     Some(Err(message)) => {
                         let elapsed_ms = start.elapsed().as_millis();
-                        self.emit_dispatch_notification(
+                        self.trace_dispatch_outcome(
                             &context,
                             "lab",
                             "completion.complete",
@@ -189,8 +324,7 @@ impl LabMcpServer {
                                 level: LoggingLevel::Error,
                                 kind: "upstream_error".into(),
                             },
-                        )
-                        .await;
+                        );
                         return Err(ErrorData::internal_error(message, None));
                     }
                     None => {}
@@ -200,14 +334,13 @@ impl LabMcpServer {
 
         let completion = completion_info(Vec::new());
         let elapsed_ms = start.elapsed().as_millis();
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             &context,
             "lab",
             "completion.complete",
             elapsed_ms,
             DispatchLogOutcome::Success,
-        )
-        .await;
+        );
         Ok(CompleteResult::new(completion))
     }
 }

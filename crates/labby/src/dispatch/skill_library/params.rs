@@ -92,9 +92,9 @@ pub(crate) struct RevisionMutationParams {
 #[serde(deny_unknown_fields)]
 pub(crate) struct SaveParams {
     pub(crate) artifact_id: String,
-    pub(crate) expected_revision_id: String,
+    pub(crate) expected_revision_id: Option<String>,
     pub(crate) files: Vec<LogicalFileInput>,
-    pub(crate) expected_library_version: u64,
+    pub(crate) expected_library_version: Option<u64>,
     pub(crate) idempotency_key: String,
 }
 

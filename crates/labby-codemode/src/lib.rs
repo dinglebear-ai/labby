@@ -132,9 +132,9 @@ pub use types::{
     CatalogDescriptor, CodeModeCaller, CodeModeCallerCapabilities, CodeModeCatalogKind,
     CodeModeExecutedCall, CodeModeExecutionError, CodeModeExecutionResponse,
     CodeModeExecutionSource, CodeModeHistory, CodeModeHistoryEntry, CodeModeHistoryKind,
-    CodeModeSnippetInputEntry, CodeModeSourceLookup, CodeModeSourceStore, CodeModeSurface,
-    CodeModeToolAccess, CodeModeToolSafety, ToolScope, UiLink, destructive_permitted,
-    namespaced_tool_id, split_namespaced_id,
+    CodeModeHostContext, CodeModeProviderContext, CodeModeSnippetInputEntry, CodeModeSourceLookup,
+    CodeModeSourceStore, CodeModeSurface, CodeModeToolAccess, CodeModeToolSafety, ToolScope,
+    UiLink, destructive_permitted, namespaced_tool_id, split_namespaced_id,
 };
 pub use util::serialized_catalog_size;
 

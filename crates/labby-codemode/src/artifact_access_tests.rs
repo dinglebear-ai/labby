@@ -4,6 +4,7 @@ use crate::artifacts::{CodeModeArtifactWrite, write_code_mode_artifact};
 
 fn caller(sub: &str) -> CodeModeCaller {
     CodeModeCaller::Scoped {
+        host_context: Default::default(),
         sub: Some(sub.into()),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
@@ -24,6 +25,7 @@ async fn fixture(store: &Path, sub: &str) -> CodeModeArtifactReceipt {
             content_type: Some("application/json".into()),
         },
         1024,
+        &retention_owner(&caller(sub), &ToolScope::default(), &root),
     )
     .await
     .expect("write fixture");
@@ -37,7 +39,16 @@ async fn fixture(store: &Path, sub: &str) -> CodeModeArtifactReceipt {
 async fn artifact_access_owner_read_metadata_and_listing() {
     let temp = tempfile::tempdir().expect("tempdir");
     let receipt = fixture(temp.path(), "alice").await;
-    let id = receipt.artifact_id.expect("retrieval id");
+    let id = receipt.artifact_id.as_deref().expect("retrieval id");
+    // Previously enrolled runs predate retention owner markers.
+    let (root, _) = location(temp.path(), id).expect("stored artifact location");
+    tokio::fs::remove_file(root.join(METADATA_DIR).join(retention_owner(
+        &caller("alice"),
+        &ToolScope::default(),
+        &root,
+    )))
+    .await
+    .unwrap();
     let params = json!({"artifact_id":id});
     let scope = ToolScope::default().read_only();
     let result = dispatch_at(
@@ -200,6 +211,7 @@ async fn artifact_access_chunks_preserve_utf8_and_reject_reserved_paths() {
             content_type: None,
         },
         1024,
+        "fixture-owner",
     )
     .await
     .expect("write unicode");
@@ -248,7 +260,8 @@ async fn artifact_access_chunks_preserve_utf8_and_reject_reserved_paths() {
                 content: "fake".into(),
                 content_type: None,
             },
-            1024
+            1024,
+            "fixture-owner"
         )
         .await
         .is_err()
@@ -404,4 +417,28 @@ async fn artifact_access_listing_skips_deleted_rows_and_enrollment_invalidates_s
     .await
     .expect("enrollment invalidates");
     assert_eq!(listed["artifacts"][0]["artifact_id"], new);
+}
+
+#[tokio::test]
+async fn listing_reports_omitted_runs_and_receipts() {
+    let store = tempfile::tempdir().unwrap();
+    let metadata = store
+        .path()
+        .join(Ulid::new().to_string())
+        .join(METADATA_DIR);
+    std::fs::create_dir_all(&metadata).unwrap();
+    for index in 0..1001 {
+        std::fs::write(metadata.join(format!("{index}.json")), b"{}").unwrap();
+    }
+    assert!(scan_listing(store.path()).await.unwrap().incomplete);
+    let other_store = tempfile::tempdir().unwrap();
+    for index in 0..1001 {
+        std::fs::create_dir(
+            other_store
+                .path()
+                .join(Ulid::from(index as u128).to_string()),
+        )
+        .unwrap();
+    }
+    assert!(scan_listing(other_store.path()).await.unwrap().incomplete);
 }

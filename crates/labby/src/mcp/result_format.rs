@@ -93,12 +93,14 @@ pub(crate) fn error_result_from_envelope(envelope: Value) -> CallToolResult {
         })
         .filter(|scope| !scope.is_empty());
     let kind = envelope["error"]["kind"].as_str().unwrap_or_default();
+    let gateway_policy =
+        envelope["error"]["origin"] == "policy" && envelope["error"]["upstream"].is_null();
     let challenge = match kind {
-        "auth_failed" => Some((
+        "auth_failed" if gateway_policy => Some((
             "invalid_token",
             required_scope.unwrap_or_else(|| "lab:read".to_string()),
         )),
-        "forbidden" => required_scope.map(|scope| ("insufficient_scope", scope)),
+        "forbidden" if gateway_policy => required_scope.map(|scope| ("insufficient_scope", scope)),
         _ => None,
     };
     let challenge_description = envelope["error"]["message"]
@@ -183,7 +185,19 @@ pub(crate) fn format_dispatch_result(
             (result, DispatchLogOutcome::Success)
         }
         Err(e) => {
-            let (kind, message, extra) = extract_error_info(&e);
+            let (kind, envelope) = if let Some(error) = e.downcast_ref::<DispatchToolError>() {
+                (
+                    std::borrow::Cow::Owned(error.kind().to_owned()),
+                    tool_error_envelope(service, action, error),
+                )
+            } else {
+                let (kind, message, extra) = extract_error_info(&e);
+                let envelope = extra.map_or_else(
+                    || build_error(service, action, &kind, &message),
+                    |ref extra| build_error_extra(service, action, &kind, &message, extra),
+                );
+                (kind, envelope)
+            };
             let is_fatal = matches!(
                 kind.as_ref(),
                 "internal_error" | "server_error" | "decode_error"
@@ -221,10 +235,6 @@ pub(crate) fn format_dispatch_result(
                     "dispatch error"
                 );
             }
-            let envelope = extra.map_or_else(
-                || build_error(service, action, &kind, &message),
-                |ref extra| build_error_extra(service, action, &kind, &message, extra),
-            );
             (
                 error_result_from_envelope(envelope),
                 DispatchLogOutcome::Failure {

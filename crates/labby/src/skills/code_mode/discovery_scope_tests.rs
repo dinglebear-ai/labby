@@ -59,14 +59,18 @@ async fn discovery_scope_does_not_contact_an_excluded_skill_upstream() {
         manager,
         SkillCallerScope::root(Some("alice".to_string()), ToolAccess::CodeModeOnly),
     ));
-    let caller = CodeModeCaller::ScopedSkills {
+    let caller = CodeModeCaller::Scoped {
+        host_context: labby_codemode::CodeModeHostContext {
+            skill_context_token: Some(guard.token().to_string()),
+            ..Default::default()
+        },
+
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
             ..Default::default()
         },
         sub: Some("alice".to_string()),
-        skill_context_token: guard.token().to_string(),
     };
     let scope = ToolScope::new(vec!["macpoo".to_string()], Vec::new());
     let skills = tokio::time::timeout(
@@ -76,7 +80,43 @@ async fn discovery_scope_does_not_contact_an_excluded_skill_upstream() {
     .await
     .expect("out-of-scope discovery must not delay the Code Mode call")
     .unwrap();
-    assert!(skills.iter().any(|skill| skill.name == "using-labby"));
+    assert!(
+        skills["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|skill| skill["name"] == "using-labby")
+    );
+    assert!(skills["truncated"].is_boolean());
+    let bound = scope
+        .clone()
+        .with_request_skill_context(Some(guard.token()));
+    assert_eq!(
+        CanonicalCodeModeSkillProvider
+            .list(&CodeModeCaller::TrustedLocal, &bound)
+            .await
+            .unwrap(),
+        skills
+    );
+    for token in [None, Some("expired")] {
+        assert_eq!(
+            CanonicalCodeModeSkillProvider
+                .list(
+                    &CodeModeCaller::TrustedLocal,
+                    &scope.clone().with_request_skill_context(token)
+                )
+                .await
+                .unwrap_err()
+                .kind(),
+            "forbidden"
+        );
+    }
+    for request in [
+        CanonicalCodeModeSkillProvider.get("skill://excluded/demo/SKILL.md", &caller, &scope),
+        CanonicalCodeModeSkillProvider.read("skill://excluded/demo/readme.md", &caller, &scope),
+    ] {
+        assert_eq!(request.await.unwrap_err().kind(), "forbidden");
+    }
     assert!(
         tokio::time::timeout(Duration::from_millis(50), listener.accept())
             .await
