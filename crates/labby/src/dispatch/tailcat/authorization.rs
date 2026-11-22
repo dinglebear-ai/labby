@@ -126,13 +126,19 @@ mod tests {
             _context: rmcp::service::RequestContext<rmcp::RoleServer>,
         ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
             assert_eq!(request.name, "sandbox_list");
-            let args = request.arguments.expect("Tailcat binds the session owner");
-            assert!(
-                args["expectedOwner"]
-                    .as_str()
-                    .is_some_and(|owner| !owner.is_empty())
-            );
-            assert_eq!(args["names"], serde_json::json!([]));
+            let args = request.arguments.expect("sandbox_list arguments");
+            #[cfg(feature = "tailcat")]
+            {
+                assert!(
+                    args["expectedOwner"]
+                        .as_str()
+                        .is_some_and(|owner| !owner.is_empty())
+                );
+                assert_eq!(args["names"], serde_json::json!([]));
+            }
+            // The gateway-only route forwards the caller's arguments unchanged.
+            #[cfg(not(feature = "tailcat"))]
+            assert_eq!(args, serde_json::Map::new());
             self.started.notify_one();
             self.release.notified().await;
             Ok(
