@@ -4461,8 +4461,8 @@
             {
               "name": "expected_revision_id",
               "ty": "string",
-              "required": true,
-              "description": "Expected immutable revision precondition"
+              "required": false,
+              "description": "Current skill revision. Supply this, a library version, or both."
             },
             {
               "name": "files",
@@ -4473,8 +4473,8 @@
             {
               "name": "expected_library_version",
               "ty": "integer",
-              "required": true,
-              "description": "Expected committed Skill Library version"
+              "required": false,
+              "description": "Require the entire library to have this version. Optional with a skill revision."
             },
             {
               "name": "idempotency_key",

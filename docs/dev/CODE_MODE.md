@@ -14,10 +14,9 @@ Code Mode is the JavaScript execution surface behind the MCP `codemode` and
 compact docs, and run one async JavaScript function in a sandbox that can call
 the tools allowed by that entry point.
 
-Code Mode primarily exposes upstream capabilities. Root-scope catalogs can also
-include permitted non-admin built-in actions through in-process peers, described
-below. Use native management surfaces for admin operations; Code Mode does not
-grant those actions merely because its caller is an administrator.
+Code Mode exposes upstream capabilities. Its native Labby action is
+`gateway.oauth.authorize`, when the gateway has verified the caller's personal
+authority. Use the published native MCP tools for other Labby actions.
 
 The native `gateway`, `snippets`, and `server_logs` router tools remain visible
 while Code Mode is enabled. Call `snippets` directly with `action` and `params`
@@ -173,11 +172,10 @@ not a tool-specific descriptor. The stable catalog vocabulary is:
 - `resource`
 - `prompt`
 - `skill`
-- `agent`
+- `command`
+- `subagent`
 
-The live catalog currently projects Tools, Snippets, exposed MCP Resources,
-exposed MCP Prompts, and caller-visible Agent Skills. Agent entries remain
-reserved for a later adapter.
+Command and subagent results come from caller-visible Artifact sources.
 
 Resource and Prompt entries come from the gateway's cached snapshots, not a
 live `resources/list` or `prompts/list` fan-out per run or per `search()`. An
@@ -585,34 +583,14 @@ cancels them immediately when either cap is exceeded, including when a server
 omits `Content-Length`. The static page contains no catalog fixture or tool
 definition, and safety metadata remains advisory rather than dispatch authority.
 
-### Builtin services as in-process peers
+### Native Labby actions
 
-Builtin Labby services (`gateway`, `doctor`, `setup`, …) join the Code Mode
-catalog as in-process upstream peers under synthetic
-`__in_process__<service>` namespaces, so the dispatch-envelope
-`outputSchema` and the callable capability arrive together (issue #210
-FU-1). Registration is lazy, single-flighted, and idempotent — it happens
-on the root-scope catalog build, with a cooldown so a failing peer is not
-retried on every call. Protected MCP routes never see them: the
-`__in_process__` prefix is **rejected at config load** both as an upstream
-name and in a route's `target.upstreams`, so the exclusion is enforced,
-not merely conventional.
-Each peer serves exactly its own service, pinned to Raw visibility and the
-combined router/atomic projection. Code Mode admission resolves atomic action
-names against the published service registry and excludes admin actions. The
-ordinary live annotation check still determines read-only admission; do not
-assume every built-in action has the same safety metadata. The legacy
-`trusted_read_only_tools` setting does not override missing live annotations.
-
-The peer transport carries no `AuthContext` — there is no HTTP layer to
-inject one — so it does **not** inherit the stdio trust model. Actions
-marked `requires_admin`, and the stdio-only `setup` actions, are refused
-over this transport; only permitted non-admin actions are reachable through Code
-Mode. Gateway actions are further restricted to `help`/`schema`, plus
-`gateway.oauth.authorize` when a personal OAuth provider and request-bound
-authority token are available. That OAuth action uses a dedicated host authority
-adapter, never the unauthenticated mini-peer. Without that guard a caller holding just `lab` (enough for Code Mode
-execute, deliberately not enough for admin) could reach admin builtins.
+Use the direct MCP action or its native service router for first-party operations.
+The Code Mode host exposes `__in_process__gateway::gateway.gateway.oauth.authorize`
+only when the personal OAuth provider and the requesting caller's authority are
+available. This action uses the verified transport identity. The generic
+`lab::*` action syntax is reserved. Only upstream names accepted by route
+configuration can appear in a route's upstream allowlist.
 
 ## Catalog Freshness
 
@@ -1104,7 +1082,7 @@ authority or expose trace baggage in results. See
 
 The stdio parent-broker protocol is:
 
-1. Parent starts (or reuses a pooled) `labby internal code-mode-runner` process.
+1. The parent starts or reuses a pooled `labby internal code-mode-runner` process. Every new process must answer the native `protocol_version` request with version 1 before the parent sends caller source. An incompatible response returns `runner_version_mismatch`.
 2. Parent sends a `start` line; the child builds a FRESH QuickJS runtime and
    evaluates the normalized async function.
 3. Child emits `tool_call` lines for `callTool` requests.
@@ -1135,12 +1113,16 @@ budgets and response semantics; older/missing proof defaults to false.
   fresh `javy::Runtime` → run → emit `done`/`error` → reset and read the next
   `start`. The parent retains it only after native-qualified `done` and
   terminates it after unqualified `done`, `error`, timeout or protocol failure.
+  If an unqualified `done` arrives with calls still outstanding, the run can return
+  its result and its trace marks those calls `outcome_unknown`.
 - **Per-execution isolation.** Each run resets the `callTool` sequence counter and
   creates a fresh, empty per-execution QuickJS working-directory jail (removing
   the prior one), so a long-lived process never accumulates JS runtime state
   across callers. Code Mode's `state.*` and `git.*` local providers deliberately
   use a separate persistent workspace under `LABBY_HOME/code-mode-workspaces/`;
-  persistence is scoped to that workspace and guarded by virtual path, symlink,
+  the verified caller selects the workspace. Operations on the same workspace share
+  a lock. Operations on different workspaces can run concurrently when they select
+  different locks in the fixed pool. Workspaces enforce virtual path, symlink,
   quota, archive, and git remote restrictions. The 64 MiB heap, 30 s wall-clock
   timeout, and stack limit are enforced per execution.
 - **Bounded pool, one execution per runner.** `N` runners serve `N` concurrent
@@ -1148,19 +1130,20 @@ budgets and response semantics; older/missing proof defaults to false.
   ephemeral (overflow) runner rather than queueing unboundedly.
 - **Robustness.** If a pooled runner exits before emitting any valid protocol
   event, it is killed and the execution is replayed once on a guaranteed-fresh
-  ephemeral runner; at that boundary no host-visible side effect can have run.
+  process under the same admission lease. At that boundary no host-visible side effect can have run.
   A runner-reported `error` cancels/drops pending host work, preserves the
   structured error and completed partial trace, and kills the runner without
   replay. Even an empty pending set cannot prove that old replies or terminal
   frames have left the pipes. Caught tool errors that settle successfully with
   clean `done` still permit reuse. A crash after protocol activity, timeout, or
   protocol violation also kills without replay (`timeout` on wall-clock expiry). A
-  pooled runner is also recycled after a fixed number of executions as cheap
-  insurance against native-side leaks. External `callTool` operations reserve a
+  pooled runner is also recycled after a fixed number of executions. Terminal
+  retirement and refill run in the background under the existing lease. A checkout
+  that encounters a refill waits within its own admission deadline. Upstream and local provider calls reserve a
   result-ack window inside the same per-execution wall-clock budget when more
   than twice that window remains, so host work cannot consume the runner's
   acknowledgement budget without materially shortening normal calls. The window
-  is 250 ms plus 2 ms per call enqueued so far, capped at 2 s: the runner has to
+  is 250 ms plus 2 ms per in-flight call, including the new call, capped at 2 s. The runner has to
   drain one acknowledgement per in-flight call, so a constant window shrinks to
   microseconds per ack at high fanout and would report a completed run as a
   timeout. Each external call gets its deadline at enqueue time; later calls
@@ -1291,13 +1274,17 @@ available and must not be recreated by replaying completed mutations.
 
 Within a gateway process, artifact admission, publication, and retention are
 serialized. Each write reserves space against the configured store byte budget
-before publishing, including payloads from active runs. Inactive runs may be
-pruned to make room; active runs are retained and the new write is rejected when
-space is unavailable. Setting the store byte budget to zero disables that store
+before publishing, including payloads from active runs. Retention can reclaim the caller’s inactive runs. Active runs, other owners’ runs,
+and older runs without an owner marker stay in the store. A write fails when
+these retained payloads leave insufficient space. Setting the store byte budget to zero disables that store
 limit, but preserves the per-run limits. Retrieval metadata is excluded from
 payload accounting only at the run's top-level reserved metadata directory;
 nested directories with the same name count as payload. Admission and retention
-use the same accounting. Artifact paths are normalized before reserved-name
+use the same accounting. Admission keeps a bounded in-memory ledger of the
+last observed payload sizes and adjusts store and per-run totals for new,
+resized, and removed files. Each reconciliation checks file metadata to detect
+external in-place writes. On Unix, unchanged directory identities allow reuse
+of their membership lists. Artifact paths are normalized before reserved-name
 checks, publication and receipt creation, so dot and separator aliases cannot
 write retrieval metadata or bypass quotas. Routine retention is coalesced per
 run; byte pressure triggers an additional bounded inventory and final accounting

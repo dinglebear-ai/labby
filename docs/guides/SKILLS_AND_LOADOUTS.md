@@ -15,7 +15,7 @@ Labby treats upstream Agent Skills as an explicit trust boundary. An upstream ca
 The upstream fields are:
 
 - proxy_skills = false: default; do not aggregate Skills from this upstream.
-- proxy_skills = true: trust the upstream as a Skill source and allow enumeration/validation.
+- proxy_skills = true: trust the upstream as a Skill source and allow enumeration/validation. Its configured name becomes the origin label and must use lowercase ASCII letters, digits, and interior hyphens. The label `labby` is reserved.
 - expose_skills = null: expose every validated Skill from a trusted upstream.
 - expose_skills = []: expose no Skills from that trusted upstream.
 - expose_skills = [patterns]: expose only exact or wildcard skill-name matches.

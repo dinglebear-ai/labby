@@ -249,7 +249,7 @@ Actions:
 Symptoms:
 
 - Code Mode calls queue behind long-running snippets.
-- Logs show repeated `timeout`, pool overflow, or runner start failures.
+- The `pool.saturated` warning and retryable `queue_saturated` error identify requests that exhausted their admission deadline before starting. Execution timeouts and runner start failures are reported separately.
 
 Actions:
 

@@ -88,13 +88,16 @@ Supported code may emit additional stable kinds, including:
 - routing/upstreams: `not_found`, `route_not_found` (no HTTP route is
   registered for the path/method — unlike `not_found`, rediscovery cannot help,
   because the owning feature slice may simply not be mounted; the startup logs
-  name any skipped service), `unknown_upstream`, `unknown_tool`,
+  name any skipped service), `unknown_upstream`, `unknown_tool`, `invalid_cursor`,
   `upstream_error`, `bad_gateway`, `network_error`,
-  `service_unavailable`, `not_connected`, `connection_error`, `dns_error`,
+  `service_unavailable`, `upstream_connect_error`, `not_connected`, `connection_error`, `dns_error`,
   `connection_refused` (the latter three come from `classify_upstream_error`'s
   upstream-health classification; see the classifier note below), `timeout`,
   `cancelled` (the upstream reported the proxied call was cancelled; not
   automatically retryable), `unexpected_response`;
+- MCP policy and dispatch: `route_scope_denied` when the loadout forbids the operation,
+  `app_disabled` for reads of disabled owned apps, `feature_not_compiled` when the build
+  lacks the requested feature, and `tool_error` for completed tool failures without a more specific kind;
 - relay/bridge: `bridge_transport_error` (the stdio bridge could not reach the
   canonical daemon), `relay_invalid_target`, `relay_forwarder_init_failed`;
 - validation/security: `validation_failed`, `invalid_hint`, `ssrf_blocked`,
@@ -115,6 +118,7 @@ Supported code may emit additional stable kinds, including:
 - Code Mode: `timeout` (wall-clock expiry — the historical
   `code_mode_timeout`/`code_mode_fuel_exhausted` kinds are retired and must not
   be reintroduced), `invalid_code_mode_id`, `call_budget_exceeded`,
+  `internal_call_budget_exceeded`, `trace_budget_exceeded`,
   `snippet_budget_exceeded`, `snippet_resolve_limit`, `snippet_not_found`,
   `artifact_too_large`, `result_too_large`;
 - providers/runtime: `provider_error` (a Skill provider completed with a
@@ -259,6 +263,6 @@ text ends with a ` …[truncated]` marker. See
 ## Removed Error Vocabularies
 
 Error kinds used only by ACP, Registry installers, Marketplace artifacts,
-Fleet/node transport, Deploy-product, or Stash must be removed with those
+Fleet/node transport, Deploy-product, or retired Stash surfaces must be removed with those
 features, including stale status-mapping tests. Their historical definitions are
 available in [../archive/retired-labby/current-docs/dev/ERRORS.md](../archive/retired-labby/current-docs/dev/ERRORS.md).

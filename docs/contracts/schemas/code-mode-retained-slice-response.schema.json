@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dinglebear.ai/schemas/labby/code-mode-retained-slice-response-v1.json",
-  "title": "Labby Code Mode Retained Slice Response",
-  "description": "Successful return value of the sandbox helper `codemode.slice(handle, path, range)`. The selection is always returned whole — a selection that would exceed the per-call result ceiling raises `retained_value_too_large` instead of being silently truncated.",
+  "$comment": "Proposal. See docs/features/codemode-retained-results/README.md.",
+  "title": "Proposed Labby Code Mode Retained Slice Response",
+  "description": "Proposed wire contract, pending implementation. Successful return value of the sandbox helper `codemode.slice(handle, path, range)`. The selection is always returned whole — a selection that would exceed the per-call result ceiling raises `retained_value_too_large` instead of being silently truncated.",
   "type": "object",
   "required": [
     "handle",

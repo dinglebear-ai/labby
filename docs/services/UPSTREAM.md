@@ -177,7 +177,7 @@ command changes.
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `name` | string | yes | Stable identifier, used as the tool-name prefix, skill origin label, OAuth state key, and route reference. Must be non-empty, unique, and URI-safe (ASCII letters, digits, `-`, `_`, `.`). With `proxy_skills` enabled it must also be lowercase letters, digits, and interior hyphens. |
+| `name` | string | yes | Stable identifier, used as the Code Mode tool namespace, skill origin label, OAuth state key, and route reference. Must be non-empty, unique, and URI-safe (ASCII letters, digits, `-`, `_`, `.`). With `proxy_skills` enabled it must also be lowercase letters, digits, and interior hyphens. |
 | `display_name` | string | no | Operator-facing label shown in the web UI instead of `name`. Presentation only: it never affects routing, tool names, auth, or exposure. 1-80 characters, single line. |
 | `lifecycle` | string | no | Handshake override. `auto` (default) tries `server/discover` and falls back to `initialize` when the peer proves it is legacy. `initialize` always opens with `initialize`, for legacy servers that exit on an unknown first request and so leave nothing to classify. |
 | `transport` | string | Unix socket only | Explicit `http`, `websocket`, `stdio`, or `unix_socket`. Legacy URL/command inference remains supported when omitted. |
@@ -511,8 +511,7 @@ code mode, exact tool execution, or Code Mode upstream call connects only the
 needed upstream. Background search-index refreshes use the same bounded
 discovery concurrency as bulk discovery paths.
 
-Each live discovery attempt gets a 15-second timeout for connection and tool
-discovery (`list_tools()`). Failed upstreams are marked unhealthy. Healthy
+Live discovery uses the larger of the configured request timeout and the transport floor (15 seconds for network upstreams, 60 seconds for stdio). With the default 30-second request timeout, the effective limits are 30 and 60 seconds respectively. Failed upstreams are marked unhealthy. Healthy
 upstreams continue operating. A single failed upstream does not prevent others
 from connecting later.
 
@@ -546,8 +545,8 @@ This internal precedence rule does not make upstream tools second-class. It is j
 
 When upstream tools are merged into the lab tool catalog:
 
-1. **Built-in lab services always take precedence.** If an upstream exposes a tool named `gateway`, the upstream tool is silently dropped (with a warning logged).
-2. **Cross-upstream duplicates: first discovered wins.** If two upstreams expose a tool named `my-tool`, the second is skipped with a warning.
+1. Built-in and reserved tool names take precedence. An upstream tool with a conflicting name is skipped.
+2. Upstream MCP tools keep their bare names. When several eligible upstreams advertise the same name, the first upstream in alphabetical order wins. Code Mode uses qualified IDs.
 
 Upstream tools appear alongside built-in tools in `list_tools()`. Callers do not need to know whether a tool is built-in or proxied.
 
@@ -935,7 +934,7 @@ Circuit breaker state changes are logged:
 - `WARN` when the breaker opens (3+ failures).
 - `INFO` when the breaker resets (successful call after failure).
 
-Tool collision warnings are logged at `WARN`.
+The gateway logs skipped duplicate upstream tools at `DEBUG`.
 
 ## Related Docs
 

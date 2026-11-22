@@ -131,7 +131,7 @@ and loses the evidence at process exit.
 
 ### Create a snippet-specific result database
 
-Rejected because issue #274 already establishes retained-result handles and a
+Rejected because issue #274 proposes retained-result handles and a
 second store would duplicate ownership, quotas, and expiration behavior.
 
 ### Let a skill request additional tools
@@ -146,9 +146,7 @@ authority. A referencing execution profile keeps those roles explicit.
 ## Authority and implementation status
 
 This ADR records the proposed architecture from [GitHub issue
-#708](https://github.com/dinglebear-ai/labby/issues/708). It does not claim that
-external previews, retained execution receipts, result search, specialist
-profiles, or pinned promotion are implemented.
+#708](https://github.com/dinglebear-ai/labby/issues/708). Bounded snippet execution receipts are implemented in the gateway journal. See [Snippets](../services/SNIPPETS.md) for the retention and access contract. External previews, searchable retained results, specialist profiles, and pinned promotion remain proposals here.
 
 ## References
 

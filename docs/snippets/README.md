@@ -501,6 +501,7 @@ A snippet is ready to reuse when:
 
 ## Current Snippets
 
+- [`worktree-identity.md`](./worktree-identity.md) resolves a Git worktree and its associated issue or pull request.
 - [`axon-fanout.md`](./axon-fanout.md) defines reusable Axon research fan-out workflows for Code Mode.
 - [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
 - [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, current Octocode lexical search, and GitHub issue/file lookups for repo orientation.

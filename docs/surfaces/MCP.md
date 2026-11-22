@@ -186,15 +186,13 @@ itself. The default target remains `codemode` for backward compatibility with th
 original inspector-only control contract.
 
 Reading status or opening the manager requires `lab` or `lab:admin`; changing
-visibility requires `lab:admin`. The `mcp_app` control tool is intentionally
-unavailable on protected subset routes because these switches mutate
-gateway-global state, and the control tool itself cannot be disabled. Its UI metadata and `ui://` resource
+visibility requires `lab:admin`. Read-scoped callers on protected subset routes can submit the `event` action. Status and gateway-global visibility controls require the root route. Its UI metadata and `ui://` resource
 can be disabled independently like the other Labby-owned app surfaces. Changes
 are persisted and publish both `tools/list_changed` and
 `resources/list_changed` without rebuilding the upstream pool.
 
 Disabling a surface removes its app tool/metadata and owned `ui://` resources,
-and direct reads of a disabled owned resource fail as unknown. It does not tear
+and direct reads of a disabled owned resource return `app_disabled`. It does not tear
 down the underlying text/service capability where one exists: disabling the
 Code Mode inspector leaves `codemode` available, disabling the Server Logs
 app leaves the `server_logs` service tool available without app metadata, and
@@ -253,9 +251,7 @@ authenticated caller, transport/session, route, and catalog security metadata;
 mismatched, expired, or replayed confirmations fail closed.
 
 When the client does **not** support form elicitation, destructive dispatch
-fails closed before the action or any upstream transport runs. There is no
-`params.confirm`, `--yes`, or header equivalent on the MCP path — request params
-are payload, not authorization. The caller must use an elicitation-capable MCP
+fails closed before the action or any upstream transport runs. An action-specific field such as `gateway.oauth.google_revoke`’s `confirm=true` remains required by shared dispatch and cannot satisfy MCP elicitation. The caller must use an elicitation-capable MCP
 client or an operator surface with its own explicit confirmation contract.
 
 `ActionSpec.destructive` is the single source of truth for this gate.
@@ -433,7 +429,7 @@ the connected peer's advertised setting before calling
 |--------|----------|
 | `skills/list` | First-party skills plus every enabled, skills-proxying upstream the caller's route can reach |
 | `skills/get` | One entry by URI. `-32602` means the URI is not a skill this server serves |
-| `resources/read` | Serves `skill://` files. Skill URIs do **not** appear in `resources/list`; the manifest is the discovery surface |
+| `resources/read` | Serves `skill://` files. Resource listing exposes visible Skill manifests. Use each manifest to discover its supporting files |
 
 ### Product surfaces
 
@@ -472,7 +468,7 @@ the mismatch a conforming client must refuse.
 A skill is skipped, with a logged reason, when it contains a symlink at any
 depth (the target could sit outside the root and would be served as first-party
 content), has no `SKILL.md`, has a directory name disagreeing with its
-frontmatter `name`, holds a file over 1 MiB, or holds more files than the
+frontmatter `name`, holds a file over 16 MiB, or holds more files than the
 per-skill manifest cap. One bad directory never costs an operator their other
 skills.
 
@@ -524,8 +520,13 @@ for downstream:
 |-------|---------|
 | `label` | The host-assigned origin label, also the first URI segment |
 | `toolAccess` | `direct` or `code_mode_only` |
-| `reachableTools` | Present only when `direct`: the downstream tool names this origin accounts for |
+| `reachableTools` | Direct-mode `skills/get` includes this origin’s downstream tool names |
 | `note` | Present only when `code_mode_only`: why there is nothing to scope against |
+
+Native `skills/list` pages report direct-mode tool names once per origin in
+`_meta["ai.dinglebear.labby/skillOrigins"][label]`. Use the entry’s
+`skillOrigin.label` to find its names. The compatibility `skills.list` and
+`skills.search` actions expose this same label-to-names mapping as `origins`.
 
 Under Code Mode, raw upstream tools are hidden from `tools/list`, so
 `reachableTools` is deliberately **omitted** rather than emitted empty —

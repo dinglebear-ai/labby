@@ -96,7 +96,7 @@ Call a Windows helper through the live-confirmed helper path:
 
 ```json
 {
-  "code": "async () => {\n    const result = await codemode.agent_os_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
+  "code": "async () => {\n    const result = await codemode.windows_windows_mcp.PowerShell({\n      command: \"$PSVersionTable.PSVersion.ToString()\"\n    });\n    return { ok: true, result };\n  }",
   "tools": ["windows_windows-mcp::PowerShell"]
 }
 ```
@@ -113,7 +113,7 @@ Each `codemode.search()` entry contains:
 | `name` | Capability name. |
 | `description` | Sanitized capability description. |
 | `signature` | Compact callable signature. |
-| `kind` | `tool`, `snippet`, `resource`, `prompt`, `skill`, or reserved `agent`. |
+| `kind` | `tool`, `snippet`, `resource`, `prompt`, `skill`, `command`, or `subagent`. |
 | `tags` | Source-specific tags when present. |
 | `tools` | Optional snippet dependency declaration; it narrows native saved-snippet execution and never grants authority. |
 | `safety` | Optional compact intrinsic safety facts from the live descriptor. |

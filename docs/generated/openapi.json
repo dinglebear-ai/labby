@@ -7427,9 +7427,7 @@
         "type": "object",
         "required": [
           "artifact_id",
-          "expected_revision_id",
           "files",
-          "expected_library_version",
           "idempotency_key"
         ],
         "properties": {

@@ -20,8 +20,9 @@ allowlisted identity, not only `LABBY_AUTH_ADMIN_EMAIL`, could therefore call
   the live `$LABBY_HOME/.env`. They can change `LABBY_MCP_HTTP_TOKEN`,
   `LABBY_AUTH_ADMIN_EMAIL`, `LABBY_GOOGLE_CLIENT_SECRET`, allowlist settings,
   and upstream settings, and the changes take effect at the next restart;
-- `snippets` execution and `server_logs` queries, which take effect
-  immediately.
+- `snippets` execution, `server_logs` queries, and Code Mode local `state`
+  and `git` provider calls. An administrative caller can read or change
+  workspace files and Git repositories.
 
 The fix changes admission from the deploy onward. It does not undo anything
 written before the deploy. The exposure window runs from the first allowlist
@@ -41,7 +42,9 @@ Before changing anything:
    [MIGRATION.md](../access-control/MIGRATION.md).
 3. Copy `$LABBY_HOME/.env`, `$LABBY_HOME/config.toml`, and every
    `.env.bak.*` and `config.toml.bak.*` file, preserving mode `0600`.
-4. Export the service journal for the window.
+4. Export the service journal for the window. Preserve SQLite-consistent
+   copies of `codemode_journal.db` and `usage.db` if present, plus
+   `code-mode-workspaces/` and `code-mode-artifacts/` under `LABBY_HOME`.
 
 Treat these copies as credential material.
 
@@ -90,7 +93,10 @@ invitations, and credential issue events that the owner did not make.
 In the service journal, look for `setup` actions (`draft.set`,
 `draft.commit`, `settings.env.update`), `snippets` execution, and
 `server_logs` queries made by browser sessions other than the configured
-admin.
+admin. Check Code Mode dispatch events for `service=code_mode` and the
+`codemode` action. Correlate available execution IDs and times with retained
+journal entries, workspace changes and Git remotes. Investigate changes and
+rotate any service-user or OpenAPI credentials accessible during the window.
 
 ## 4. Rotate credentials
 

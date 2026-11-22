@@ -24,20 +24,9 @@ documented in [MCP_CONFORMANCE.md](./MCP_CONFORMANCE.md).
 
 ## Fork compatibility
 
-Labby uses `dinglebear-ai/rust-sdk`, based on upstream `rmcp-v3.7.0`
-(`5d6a11f2ae022f513aec0f6e0f10f89a57891a7f`). Both the workspace and
-`labby-auth` pin the same fork revision. The auth dependency retains its
-client-only feature set.
+Labby and `labby-auth` pin the same 3.9.0 fork revision. Skills use the SDK’s native methods. The earlier raw response API was removed. The dated stock conformance fixture has its own pin. See the [conformance matrix](./MCP_CONFORMANCE.md) for both revisions.
 
-The 3.7.0 source comparison retains these fork changes:
-
-| Behavior | Upstream 3.7.0 | Fork policy |
-|---|---|---|
-| Typed extension results | No `Peer::send_request_as` API; core result decoding can discard extension fields | Preserve raw results until the requested type decodes them, across HTTP, SSE, stdio, and Unix sockets |
-| Signed client-credentials grants | JWT form serializer makes the exchange future non-Send | Finish form encoding in a lexical scope before HTTP I/O; retain a Send regression test |
-| Unix-socket response bodies | JSON and error bodies are collected without a configurable byte limit | Retain `with_max_response_bytes` and enforce it before buffering beyond the limit |
-| SSE retry policy | Graceful EOF and initial stream errors bypass the retry policy; server hints can exceed the configured delay | Consult the policy on every reconnect path; reject hints above the configured cap |
-| Origin validation | Malformed-header status and explicit default-port matching are fixed; duplicate headers and portless wildcard matching still need changes | Reject duplicate headers and non-origin URL components; portless entries match the scheme default, while explicit `:*` entries allow any port |
+The fork retains workload authentication, bounded SSE reconnect behavior, and production OAuth conformance support.
 
 Upstream's Origin fixes are [PR #1192](https://github.com/modelcontextprotocol/rust-sdk/pull/1192)
 and [PR #1270](https://github.com/modelcontextprotocol/rust-sdk/pull/1270).
@@ -55,7 +44,7 @@ The bridge harness owns that task and aborts it when the fixture is dropped.
 The release tag establishes the SDK version; test results must come from the
 current candidate. Updating these pins does not certify full MCP compliance.
 
-## SDK 3.7 integration policies
+## SDK integration policies
 
 Initial OAuth sign-in uses explicit configured scopes when they are nonempty.
 Otherwise, Labby selects scopes from the resource challenge, then protected
@@ -124,7 +113,8 @@ network servers.
   Dynamic catalogs, application resources, and authorization-dependent state keep
   their existing cache policy.
 - Native tool, resource, and prompt descriptors have stable display titles and
-  an embedded Labby icon. Upstream titles and icons pass through unchanged.
+  use the server icon supplied once in the initialization response. The embedded
+  icon works offline. Upstream titles and icons pass through unchanged.
 - Destructive confirmation uses the SDK signed request-state format alongside
   the existing bounded, expiring single-use store and caller/request binding.
   Signing keys are process-local; restarting the process invalidates pending
