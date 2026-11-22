@@ -186,8 +186,9 @@ async fn q4_real_resources_render_in_distinct_openai_and_anthropic_emulators() {
         .expect("enable manager through real tools/call");
     assert_ne!(enabled.is_error, Some(true), "enable failed: {enabled:?}");
 
+    // The manager is a native tool. Listing it does not initialize the Forge upstream.
     let tools = runner
-        .discover_tools()
+        .list_tools_once(tokio::time::Instant::now() + Duration::from_secs(5))
         .await
         .expect("discover real MCP tool metadata");
     let manager = tools.get("mcp_app").expect("manager tool after enable");

@@ -246,7 +246,7 @@ impl TransportQualification {
         }
     }
 
-    async fn list_tools_once(
+    pub(crate) async fn list_tools_once(
         &self,
         deadline: tokio::time::Instant,
     ) -> Result<BTreeMap<String, Tool>, String> {
