@@ -690,6 +690,42 @@ async fn resolve_raw_upstream_tool_resolves_cached_tool_without_code_mode() {
 }
 
 #[tokio::test]
+async fn raw_tool_lookup_does_not_probe_ambiguous_cold_upstreams() {
+    let (alpha_server, alpha) =
+        cold_http_upstream("alpha", OneShotHttpResponder::new("ping", Duration::ZERO)).await;
+    let (beta_server, beta) =
+        cold_http_upstream("beta", OneShotHttpResponder::new("pong", Duration::ZERO)).await;
+    let (manager, _) = code_mode_manager_with_upstreams(vec![alpha, beta]).await;
+
+    let error = manager
+        .resolve_raw_upstream_tool("unknown", None, None)
+        .await
+        .expect_err("an unknown bare name cannot select a cold owner");
+    assert_eq!(error.kind(), "unknown_tool");
+    assert!(alpha_server.received_requests().await.unwrap().is_empty());
+    assert!(beta_server.received_requests().await.unwrap().is_empty());
+
+    let allowed = std::collections::BTreeSet::from(["alpha".to_owned()]);
+    let (owner, _) = manager
+        .resolve_raw_upstream_tool_scoped("ping", Some(&allowed), None, None)
+        .await
+        .expect("one eligible cold owner can serve the first call");
+    assert_eq!(owner, "alpha");
+    let requests = alpha_server.received_requests().await.unwrap().len();
+    assert!(requests > 0);
+    let error = manager
+        .resolve_raw_upstream_tool_scoped("unknown", Some(&allowed), None, None)
+        .await
+        .expect_err("a warm catalog miss needs no network probe");
+    assert_eq!(error.kind(), "unknown_tool");
+    assert_eq!(
+        alpha_server.received_requests().await.unwrap().len(),
+        requests
+    );
+    assert!(beta_server.received_requests().await.unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn resolve_raw_upstream_tool_honors_qualified_upstream_name() {
     let (manager, pool) = code_mode_manager_with_upstreams(vec![
         fixture_http_upstream("alpha"),

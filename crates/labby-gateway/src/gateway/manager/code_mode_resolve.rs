@@ -548,20 +548,47 @@ impl GatewayManager {
         matches.retain(|(upstream, _)| {
             is_routable(priority_by_upstream.get(upstream).copied().unwrap_or(1.0))
         });
+        let visible = cfg.upstream.iter().filter(|upstream| {
+            upstream.enabled
+                && is_routable(upstream.priority)
+                && !upstream
+                    .name
+                    .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
+                && allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
+        });
         if let Some(subject) = oauth_subject {
-            let visible = cfg.upstream.iter().filter(|upstream| {
-                upstream.enabled
-                    && upstream.oauth.is_some()
-                    && is_routable(upstream.priority)
-                    && !upstream
-                        .name
-                        .starts_with(labby_runtime::gateway_config::IN_PROCESS_UPSTREAM_PREFIX)
-                    && allowed_upstreams.is_none_or(|allowed| allowed.contains(&upstream.name))
-            });
+            let private = visible.clone().filter(|upstream| upstream.oauth.is_some());
             matches.extend(
-                pool.cached_subject_tool_candidates(visible, subject, &selector.tool_name)
+                pool.cached_subject_tool_candidates(private, subject, &selector.tool_name)
                     .await,
             );
+        }
+
+        // Before the first tools/list, a bare call can still have exactly one
+        // possible shared owner. Never probe a fleet to guess the owner.
+        if matches.is_empty() {
+            let mut possible = visible.filter(|upstream| {
+                upstream.oauth.is_none()
+                    && crate::upstream::pool::entries::resolve_request_exposure_policy(
+                        &upstream.name,
+                        upstream.expose_tools.clone(),
+                    )
+                    .matches(&selector.tool_name)
+            });
+            if let Some(upstream) = possible.next()
+                && possible.next().is_none()
+            {
+                if !pool.has_healthy_tools_for_upstream(&upstream.name).await {
+                    self.ensure_upstream_tool_runtime_ready(&upstream.name, owner, None)
+                        .await?;
+                }
+                if let Some(tool) = pool
+                    .healthy_tool_for_upstream(&upstream.name, &selector.tool_name)
+                    .await
+                {
+                    matches.push((upstream.name.clone(), tool));
+                }
+            }
         }
 
         matches.sort_by(|left, right| left.0.cmp(&right.0));
