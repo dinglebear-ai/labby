@@ -1,3 +1,9 @@
+---
+title: "Serve selected CLI tools as MCP"
+created: "2026-11-21"
+updated: "2026-11-22"
+---
+
 # Serve selected CLI tools as MCP
 
 On Linux, `labby cli serve` runs a standalone MCP server over stdio. It needs
