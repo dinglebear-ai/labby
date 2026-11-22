@@ -250,6 +250,7 @@ struct AuthorityConnection {
     pinned_addresses: Vec<IpAddr>,
     bearer_token_env: Option<String>,
     permits: Arc<tokio::sync::Semaphore>,
+    reconcile_retry_after: Arc<std::sync::atomic::AtomicI64>,
 }
 
 /// Exact body binding for a delegated `POST` assertion: the SHA-256 of the
@@ -327,6 +328,7 @@ impl ArtifactControlPlane {
                         control_plane_url: control_plane_url.to_owned(),
                         pinned_addresses: source.pinned_addresses.clone(),
                         bearer_token_env: source.bearer_token_env.clone(),
+                        reconcile_retry_after: Default::default(),
                         permits: Arc::new(tokio::sync::Semaphore::new(16)),
                     },
                 ))
@@ -388,6 +390,53 @@ impl ArtifactControlPlane {
             sdk_kind: "service_unavailable".to_owned(),
             message: "Managed Depot authority is not ready for mutations".to_owned(),
         })
+    }
+
+    /// Local authorization still runs for every mirror. Only a background
+    /// network read can be deferred after this particular authority fails.
+    pub(crate) async fn reconciliation_head(
+        &self,
+        connection_id: &str,
+        artifact_id: &str,
+        context: &AuthorityContext,
+        now: i64,
+        deadline: tokio::time::Instant,
+    ) -> Result<Value, ToolError> {
+        use std::sync::atomic::Ordering;
+        let connection = self.connection(Some(connection_id))?;
+        if connection.reconcile_retry_after.load(Ordering::Relaxed) > now {
+            return Err(ToolError::Sdk {
+                sdk_kind: "source_unavailable".into(),
+                message: "Artifact authority reconciliation is cooling down".into(),
+            });
+        }
+        let result = tokio::time::timeout_at(
+            deadline,
+            self.execute(
+                Some(connection_id),
+                Operation::ArtifactsGet,
+                &serde_json::json!({"artifactId": artifact_id}),
+                Some(context),
+            ),
+        )
+        .await
+        .unwrap_or_else(|_| {
+            Err(ToolError::Sdk {
+                sdk_kind: "source_unavailable".into(),
+                message: "Artifact reconciliation authority timed out".into(),
+            })
+        });
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.kind(),
+                "source_unavailable" | "service_unavailable" | "rate_limited"
+            )
+        }) {
+            connection
+                .reconcile_retry_after
+                .fetch_max(now.saturating_add(60), Ordering::Relaxed);
+        }
+        result
     }
 
     pub(crate) async fn execute(
@@ -1115,6 +1164,116 @@ mod tests {
     }
     use crate::config::{ArtifactPreferences, ArtifactSourceConfig, ArtifactSourceKind};
 
+    #[tokio::test]
+    async fn reconciliation_head_cools_only_the_slow_authority() {
+        use super::AuthorityConnection;
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{method, path},
+        };
+        let slow = MockServer::start().await;
+        let healthy = MockServer::start().await;
+        let catalog: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json"
+        ))
+        .unwrap();
+        for server in [&slow, &healthy] {
+            Mock::given(method("GET"))
+                .and(path("/api/operations"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(catalog.clone()))
+                .mount(server)
+                .await;
+        }
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.artifacts.get"))
+            .respond_with(ResponseTemplate::new(404).set_delay(std::time::Duration::from_secs(3)))
+            .mount(&slow)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.artifacts.get"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&healthy)
+            .await;
+        let mut controls = managed_controls();
+        for (name, server) in [("slow", &slow), ("healthy", &healthy)] {
+            controls.clients.insert(
+                name.into(),
+                AuthorityConnection {
+                    control_plane_url: server.uri(),
+                    pinned_addresses: vec![server.address().ip()],
+                    bearer_token_env: None,
+                    permits: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
+                    reconcile_retry_after: Default::default(),
+                },
+            );
+        }
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        let mut caller = context(None, true);
+        caller.permission = crate::access::Permission::AssetUse;
+        let (slow_response, healthy_response) = tokio::join!(
+            controls.reconciliation_head("slow", "artifact", &caller, 10, deadline),
+            controls.reconciliation_head("healthy", "artifact", &caller, 10, deadline),
+        );
+        assert_eq!(healthy_response.unwrap_err().kind(), "not_found");
+        assert_eq!(slow_response.unwrap_err().kind(), "source_unavailable");
+        let retry = controls
+            .reconciliation_head("slow", "artifact", &caller, 11, deadline)
+            .await
+            .unwrap_err();
+        assert!(retry.to_string().contains("cooling down"));
+        assert_eq!(
+            controls.clients["healthy"]
+                .reconcile_retry_after
+                .load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn follow_reconciliation_purges_a_revision_withdrawn_at_the_remote_authority() {
+        use super::AuthorityConnection;
+        use serde_json::Value;
+        use std::sync::Arc;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let catalog: Value = serde_json::from_str(include_str!(
+            "../../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json"
+        ))
+        .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/api/operations"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(catalog))
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/api/operations/depot.artifacts.get"))
+            .respond_with(ResponseTemplate::new(404))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let mut controls = managed_controls();
+        controls.clients.insert(
+            "system".into(),
+            AuthorityConnection {
+                control_plane_url: server.uri(),
+                pinned_addresses: vec![server.address().ip()],
+                bearer_token_env: None,
+                reconcile_retry_after: Default::default(),
+                permits: Arc::new(tokio::sync::Semaphore::new(1)),
+            },
+        );
+        crate::dispatch::artifact_distribution::tests::check_follow_reconciliation(
+            "bootstrap-owner",
+            crate::access::ManagedArtifactMirrorStatus::SourceWithdrawn,
+            Some(&controls),
+        )
+        .await;
+    }
+
     #[test]
     fn strips_security_and_operator_fields_but_preserves_product_metadata() {
         let projected = redact_provider_metadata(json!({
@@ -1781,6 +1940,7 @@ pinned_addresses = ["10.1.0.8"]
                     control_plane_url: endpoint,
                     pinned_addresses: vec!["127.0.0.1".parse().unwrap()],
                     bearer_token_env: Some(bearer_env.into()),
+                    reconcile_retry_after: Default::default(),
                     permits: std::sync::Arc::new(tokio::sync::Semaphore::new(2)),
                 },
             )]

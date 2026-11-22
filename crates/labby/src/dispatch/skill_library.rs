@@ -60,6 +60,18 @@ pub(crate) fn process_controls()
 pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> ToolError {
     use auth::SkillLibraryAuthorizationError;
     use dispatch::SkillLibraryDispatchError;
+    use labby_runtime::agent_error::{
+        AgentRecoveryAction, AgentRecoveryAdvice, AgentSameArgumentsRetry, AgentSideEffectRisk,
+    };
+
+    let retry_same_key = || AgentRecoveryAdvice {
+        action: AgentRecoveryAction::RetryLater,
+        same_arguments: AgentSameArgumentsRetry::Safe,
+        guidance:
+            "Retry the identical request with the same idempotency key to reconcile its outcome."
+                .into(),
+        retry_after_ms: None,
+    };
 
     match error {
         SkillLibraryDispatchError::Authorization(SkillLibraryAuthorizationError::Denied) => {
@@ -129,8 +141,8 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
                 ),
             ]),
             None,
-            None,
-            None,
+            Some(retry_same_key()),
+            Some(AgentSideEffectRisk::Possible),
         ),
         SkillLibraryDispatchError::Artifact(
             ArtifactError::LibraryCorrupt(_) | ArtifactError::Io(_) | ArtifactError::Json(_),
@@ -152,8 +164,8 @@ pub(crate) fn map_dispatch_error(error: dispatch::SkillLibraryDispatchError) -> 
                 ),
             ]),
             None,
-            None,
-            None,
+            Some(retry_same_key()),
+            Some(AgentSideEffectRisk::Possible),
         ),
         SkillLibraryDispatchError::BlockingTimeout { .. } => ToolError::Sdk {
             sdk_kind: "timeout".to_owned(),
@@ -210,48 +222,33 @@ pub(crate) fn artifact_distribution_denied() -> ToolError {
     }
 }
 
-pub(crate) fn map_distribution_acquisition_error(error: import::ImportAdapterError) -> ToolError {
-    match error {
-        import::ImportAdapterError::SourceUnavailable => ToolError::Sdk {
-            sdk_kind: "source_unavailable".to_owned(),
-            message: "Requested Artifact source is not configured".to_owned(),
-        },
-        import::ImportAdapterError::Artifact(ArtifactError::Conflict("provider_timeout")) => {
-            ToolError::Sdk {
-                sdk_kind: "timeout".to_owned(),
-                message: "Artifact source timed out".to_owned(),
-            }
-        }
-        import::ImportAdapterError::Artifact(ArtifactError::Conflict(
-            "source_authorization_expired",
-        )) => ToolError::Forbidden {
-            message: "Artifact source authorization failed".to_owned(),
-            required_scopes: Vec::new(),
-        },
-        import::ImportAdapterError::Artifact(error) => {
-            map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))
-        }
-        import::ImportAdapterError::Dispatch(error) => map_dispatch_error(error),
-    }
-}
-
 pub(crate) fn map_import_error(error: import::ImportAdapterError) -> ToolError {
     match error {
         import::ImportAdapterError::SourceUnavailable => ToolError::Sdk {
             sdk_kind: "source_unavailable".to_owned(),
             message: "Requested Skill import source is not configured".to_owned(),
         },
-        import::ImportAdapterError::Artifact(ArtifactError::Conflict("provider_timeout")) => {
-            ToolError::Sdk {
-                sdk_kind: "timeout".to_owned(),
-                message: "Skill import source timed out".to_owned(),
-            }
-        }
         import::ImportAdapterError::Artifact(ArtifactError::Conflict(
-            "source_authorization_expired",
+            "provider_timeout" | "provider_read_timeout",
+        )) => ToolError::Sdk {
+            sdk_kind: "timeout".to_owned(),
+            message: "Skill import source timed out".to_owned(),
+        },
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict(
+            "source_authorization_expired" | "source_authorization_denied",
         )) => ToolError::Forbidden {
             message: "Skill import source authorization failed".to_owned(),
             required_scopes: Vec::new(),
+        },
+        import::ImportAdapterError::Artifact(ArtifactError::Conflict(
+            "provider_connect_failed"
+            | "provider_http_failure"
+            | "provider_peer_unavailable"
+            | "provider_read_failed"
+            | "catalog_binding_unavailable",
+        )) => ToolError::Sdk {
+            sdk_kind: "source_unavailable".into(),
+            message: "Artifact source is unavailable".into(),
         },
         import::ImportAdapterError::Artifact(error) => {
             map_dispatch_error(dispatch::SkillLibraryDispatchError::Artifact(error))

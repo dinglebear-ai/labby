@@ -57,7 +57,7 @@ impl AdmissionLimits {
 impl Default for AdmissionLimits {
     fn default() -> Self {
         Self {
-            active_skills: limits::MAX_SKILLS_PER_UPSTREAM,
+            active_skills: labby_runtime::artifacts::store::MAX_ARTIFACT_LIST_RECORDS,
             aggregate_bytes: 64 * 1024 * 1024,
             per_skill_bytes: 16 * 1024 * 1024,
             total_resources: limits::MAX_SKILLS_PER_UPSTREAM * limits::MAX_RESOURCES_PER_SKILL,

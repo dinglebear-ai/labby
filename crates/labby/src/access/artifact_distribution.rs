@@ -1403,7 +1403,8 @@ impl AccessStore {
         self.query_managed_artifact_mirrors(
             "status IN ('active','committing')
                        AND (last_checked_at IS NULL OR last_checked_at<=?1)
-                     ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id",
+                     ORDER BY ROW_NUMBER() OVER (PARTITION BY source_provider_authority ORDER BY COALESCE(last_checked_at,-9223372036854775808),mirror_id),
+                                COALESCE(last_checked_at,-9223372036854775808),mirror_id",
             checked_before,
             limit,
         )
@@ -1742,6 +1743,24 @@ impl AccessStore {
             }
             Ok(subscriptions)
         }).await
+    }
+
+    pub(crate) async fn mark_artifact_subscription_checked(
+        &self,
+        mirror_id: String,
+        now: i64,
+    ) -> AccessStoreResult<()> {
+        self.with_connection(move |connection| {
+            connection
+                .execute(
+                    "UPDATE artifact_subscriptions SET last_checked_at=?2
+                 WHERE mirror_id=?1 AND status='active' AND update_policy='auto_approved'",
+                    params![mirror_id, now],
+                )
+                .map_err(map_sqlite_error)?;
+            Ok(())
+        })
+        .await
     }
 
     pub(crate) async fn observe_artifact_subscription(
@@ -2839,6 +2858,75 @@ mod tests {
             invalid,
             Err(AccessStoreError::ArtifactMirrorStateConflict)
         ));
+    }
+
+    #[cfg(feature = "skills")]
+    #[tokio::test]
+    async fn reconciliation_drains_640_due_mirrors_in_ten_bounded_batches() {
+        let (directory, store) = bootstrapped_store().await;
+        install_source_policy(&store).await;
+        install_assignment(&store).await;
+        let policy_epoch = current_policy_epoch(&store).await;
+        for index in 0..640 {
+            let id = format!("mirror-{index:03}");
+            let operation = format!("operation-{index:03}");
+            store
+                .stage_managed_artifact_mirror(stage_input(
+                    &id,
+                    &operation,
+                    ManagedArtifactMirrorMode::Pinned,
+                    policy_epoch,
+                ))
+                .await
+                .unwrap();
+            store
+                .mark_managed_artifact_mirror_committing(id, operation, 21)
+                .await
+                .unwrap();
+        }
+        store.execute_test_statement("UPDATE artifact_assignment_distributions SET status='revoked' WHERE assignment_id='assignment-a'").await.unwrap();
+        let runtime =
+            crate::access::AccessRuntime::initialize(directory.path().join("access.db")).await;
+        let artifacts = std::sync::Arc::new(
+            labby_runtime::artifacts::ArtifactStore::new(directory.path().join("artifacts"))
+                .unwrap(),
+        );
+        let controls = crate::dispatch::artifact_control::ArtifactControlPlane::from_config(
+            &crate::config::ArtifactPreferences::default(),
+        )
+        .unwrap();
+        let started = tokio::time::Instant::now();
+        crate::dispatch::skill_library::follow_reconciler::reconcile_due_mirrors(
+            &store,
+            &runtime,
+            &artifacts,
+            &controls,
+            30,
+            10,
+            started + std::time::Duration::from_secs(10),
+        )
+        .await
+        .unwrap();
+        let elapsed = started.elapsed();
+        for index in 0..640 {
+            let row = store
+                .managed_artifact_mirror(format!("mirror-{index:03}"))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                row.status,
+                ManagedArtifactMirrorStatus::Removed,
+                "{}",
+                row.mirror_id
+            );
+        }
+        let due = store
+            .managed_artifact_mirrors_for_reconciliation(10, 64)
+            .await
+            .unwrap();
+        assert_eq!(due.len(), 0);
+        eprintln!("640 revoked mirrors removed in {elapsed:?}");
     }
 
     #[tokio::test]

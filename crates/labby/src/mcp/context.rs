@@ -136,6 +136,21 @@ impl LabMcpServer {
     }
 
     #[cfg(feature = "gateway")]
+    pub(crate) fn code_mode_history_owner(&self, context: &RequestContext<RoleServer>) -> [u8; 32] {
+        use sha2::{Digest as _, Sha256};
+        let auth = auth_context_from_extensions(&context.extensions);
+        let owner = serde_json::json!([
+            self.route_scope.notification_authority_key(),
+            self.transport_label,
+            verified_identity_from_extensions(&context.extensions)
+                .map(labby_auth::VerifiedIdentity::safe_binding_fingerprint),
+            auth.map(|auth| (&auth.issuer, &auth.sub, &auth.actor_key)),
+            auth.is_none().then_some(self.relay_session_id),
+        ]);
+        Sha256::digest(owner.to_string().as_bytes()).into()
+    }
+
+    #[cfg(feature = "gateway")]
     pub(crate) fn request_runtime_owner(
         &self,
         context: &RequestContext<RoleServer>,
@@ -158,7 +173,9 @@ impl LabMcpServer {
     ) -> Vec<crate::config::UpstreamConfig> {
         let mut configs = self.oauth_upstream_configs().await;
         configs.retain(|config| self.route_scope.allows_upstream(&config.name));
-        if self.route_scope.team_credential_subject().is_some() {
+        if let Some(team_id) = self.route_scope.bound_team_id()
+            && !configs.is_empty()
+        {
             let store = match self.access_runtime.store().await {
                 Ok(store) => store,
                 Err(error) => {
@@ -174,35 +191,31 @@ impl LabMcpServer {
                     return Vec::new();
                 }
             };
-            let mut admitted = Vec::with_capacity(configs.len());
-            for config in configs {
-                let Some((team_id, binding_id, generation)) =
-                    self.route_scope.team_credential_binding(&config.name)
-                else {
-                    continue;
-                };
-                let binding = match store
-                    .get_team_gateway_credential_binding(team_id.to_owned(), config.name.clone())
-                    .await
-                {
-                    Ok(Some(binding)) => binding,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        tracing::warn!(
-                            surface = "mcp",
-                            service = "gateway",
-                            cause = %error,
-                            kind = "service_unavailable",
-                            "team credential binding lookup failed; hiding upstream"
-                        );
-                        continue;
-                    }
-                };
-                if team_credential_binding_matches(Some(&binding), binding_id, generation) {
-                    admitted.push(config);
+            let bindings = match store
+                .list_team_gateway_credential_bindings(team_id.to_owned())
+                .await
+            {
+                Ok(bindings) => bindings,
+                Err(error) => {
+                    tracing::warn!(cause = %error, "team credential bindings unavailable; hiding route upstreams");
+                    return Vec::new();
                 }
-            }
-            return admitted;
+            };
+            let bindings: std::collections::HashMap<_, _> = bindings
+                .iter()
+                .map(|binding| (binding.upstream_name.as_str(), binding))
+                .collect();
+            configs.retain(|config| {
+                self.route_scope
+                    .team_credential_binding(&config.name)
+                    .is_some_and(|(_, id, generation)| {
+                        team_credential_binding_matches(
+                            bindings.get(config.name.as_str()).copied(),
+                            id,
+                            generation,
+                        )
+                    })
+            });
         }
         configs
     }
@@ -303,11 +316,13 @@ fn team_credential_binding_matches(
 /// honest empty capability set rather than falling back to connection history.
 pub(crate) fn forwardable_client_capabilities(
     meta: Option<&RequestMetaObject>,
-) -> Option<rmcp::model::ClientCapabilities> {
-    Some(
-        meta.and_then(RequestMetaObject::client_capabilities)
-            .unwrap_or_default(),
-    )
+) -> rmcp::model::ClientCapabilities {
+    let capabilities = meta
+        .and_then(RequestMetaObject::client_capabilities)
+        .unwrap_or_default();
+    #[cfg(feature = "gateway")]
+    let capabilities = labby_gateway::upstream::pool::relay_client_capabilities(capabilities);
+    capabilities
 }
 
 /// Whether an upstream may be opened on a dedicated capability-relay

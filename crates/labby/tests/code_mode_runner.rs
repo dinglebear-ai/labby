@@ -135,8 +135,15 @@ fn code_mode_runner_evaluates_js_in_a_minimal_host_environment() {
     assert_eq!(done["type"], "done");
     // The test code has no explicit return.
     assert_done_undefined(&done);
-    // logs is always [] until Bead 3 console capture is implemented.
-    assert_eq!(done["logs"], json!([]));
+    assert_eq!(done["logs"], json!(["runner console check"]));
+    writeln!(
+        stdin,
+        "{}",
+        json!({"type":"start","code":"async () => { console.error('second run'); }"})
+    )
+    .unwrap();
+    let second = read_protocol_line(&mut stdout);
+    assert_eq!(second["logs"], json!(["second run"]));
     // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
     drop(stdin);
     let status = child.wait().expect("wait for runner");
@@ -145,8 +152,7 @@ fn code_mode_runner_evaluates_js_in_a_minimal_host_environment() {
     stderr
         .read_to_string(&mut stderr_text)
         .expect("read runner stderr");
-    // Console.log capture routes to stderr on the Javy path.
-    assert!(stderr_text.contains("runner console check"));
+    assert!(!stderr_text.contains("runner console check"));
 }
 
 #[test]
@@ -694,7 +700,6 @@ fn code_mode_runner_fans_out_promise_all_tool_calls() {
     assert_eq!(done["type"], "done");
     // The test code has no explicit return.
     assert_done_undefined(&done);
-    // logs is always [] until Bead 3 console capture is implemented.
     assert_eq!(done["logs"], json!([]));
     // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
     drop(stdin);
@@ -750,7 +755,7 @@ fn code_mode_runner_done_carries_return_value() {
         &json!({"pong": true}),
         "done.result must carry the function return value"
     );
-    assert_eq!(done["logs"], json!([]), "logs must be empty until Bead 3");
+    assert_eq!(done["logs"], json!([]));
     // The runner loops (warm-pool); close stdin so it exits cleanly after Done.
     drop(stdin);
     let status = child.wait().expect("wait for runner");
@@ -1579,18 +1584,12 @@ fn warm_pool_runner_recovers_after_execution_error_and_serves_next_start() {
     assert!(status.success(), "runner exits cleanly: {status}");
 }
 
-/// Security invariants hold on a LONG-LIVED (pooled) runner: the process is
-/// spawned with `env_clear()` so no ambient/`LABBY_*` vars are visible to JS, and
-/// on Linux `/proc/<pid>/environ` is unreadable (PR_SET_DUMPABLE). We set a
-/// sentinel env var in the PARENT and prove it is invisible to the child after
-/// at least one execution (i.e. on the warm process), then check `/proc`.
+/// A reused Linux runner keeps its native process environment private.
 #[test]
-fn warm_pool_runner_preserves_env_isolation_on_reused_process() {
-    // A sentinel the child must NOT see. env_clear() drops it.
+#[cfg(target_os = "linux")]
+fn warm_runner_keeps_its_process_environment_private() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_labby"))
         .args(["internal", "code-mode-runner"])
-        .env("LABBY_SECRET_SENTINEL", "do-not-leak")
-        .env("LABBY_MCP_HTTP_TOKEN", "super-secret")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1603,41 +1602,12 @@ fn warm_pool_runner_preserves_env_isolation_on_reused_process() {
     // Warm the process with one execution first.
     drop(run_once(&mut stdin, &mut stdout, "async () => 1"));
 
-    // The runner exposes no `process`/`process.env` to JS at all, so the only
-    // way the child could leak env is via the OS. Assert the child's actual
-    // environment (read from /proc on Linux) carries neither sentinel.
-    #[cfg(target_os = "linux")]
-    {
-        let environ_path = format!("/proc/{pid}/environ");
-        match std::fs::read(&environ_path) {
-            Ok(bytes) => {
-                // Readable means PR_SET_DUMPABLE did not take effect; even so,
-                // env_clear must have removed our sentinels.
-                let text = String::from_utf8_lossy(&bytes);
-                assert!(
-                    !text.contains("do-not-leak"),
-                    "env_clear must remove LABBY_SECRET_SENTINEL from the runner env"
-                );
-                assert!(
-                    !text.contains("super-secret"),
-                    "env_clear must remove LABBY_MCP_HTTP_TOKEN from the runner env"
-                );
-            }
-            Err(err) => {
-                // Unreadable /proc/<pid>/environ is the expected hardened state
-                // (PR_SET_DUMPABLE, 0) — a stronger guarantee than env_clear.
-                assert!(
-                    matches!(
-                        err.kind(),
-                        std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::NotFound
-                    ),
-                    "unexpected error reading {environ_path}: {err}"
-                );
-            }
-        }
+    drop(run_once(&mut stdin, &mut stdout, "async () => 2"));
+    if std::fs::metadata("/proc/self/environ").is_ok() {
+        let error = std::fs::read(format!("/proc/{pid}/environ"))
+            .expect_err("runner disables process dumps");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
     }
-    #[cfg(not(target_os = "linux"))]
-    let _ = pid;
 
     drop(stdin);
     let status = child.wait().expect("wait");

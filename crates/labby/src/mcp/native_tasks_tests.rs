@@ -41,9 +41,6 @@ pub(super) async fn server_fixture() -> (
         #[cfg(feature = "gateway")]
         client_registry: Default::default(),
         transport_label: "http",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(
-            crate::mcp::logging::logging_level_rank(crate::mcp::logging::LoggingLevel::Info),
-        )),
         route_scope: Default::default(),
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -364,4 +361,68 @@ async fn native_tasks_route_and_legacy_requests_cannot_use_a_root_handle() {
         assert_eq!(error.code, rmcp::model::ErrorCode::INVALID_PARAMS);
     }
     running.cancel().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_task_seed_checks_team_ownership_before_issuing_a_handle() {
+    use crate::mcp::route_scope::McpRouteScope;
+    let (_directory, mut server, store, owner) = server_fixture().await;
+    crate::dispatch::tasks::dispatch(
+        crate::dispatch::tasks::TaskDispatchContext {
+            store,
+            identity: owner.clone(),
+            ceiling: crate::access::AuthorityCeiling::trusted_local(),
+        },
+        "tasks.create",
+        json!({"task_id":"personal","idempotency_key":"personal-key",
+            "owner_kind":"personal","owner_id":"bootstrap-owner",
+            "agent_id":"mcp-native-agent","input":"hello"}),
+    )
+    .await
+    .unwrap();
+    server.route_scope =
+        McpRouteScope::protected_subset("team-route", ["upstream"], ["tasks"], false);
+    let McpRouteScope::ProtectedSubset { team_id, .. } = &mut server.route_scope else {
+        unreachable!()
+    };
+    *team_id = Some("alpha".into());
+    let (io, _client) = tokio::io::duplex(4096);
+    let running =
+        rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(server, io, None);
+    let ctx = context(running.peer().clone(), &owner, true);
+    let error = running
+        .service()
+        .native_task_seed(&json!({"task_id":"personal"}), &ctx)
+        .await
+        .unwrap_err();
+    assert_eq!(error.kind(), "forbidden");
+}
+
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn native_tasks_require_legacy_project_binding() {
+    let (_directory, server, _store, owner) = server_fixture().await;
+    let (io, _client) = tokio::io::duplex(4096);
+    let running =
+        rmcp::service::serve_directly::<RoleServer, _, _, std::io::Error, _>(server, io, None);
+    let mut ctx = context(running.peer().clone(), &owner, true);
+    running
+        .service()
+        .native_task_gate("tasks.get", &ctx)
+        .await
+        .unwrap();
+    ctx.extensions
+        .get_mut::<axum::http::request::Parts>()
+        .unwrap()
+        .extensions
+        .insert(crate::mcp::bound_access::ProjectAccessObservation::Unavailable);
+    assert_eq!(
+        running
+            .service()
+            .native_task_gate("tasks.get", &ctx)
+            .await
+            .unwrap_err()
+            .kind(),
+        "forbidden"
+    );
 }

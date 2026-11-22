@@ -127,6 +127,7 @@ pub fn requires_execution_context(action: &str) -> bool {
     matches!(
         action,
         "snippets.exec"
+            | "snippets.list"
             | "snippets.fixture"
             | "snippets.test"
             | "snippets.promote"
@@ -165,7 +166,7 @@ pub async fn dispatch_with_manager_and_context(
     dispatch_inner(Some(manager), action, params, dispatch_context, None).await
 }
 
-fn dispatch_inner(
+pub(crate) fn dispatch_inner(
     manager: Option<&crate::dispatch::gateway::manager::GatewayManager>,
     action: &str,
     params: Value,
@@ -215,10 +216,26 @@ async fn dispatch_inner_owned(
             let a = require_str(&params, "action")?;
             action_schema(ACTIONS, a)
         }
-        "snippets.list" => to_json(list_snippets_with_diagnostics(
-            &lab_home(),
-            &builtin_snippet_dir(),
-        )?),
+        "snippets.list" => {
+            let mut list = store_operation(|home| {
+                list_snippets_with_diagnostics(home, &builtin_snippet_dir())
+            })
+            .await?;
+            if dispatch_context
+                .as_ref()
+                .is_some_and(|ctx| !ctx.is_admin || !ctx.execution_caller.is_admin())
+            {
+                list.snippets
+                    .retain(|item| item.source == super::store::SnippetSource::Builtin);
+                for item in &mut list.snippets {
+                    item.path = item.path.file_name().unwrap_or_default().into();
+                    item.shadowed = false;
+                }
+                list.diagnostics.clear();
+                list.diagnostics_omitted = 0;
+            }
+            to_json(list)
+        }
         "snippets.fixture" => super::fixtures::generate(manager, params, dispatch_context).await,
         "snippets.history" | "snippets.artifact" => {
             super::history::dispatch(manager, action, params, dispatch_context).await
@@ -245,17 +262,19 @@ async fn dispatch_inner_owned(
             )
         }
         "snippets.get" => {
-            let name = require_str(&params, "name")?;
-            to_json(resolve_snippet(&lab_home(), &builtin_snippet_dir(), &name)?)
+            let name = require_str(&params, "name")?.to_owned();
+            to_json(
+                store_operation(move |home| resolve_snippet(home, &builtin_snippet_dir(), &name))
+                    .await?,
+            )
         }
         "snippets.create" => {
             let params: CreateParams = parse_params(params)?;
-            let home = lab_home();
             let builtins = builtin_snippet_dir();
             to_json(
-                publication(move || {
+                store_operation(move |home| {
                     create_user_snippet_guarded(
-                        &home,
+                        home,
                         &builtins,
                         &params.name,
                         &params.body,
@@ -274,13 +293,15 @@ async fn dispatch_inner_owned(
         }
         "snippets.validate" => {
             let params: ValidateParams = parse_params(params)?;
-            validate_snippet(params.name.as_deref(), params.body.as_deref())
+            store_operation(move |home| {
+                validate_snippet(home, params.name.as_deref(), params.body.as_deref())
+            })
+            .await
         }
         "snippets.remove" => {
             let name = require_str(&params, "name")?.to_owned();
-            let home = lab_home();
             let builtins = builtin_snippet_dir();
-            to_json(publication(move || remove_user_snippet(&home, &builtins, &name)).await?)
+            to_json(store_operation(move |home| remove_user_snippet(home, &builtins, &name)).await?)
         }
         "snippets.exec" => {
             let params: ExecParams = parse_params(params)?;
@@ -358,15 +379,15 @@ async fn dispatch_inner_owned(
     }
 }
 
-// Publication may wait for another process's advisory lock. Keep that bounded
-// synchronous wait off the async executor on every mutation surface.
-async fn publication<T: Send + 'static>(
-    operation: impl FnOnce() -> Result<T, ToolError> + Send + 'static,
+// Filesystem reads and advisory file locks run on the blocking pool.
+pub(super) async fn store_operation<T: Send + 'static>(
+    operation: impl FnOnce(&std::path::Path) -> Result<T, ToolError> + Send + 'static,
 ) -> Result<T, ToolError> {
-    tokio::task::spawn_blocking(operation)
+    let home = lab_home();
+    tokio::task::spawn_blocking(move || operation(&home))
         .await
         .map_err(|error| {
-            ToolError::internal_message(format!("snippet publication worker failed: {error}"))
+            ToolError::internal_message(format!("snippet store worker failed: {error}"))
         })?
 }
 
@@ -392,12 +413,11 @@ async fn promote_snippet(
             },
         )
         .await?;
-    let home = lab_home();
     let builtins = builtin_snippet_dir();
     let code = source.code.clone();
-    let info = publication(move || {
+    let info = store_operation(move |home| {
         create_promoted_user_snippet(
-            &home,
+            home,
             &builtins,
             &params.name,
             &code,
@@ -423,7 +443,11 @@ async fn promote_snippet(
     }))
 }
 
-fn validate_snippet(name: Option<&str>, body: Option<&str>) -> Result<Value, ToolError> {
+fn validate_snippet(
+    home: &std::path::Path,
+    name: Option<&str>,
+    body: Option<&str>,
+) -> Result<Value, ToolError> {
     if let Some(body) = body {
         let name = name.ok_or_else(|| {
             missing_param(
@@ -442,7 +466,7 @@ fn validate_snippet(name: Option<&str>, body: Option<&str>) -> Result<Value, Too
 
     let name =
         name.ok_or_else(|| missing_param("missing required parameter `name` or `body`", "name"))?;
-    let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
+    let snippet = resolve_snippet(home, &builtin_snippet_dir(), name)?;
     let _code = code_for_snippet(&snippet)?;
     to_json(json!({
         "valid": true,

@@ -97,7 +97,7 @@ pub(crate) fn render(uri: &str, message: impl Into<String>) -> ErrorData {
 /// selects the kind; this renderer never includes upstream-authored detail.
 #[must_use]
 #[cfg(feature = "gateway")]
-pub(crate) fn fetch_classified(uri: &str, kind: &'static str, summary: &str) -> ErrorData {
+pub(crate) fn fetch_classified(uri: &str, kind: &str, summary: &str) -> ErrorData {
     let context = context(uri);
     internal_agent_error(kind, format!("Resource `{uri}` {summary}."), None, &context)
 }
@@ -119,7 +119,12 @@ pub(crate) fn classify_fetch_failure(
         ),
         CapabilityCallError::Timeout { .. } => ("timeout", "read timed out"),
         CapabilityCallError::Cancelled { .. } => ("cancelled", "read was cancelled"),
-        CapabilityCallError::NotExposed { .. } => ("not_found", "is not exposed"),
+        CapabilityCallError::NotExposed { .. } => ("not_found", "is unavailable"),
+        CapabilityCallError::Mcp { data, .. }
+            if data.code == rmcp::model::ErrorCode::RESOURCE_NOT_FOUND =>
+        {
+            ("not_found", "is unavailable")
+        }
         _ => ("upstream_error", "could not be fetched"),
     }
 }
@@ -204,6 +209,19 @@ mod tests {
                     message: "opaque".into(),
                 },
                 "queue_saturated",
+            ),
+            (
+                CapabilityCallError::NotExposed {
+                    message: "opaque".into(),
+                },
+                "not_found",
+            ),
+            (
+                CapabilityCallError::Mcp {
+                    data: Box::new(ErrorData::resource_not_found("opaque", None)),
+                    message: "opaque".into(),
+                },
+                "not_found",
             ),
             (
                 CapabilityCallError::Other {

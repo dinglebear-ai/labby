@@ -234,7 +234,7 @@ pub(crate) async fn dispatch_schedule(
             .to_owned();
         let rows = context
             .store
-            .task_schedule_page(after, 100)
+            .task_schedule_page(after, 100, context.ceiling.bound_team.clone())
             .await
             .map_err(map)?;
         let next = rows.last().map(|r| r.schedule_id.clone());

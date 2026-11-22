@@ -94,7 +94,7 @@ async fn quota_is_enforced_per_inbox_and_globally() {
         let tx = db.transaction()?;
         tx.execute_batch(
             "WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<1991)
-             INSERT INTO agent_inboxes
+             INSERT INTO agent_inboxes(id,recipient,scope,expires)
              SELECT 'inbox-'||n,'owner-'||n,'authenticated_client',3600001 FROM seq;
              INSERT INTO agent_event_subscriptions
              (id,recipient,inbox_id,authority_key,callback,secret,secret_fingerprint,expires,generation)

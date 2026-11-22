@@ -122,9 +122,17 @@ mod tests {
         }
         async fn call_tool(
             &self,
-            _request: rmcp::model::CallToolRequestParams,
+            request: rmcp::model::CallToolRequestParams,
             _context: rmcp::service::RequestContext<rmcp::RoleServer>,
         ) -> Result<rmcp::model::CallToolResponse, rmcp::ErrorData> {
+            assert_eq!(request.name, "sandbox_list");
+            let args = request.arguments.expect("Tailcat binds the session owner");
+            assert!(
+                args["expectedOwner"]
+                    .as_str()
+                    .is_some_and(|owner| !owner.is_empty())
+            );
+            assert_eq!(args["names"], serde_json::json!([]));
             self.started.notify_one();
             self.release.notified().await;
             Ok(
@@ -153,8 +161,8 @@ mod tests {
             },
         )
         .await;
-        let tool = rmcp::model::Tool::new(
-            "pending_tool",
+        let mut tool = rmcp::model::Tool::new(
+            "sandbox_list",
             "bounded cancellation fixture",
             Arc::new(serde_json::Map::new()),
         )
@@ -163,11 +171,18 @@ mod tests {
                 .read_only(true)
                 .destructive(false),
         );
+        tool.meta = Some(
+            serde_json::json!({"labby.tailcat.owned_access": 1})
+                .as_object()
+                .unwrap()
+                .clone()
+                .into(),
+        );
         pool.insert_tool_routes_for_tests(
             "msb",
             vec![labby_gateway::upstream::types::UpstreamTool {
                 upstream_name: Arc::from("msb"),
-                input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone())),
+                input_schema: Some(serde_json::Value::Object((*tool.input_schema).clone()).into()),
                 output_schema: None,
                 destructive: false,
                 tool,
@@ -207,7 +222,7 @@ mod tests {
         let mut stream = tokio::net::TcpStream::connect(listener.address())
             .await
             .unwrap();
-        let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"pending_tool","arguments":{}}}).to_string();
+        let body = serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"sandbox_list","arguments":{}}}).to_string();
         let headers = format!(
             "POST /mcp HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {}\r\nOrigin: {}\r\nLabby-Tailcat-Generation: {}\r\nMCP-Protocol-Version: 2025-03-26\r\nContent-Type: application/json\r\nAccept: application/json, text/event-stream\r\nContent-Length: {}\r\n\r\n{}",
             lease.envelope(),

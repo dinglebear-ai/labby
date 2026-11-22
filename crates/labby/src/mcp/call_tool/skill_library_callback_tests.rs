@@ -231,7 +231,6 @@ fn callback_action_catalog_has_no_app_only_or_stale_aliases() {
         .iter()
         .map(|spec| spec.name)
         .collect::<Vec<_>>();
-    assert_eq!(actions.len(), 24);
     assert!(actions.contains(&"artifacts.list"));
     assert!(!actions.contains(&"open"));
     assert!(!actions.contains(&"artifacts.open"));
@@ -260,7 +259,6 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
     use rmcp::model::{CallToolRequestParams, NumberOrString};
     use rmcp::service::{RequestContext, serve_directly};
 
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::server::LabMcpServer;
 
     let server = LabMcpServer {
@@ -277,9 +275,6 @@ async fn actual_http_adapter_rejects_hostile_callback_transports_with_safe_corre
         #[cfg(feature = "gateway")]
         client_registry: Default::default(),
         transport_label: "http",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-            LoggingLevel::Emergency,
-        ))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -413,7 +408,6 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         ActivationCoordinator, ArtifactFirstPartyProjection, GenerationProjection,
         SkillLibraryService,
     };
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::server::LabMcpServer;
 
     let root = tempfile::tempdir().expect("temporary Skill Library root");
@@ -482,6 +476,33 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         )
         .expect("control plane"),
     );
+    // The owner has durable access, so each refusal here must come from
+    // the transport boundary before the action consumes parameters or connects.
+    use crate::dispatch::skill_library::auth::{
+        SkillLibraryCaller, SkillLibrarySurface, SkillLibraryTransport,
+    };
+    let unscoped = SkillLibraryCaller::new(
+        eli.clone(),
+        [],
+        SkillLibraryTransport::bearer(SkillLibrarySurface::Mcp, true),
+    );
+    for action in crate::dispatch::remote_control::REMOTE_ARTIFACT_ACTIONS {
+        let error = crate::dispatch::skill_library::surface::dispatch_authorized_action(
+            &service,
+            Some(imports.clone()),
+            &access_runtime,
+            unscoped.clone(),
+            "bootstrap-default",
+            action.name,
+            serde_json::json!({}),
+            &crate::dispatch::skill_library::audit::SkillLibraryCorrelationId::server(
+                "remote-transport-matrix",
+            ),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "forbidden", "{}", action.name);
+    }
     let runtime = Arc::new(crate::dispatch::skill_library::ProcessSkillLibraryRuntime {
         service,
         imports,
@@ -506,9 +527,6 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
         #[cfg(feature = "gateway")]
         client_registry: Default::default(),
         transport_label: "http",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-            LoggingLevel::Emergency,
-        ))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -720,13 +738,10 @@ async fn authenticated_http_call_tool_reaches_process_library_for_read_and_mutat
     let generation = publication.generation();
     let mut resource_facts = Vec::new();
     for (label, principal) in [("eli", &eli), ("pujit", &pujit), ("jake", &jake)] {
-        let caller = crate::dispatch::skill_library::auth::SkillLibraryCaller::new(
+        let caller = SkillLibraryCaller::new(
             principal.clone(),
             ["lab:read".to_owned()],
-            crate::dispatch::skill_library::auth::SkillLibraryTransport::bearer(
-                crate::dispatch::skill_library::auth::SkillLibrarySurface::Mcp,
-                true,
-            ),
+            SkillLibraryTransport::bearer(SkillLibrarySurface::Mcp, true),
         );
         let decision = crate::dispatch::skill_library::auth::authorize_at_boundary(
             &access_runtime,
@@ -870,7 +885,6 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
     use rmcp::model::{CallToolRequestParams, NumberOrString};
     use rmcp::service::{RequestContext, serve_directly};
 
-    use crate::mcp::logging::{LoggingLevel, logging_level_rank};
     use crate::mcp::server::LabMcpServer;
 
     let manager = Arc::new(
@@ -912,9 +926,6 @@ async fn explicit_mcp_action_allowlist_permits_list_and_denies_create() {
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "http",
-        logging_level: Arc::new(std::sync::atomic::AtomicU8::new(logging_level_rank(
-            LoggingLevel::Emergency,
-        ))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,

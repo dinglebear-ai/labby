@@ -342,7 +342,8 @@ pub(crate) struct SkillLibraryAuthorizationDecision {
     project_id: LibraryActorId,
     team_ids: BTreeSet<LibraryActorId>,
     team_management_ids: BTreeSet<LibraryActorId>,
-    authority_generation: u64,
+    role: ProjectRole,
+    pub(crate) can_create: bool,
     is_admin: bool,
     is_platform_admin: bool,
 }
@@ -354,17 +355,42 @@ impl SkillLibraryAuthorizationDecision {
         &self.tenant_id
     }
 
-    pub(crate) fn cursor_binding(&self) -> (&str, &str, &str, u64) {
+    pub(crate) fn cursor_binding(&self) -> (&str, &str, &str, [u8; 2]) {
         (
             self.tenant_id.as_str(),
             self.actor_id.as_str(),
             self.project_id.as_str(),
-            self.authority_generation,
+            [u8::from(self.is_admin), u8::from(self.is_platform_admin)],
         )
     }
 
     pub(crate) fn cursor_team_ids(&self) -> impl Iterator<Item = &str> {
         self.team_ids.iter().map(LibraryActorId::as_str)
+    }
+
+    pub(crate) fn permits_mutation(&self, ownership: &LibraryOwnership) -> bool {
+        self.can_create
+            && resolve_grant(
+                &self.role,
+                &self.tenant_id,
+                &self.actor_id,
+                &self.project_id,
+                &self.team_ids,
+                &self.team_management_ids,
+                self.is_platform_admin,
+                SkillLibraryAction::Save,
+                SkillLibraryTarget::Mutation(ownership),
+            )
+            .is_some()
+    }
+
+    pub(crate) fn permits_shared_create(&self) -> bool {
+        self.can_create
+            && if self.team_ids.len() == 1 {
+                self.team_ids.is_subset(&self.team_management_ids)
+            } else {
+                self.is_admin
+            }
     }
 
     pub(crate) fn into_shared_create(
@@ -377,18 +403,7 @@ impl SkillLibraryAuthorizationDecision {
         ),
         SkillLibraryAuthorizationError,
     > {
-        if self.team_ids.len() == 1
-            && !self
-                .team_ids
-                .iter()
-                .all(|team| self.team_management_ids.contains(team))
-        {
-            return Err(SkillLibraryAuthorizationError::Denied);
-        }
-        // Without a Team context the shared record becomes project-owned. Creating a
-        // project-owned record is project management, exactly like mutating one later, so it
-        // requires the same Owner/Admin role that `resolve_grant` demands for mutations.
-        if self.team_ids.len() != 1 && !self.is_admin {
+        if !self.permits_shared_create() {
             return Err(SkillLibraryAuthorizationError::Denied);
         }
         let (owner_kind, scope_id) = self
@@ -656,9 +671,19 @@ async fn authorize_distribution_identity_at_boundary(
     }
 
     let tenant_id = LibraryTenantId::from_canonical_projection(snapshot.organization_id.clone())
-        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+        .map_err(|_| {
+            projection_failure(
+                "organization_id",
+                action,
+                target_id,
+                correlation_id,
+                surface,
+            )
+        })?;
     let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id.clone())
-        .map_err(|_| SkillLibraryAuthorizationError::Unavailable)?;
+        .map_err(|_| {
+            projection_failure("principal_id", action, target_id, correlation_id, surface)
+        })?;
     let audit = SkillLibraryAuditEvent::new(
         correlation_id.clone(),
         target_id,
@@ -705,17 +730,7 @@ pub(crate) async fn authorize_at_boundary(
     };
     let audit_sink = skill_library_audit_sink();
     let surface = caller.transport.surface;
-    validate_transport(&caller, action).inspect_err(|_| {
-        let event = SkillLibraryAuditEvent::new(
-            correlation_id.clone(),
-            target_id,
-            action,
-            surface,
-            SkillLibraryAuditOutcome::Deny,
-            SkillLibraryAuditStage::Transport,
-        );
-        audit_sink.record(event);
-    })?;
+    authorize_transport(&caller, action, target_id, correlation_id)?;
     validate_target_kind(action, target).inspect_err(|_| {
         let event = SkillLibraryAuditEvent::new(
             correlation_id.clone(),
@@ -745,6 +760,7 @@ pub(crate) async fn authorize_at_boundary(
     } else {
         Permission::AssetDiscover
     };
+    let write_transport = validate_transport_class(&caller, true).is_ok();
     let selected_team_id = caller.selected_team_id.clone();
     let mut snapshot = store
         .authorize_skill_library(caller.identity, project_id.to_owned(), permission)
@@ -788,9 +804,50 @@ pub(crate) async fn authorize_at_boundary(
             policy_error
         })?;
 
-    narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref())?;
+    narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref()).inspect_err(|_| {
+        skill_library_audit_sink().record(SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::AccessSnapshot,
+        ));
+    })?;
 
-    decision_from_snapshot(snapshot, action, target_id, target, correlation_id, surface)
+    decision_from_snapshot(
+        snapshot,
+        action,
+        target_id,
+        target,
+        correlation_id,
+        surface,
+        write_transport,
+    )
+}
+
+fn projection_failure(
+    field: &'static str,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    correlation_id: &SkillLibraryCorrelationId,
+    surface: SkillLibrarySurface,
+) -> SkillLibraryAuthorizationError {
+    tracing::error!(
+        surface = ?surface,
+        action = ?action,
+        field,
+        "Skill Library access snapshot carries a malformed canonical identifier"
+    );
+    skill_library_audit_sink().record(SkillLibraryAuditEvent::new(
+        correlation_id.clone(),
+        target_id,
+        action,
+        surface,
+        SkillLibraryAuditOutcome::Unavailable,
+        SkillLibraryAuditStage::AccessSnapshot,
+    ));
+    SkillLibraryAuthorizationError::Unavailable
 }
 
 fn decision_from_snapshot(
@@ -800,47 +857,43 @@ fn decision_from_snapshot(
     target: SkillLibraryTarget<'_>,
     correlation_id: &SkillLibraryCorrelationId,
     surface: SkillLibrarySurface,
+    write_transport: bool,
 ) -> Result<SkillLibraryAuthorizationDecision, SkillLibraryAuthorizationError> {
     let audit_sink = skill_library_audit_sink();
     // Every other failure below records an audit event. A malformed persisted
     // identifier is exactly the condition `MalformedVocabulary` names, and it
     // fails every Skill Library call for the tenant — it must not be the one
     // path that leaves no trace. Log the field name only, never the value.
-    let projection_failure = |field: &'static str| {
-        tracing::error!(
-            surface = ?surface,
-            action = ?action,
-            field,
-            "Skill Library access snapshot carries a malformed canonical identifier"
-        );
-        audit_sink.record(SkillLibraryAuditEvent::new(
-            correlation_id.clone(),
-            target_id,
-            action,
-            surface,
-            SkillLibraryAuditOutcome::Unavailable,
-            SkillLibraryAuditStage::AccessSnapshot,
-        ));
-        SkillLibraryAuthorizationError::Unavailable
-    };
-    let tenant_id = LibraryTenantId::from_canonical_projection(snapshot.organization_id)
-        .map_err(|_| projection_failure("organization_id"))?;
-    let actor_id = LibraryActorId::from_canonical_projection(snapshot.principal_id)
-        .map_err(|_| projection_failure("principal_id"))?;
-    let project_id = LibraryActorId::from_canonical_projection(snapshot.project_id)
-        .map_err(|_| projection_failure("project_id"))?;
+    let tenant_id =
+        LibraryTenantId::from_canonical_projection(snapshot.organization_id).map_err(|_| {
+            projection_failure(
+                "organization_id",
+                action,
+                target_id,
+                correlation_id,
+                surface,
+            )
+        })?;
+    let actor_id =
+        LibraryActorId::from_canonical_projection(snapshot.principal_id).map_err(|_| {
+            projection_failure("principal_id", action, target_id, correlation_id, surface)
+        })?;
+    let project_id =
+        LibraryActorId::from_canonical_projection(snapshot.project_id).map_err(|_| {
+            projection_failure("project_id", action, target_id, correlation_id, surface)
+        })?;
     let team_ids = snapshot
         .team_ids
         .into_iter()
         .map(LibraryActorId::from_canonical_projection)
         .collect::<Result<BTreeSet<_>, _>>()
-        .map_err(|_| projection_failure("team_id"))?;
+        .map_err(|_| projection_failure("team_id", action, target_id, correlation_id, surface))?;
     let team_management_ids = snapshot
         .team_management_ids
         .into_iter()
         .map(LibraryActorId::from_canonical_projection)
         .collect::<Result<BTreeSet<_>, _>>()
-        .map_err(|_| projection_failure("team_id"))?;
+        .map_err(|_| projection_failure("team_id", action, target_id, correlation_id, surface))?;
     let is_admin = snapshot.is_platform_admin
         || matches!(snapshot.role, ProjectRole::Owner | ProjectRole::Admin);
     let (grant, ownership) = resolve_grant(
@@ -909,7 +962,8 @@ fn decision_from_snapshot(
         project_id,
         team_ids,
         team_management_ids,
-        authority_generation: snapshot.global_revision,
+        can_create: write_transport && snapshot.role.permissions().contains(&Permission::AssetUse),
+        role: snapshot.role,
         is_admin,
         is_platform_admin: snapshot.is_platform_admin,
     })
@@ -1056,7 +1110,18 @@ where
             project_id.to_owned(),
             Permission::AssetUse,
             move |mut snapshot| {
-                narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref())?;
+                narrow_to_selected_team(&mut snapshot, selected_team_id.as_deref()).inspect_err(
+                    |_| {
+                        skill_library_audit_sink().record(SkillLibraryAuditEvent::new(
+                            commit_correlation_id.clone(),
+                            &commit_target_id,
+                            action,
+                            surface,
+                            SkillLibraryAuditOutcome::Deny,
+                            SkillLibraryAuditStage::AccessSnapshot,
+                        ));
+                    },
+                )?;
                 let decision = decision_from_snapshot(
                     snapshot,
                     action,
@@ -1064,6 +1129,7 @@ where
                     owned_target.as_target(),
                     &commit_correlation_id,
                     surface,
+                    true,
                 )?;
                 Ok::<Result<T, E>, SkillLibraryAuthorizationError>(executor(
                     &decision.authorization,
@@ -1163,6 +1229,25 @@ pub(crate) enum SkillLibraryCommitError<E> {
     Authorization(SkillLibraryAuthorizationError),
     #[error("skill library commit failed")]
     Execution(E),
+}
+
+pub(super) fn authorize_transport(
+    caller: &SkillLibraryCaller,
+    action: SkillLibraryAction,
+    target_id: &CanonicalArtifactId,
+    correlation_id: &SkillLibraryCorrelationId,
+) -> Result<(), SkillLibraryAuthorizationError> {
+    validate_transport(caller, action).inspect_err(|_| {
+        let event = SkillLibraryAuditEvent::new(
+            correlation_id.clone(),
+            target_id,
+            action,
+            caller.transport.surface,
+            SkillLibraryAuditOutcome::Deny,
+            SkillLibraryAuditStage::Transport,
+        );
+        skill_library_audit_sink().record(event);
+    })
 }
 
 fn validate_transport(
@@ -1267,7 +1352,17 @@ fn resolve_grant(
         ));
     }
     if let SkillLibraryTarget::SharedActiveRecord(ownership) = target {
-        if ownership.tenant_id != *tenant_id {
+        if !labby_runtime::artifacts::permits_skill_library_record(
+            tenant_id,
+            actor_id,
+            project_id,
+            team_ids,
+            matches!(role, ProjectRole::Owner | ProjectRole::Admin),
+            is_platform_admin,
+            ownership,
+            SkillVisibility::Tenant,
+            true,
+        ) {
             return None;
         }
         return Some((LibraryGrant::Owner, ownership.clone()));
@@ -1459,6 +1554,77 @@ mod tests {
             Err(SkillLibraryAuthorizationError::Denied),
             "a final-boundary snapshot cannot regain a different Team after context selection",
         );
+    }
+
+    #[tokio::test]
+    async fn selected_team_denial_and_malformed_distribution_projection_are_audited() {
+        let (_dir, runtime, owner) = fixture().await;
+        let target = CanonicalArtifactId::parse("audit-target").unwrap();
+        let caller = browser_caller(owner, true);
+        let team_correlation = SkillLibraryCorrelationId::server("audit-selected-team");
+        let result = authorize_at_boundary(
+            &runtime,
+            caller
+                .clone()
+                .with_selected_team_id(Some("unknown-team".into())),
+            "bootstrap-default",
+            SkillLibraryAction::Create,
+            &target,
+            SkillLibraryTarget::CreateForCaller,
+            &team_correlation,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(SkillLibraryAuthorizationError::Denied)
+        ));
+        runtime
+            .store()
+            .await
+            .unwrap()
+            .execute_test_statement(
+                "INSERT INTO organizations VALUES(' malformed ','Test','active',0,2,2);
+             INSERT INTO projects VALUES('audit-project',' malformed ','Test','active',0,2,2);",
+            )
+            .await
+            .unwrap();
+        let distribution_correlation =
+            SkillLibraryCorrelationId::server("audit-invalid-projection");
+        let result = authorize_distribution_at_boundary(
+            &runtime,
+            &caller,
+            "audit-project",
+            SkillLibraryAction::Pin,
+            &target,
+            &distribution_correlation,
+        )
+        .await;
+        assert_eq!(
+            result.err(),
+            Some(SkillLibraryAuthorizationError::Unavailable)
+        );
+        let events = skill_library_audit_sink().events();
+        for (correlation, action, outcome) in [
+            (
+                team_correlation,
+                SkillLibraryAction::Create,
+                SkillLibraryAuditOutcome::Deny,
+            ),
+            (
+                distribution_correlation,
+                SkillLibraryAction::Pin,
+                SkillLibraryAuditOutcome::Unavailable,
+            ),
+        ] {
+            assert!(events.contains(&SkillLibraryAuditEvent::new(
+                correlation,
+                &target,
+                action,
+                SkillLibrarySurface::ApiCookie,
+                outcome,
+                SkillLibraryAuditStage::AccessSnapshot
+            )));
+        }
     }
 
     async fn decide(

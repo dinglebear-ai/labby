@@ -84,10 +84,15 @@ fn completion_test_registry() -> ToolRegistry {
 }
 
 #[test]
-fn completion_run_action_empty_action_prefix_uses_cached_action_names() {
+fn completion_run_action_empty_action_prefix_lists_all_visible_action_names() {
     let registry = completion_test_registry();
 
-    let completion = complete_prompt_arg(&registry, "run-action", "action", "");
+    let completion = complete_prompt_arg(
+        &crate::catalog::build_catalog(&registry),
+        "run-action",
+        "action",
+        "",
+    );
 
     assert_eq!(completion.values, registry.action_name_completions(""));
     assert_eq!(completion.total, Some(registry.action_names().len() as u32));
@@ -95,10 +100,15 @@ fn completion_run_action_empty_action_prefix_uses_cached_action_names() {
 }
 
 #[test]
-fn completion_run_action_action_prefix_filters_cached_action_names() {
+fn completion_run_action_action_prefix_filters_action_names() {
     let registry = completion_test_registry();
 
-    let completion = complete_prompt_arg(&registry, "run-action", "action", "status.");
+    let completion = complete_prompt_arg(
+        &crate::catalog::build_catalog(&registry),
+        "run-action",
+        "action",
+        "status.",
+    );
 
     assert_eq!(
         completion.values,
@@ -110,8 +120,18 @@ fn completion_run_action_action_prefix_filters_cached_action_names() {
 fn completion_prompt_service_arguments_filter_service_names() {
     let registry = completion_test_registry();
 
-    let run_action = complete_prompt_arg(&registry, "run-action", "service", "gateway-a");
-    let discover = complete_prompt_arg(&registry, "service-discover", "service", "gateway-b");
+    let run_action = complete_prompt_arg(
+        &crate::catalog::build_catalog(&registry),
+        "run-action",
+        "service",
+        "gateway-a",
+    );
+    let discover = complete_prompt_arg(
+        &crate::catalog::build_catalog(&registry),
+        "service-discover",
+        "service",
+        "gateway-b",
+    );
 
     assert_eq!(run_action.values, vec!["gateway-alpha".to_string()]);
     assert_eq!(discover.values, vec!["gateway-beta".to_string()]);
@@ -121,7 +141,12 @@ fn completion_prompt_service_arguments_filter_service_names() {
 fn completion_unknown_prompt_argument_returns_empty_result() {
     let registry = completion_test_registry();
 
-    let completion = complete_prompt_arg(&registry, "run-action", "params", "{");
+    let completion = complete_prompt_arg(
+        &crate::catalog::build_catalog(&registry),
+        "run-action",
+        "params",
+        "{",
+    );
 
     assert_eq!(completion.values, Vec::<String>::new());
     assert_eq!(completion.total, Some(0));

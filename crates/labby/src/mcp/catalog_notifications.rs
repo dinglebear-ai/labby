@@ -1,3 +1,4 @@
+use futures::StreamExt;
 use futures::future::join_all;
 
 use crate::mcp::catalog::{CatalogChangeSet, ToolCatalogSnapshot};
@@ -44,7 +45,7 @@ pub(crate) async fn catch_up_tool_contract(peers: &PeerRegistry, registration_id
         return;
     };
     if !delivered {
-        guard.remove(index);
+        guard.remove(index).target.cancel_subscription();
         tracing::warn!(
             surface = "mcp",
             service = "peers",
@@ -214,7 +215,7 @@ pub(crate) async fn notify_catalog_peers(
     let peer_snapshot = peers.read().await.clone();
     let peer_count = peer_snapshot.len();
     for registered in &peer_snapshot {
-        tracing::info!(
+        tracing::debug!(
             surface = "mcp",
             service = "peers",
             action = "catalog.notify.peer_capabilities",
@@ -423,7 +424,7 @@ pub(crate) async fn notify_catalog_peers(
             .iter()
             .position(|current| current.registration_id == evaluated.registered.registration_id)
         {
-            guard.remove(index);
+            guard.remove(index).target.cancel_subscription();
             pruned += 1;
         }
     }
@@ -477,6 +478,7 @@ pub(crate) async fn catch_up_resource_updates(peers: &PeerRegistry, registered: 
         );
         return;
     }
+    registered.target.cancel_subscription();
     peers
         .write()
         .await
@@ -486,24 +488,31 @@ pub(crate) async fn catch_up_resource_updates(peers: &PeerRegistry, registered: 
 /// Forward one normalized resource update to subscriptions that accepted the
 /// exact URI and whose protected route exposes the owning upstream.
 pub(crate) async fn notify_resource_update_peers(peers: &PeerRegistry, upstream: &str, uri: &str) {
-    let snapshot = peers.read().await.clone();
+    let deliveries = peers
+        .read()
+        .await
+        .iter()
+        .filter(|registered| {
+            registered.contract.route_scope.allows_upstream(upstream)
+                && registered.target.wants_resource_update(uri)
+        })
+        .map(|registered| (registered.registration_id, registered.target.clone()))
+        .collect::<Vec<_>>();
     let notification_timeout = crate::config::resolved_catalog_notification_timeout();
-    let deliveries = snapshot.into_iter().filter_map(|registered| {
-        (registered.contract.route_scope.allows_upstream(upstream)
-            && registered.target.wants_resource_update(uri))
-        .then_some(registered)
-    });
-
-    let outcomes = join_all(deliveries.map(|registered| {
-        let target = registered.target.clone();
-        async move {
-            let ok =
-                tokio::time::timeout(notification_timeout, target.notify_resource_updated(uri))
-                    .await
-                    .is_ok_and(|result| result.is_ok());
-            (registered.registration_id, ok)
-        }
-    }))
+    let outcomes = join_all(
+        deliveries
+            .into_iter()
+            .map(|(registration_id, target)| async move {
+                let ok =
+                    tokio::time::timeout(notification_timeout, target.notify_resource_updated(uri))
+                        .await
+                        .is_ok_and(|result| result.is_ok());
+                if !ok {
+                    target.cancel_subscription();
+                }
+                (registration_id, ok)
+            }),
+    )
     .await;
 
     if outcomes.iter().all(|(_, ok)| *ok) {
@@ -562,37 +571,65 @@ async fn evaluate_peers(
     peer_snapshot: Vec<RegisteredPeer>,
     changes: CatalogNotificationChanges,
 ) -> Vec<EvaluatedPeer> {
-    let mut evaluated = Vec::with_capacity(peer_snapshot.len());
-    for registered in peer_snapshot {
-        let next_contract = if changes.tools_changed && registered.target.wants_tool_list_changed()
+    let timeout = crate::config::resolved_catalog_notification_timeout();
+    let changes = &changes;
+    let mut groups: Vec<Vec<RegisteredPeer>> = Vec::new();
+    for peer in peer_snapshot {
+        if let Some(group) = groups
+            .iter_mut()
+            .find(|group| group[0].contract.same_inputs(&peer.contract))
         {
-            Some(registered.contract.visible_contract().await)
+            group.push(peer);
         } else {
-            None
-        };
-        let tools_changed = next_contract.as_ref().is_some_and(|next| {
-            registered
-                .last_contract
-                .as_ref()
-                .is_none_or(|published| next != published)
-        }) && registered.target.wants_tool_list_changed();
-        let resources_changed = changes.resources_changed
-            && changes.resource_visible_to(&registered)
-            && registered.target.wants_resource_list_changed();
-        let prompts_changed = changes.prompts_changed
-            && changes.prompt_visible_to(&registered)
-            && registered.target.wants_prompt_list_changed();
-        evaluated.push(EvaluatedPeer {
-            registered,
-            changes: CatalogNotificationChanges::new(
-                tools_changed,
-                resources_changed,
-                prompts_changed,
-            ),
-            next_contract,
-        });
+            groups.push(vec![peer]);
+        }
     }
-    evaluated
+    futures::stream::iter(groups)
+        .map(|group| async move {
+            let observed = if changes.tools_changed
+                && group
+                    .iter()
+                    .any(|peer| peer.target.wants_tool_list_changed())
+            {
+                tokio::time::timeout(timeout, group[0].contract.visible_contract())
+                    .await
+                    .ok()
+            } else {
+                None
+            };
+            group.into_iter().map(move |registered| {
+                let wants_tools =
+                    changes.tools_changed && registered.target.wants_tool_list_changed();
+                let next_contract = if wants_tools { observed.clone() } else { None };
+                // An unobserved contract must not suppress a real change.
+                let tools_changed = wants_tools
+                    && next_contract.as_ref().is_none_or(|next| {
+                        registered
+                            .last_contract
+                            .as_ref()
+                            .is_none_or(|published| next != published)
+                    });
+                let resources_changed = changes.resources_changed
+                    && changes.resource_visible_to(&registered)
+                    && registered.target.wants_resource_list_changed();
+                let prompts_changed = changes.prompts_changed
+                    && changes.prompt_visible_to(&registered)
+                    && registered.target.wants_prompt_list_changed();
+                EvaluatedPeer {
+                    registered,
+                    changes: CatalogNotificationChanges::new(
+                        tools_changed,
+                        resources_changed,
+                        prompts_changed,
+                    ),
+                    next_contract,
+                }
+            })
+        })
+        .buffered(8)
+        .flat_map(futures::stream::iter)
+        .collect()
+        .await
 }
 
 #[cfg(test)]
@@ -652,6 +689,8 @@ mod tests {
                 let peer = RegisteredPeer::stale_for_test(context.request_context().peer.clone());
                 self.0.write().await.push(RegisteredPeer::from_subscription(
                     context.sink().clone(),
+                    context.request_context().ct.clone(),
+                    None,
                     peer.contract,
                     None,
                 ));
@@ -1154,6 +1193,11 @@ mod tests {
         let (unchanged_client, unchanged_service, unchanged_handle) =
             connect_peer(&peers, false).await;
 
+        {
+            let mut registered = peers.write().await;
+            registered[1].contract = registered[0].contract.clone();
+        }
+        let builds = crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get();
         notify_catalog_peers(
             &peers,
             CatalogNotificationChanges::new(true, false, false),
@@ -1161,6 +1205,10 @@ mod tests {
         )
         .await;
 
+        assert_eq!(
+            crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get() - builds,
+            1
+        );
         moved_client.wait_for_notifications(1).await;
         assert_eq!(moved_client.tool_count.load(Ordering::SeqCst), 1);
         // Give a stray broadcast a chance to land before asserting its absence.
@@ -1264,6 +1312,30 @@ mod tests {
             "the notification must be delivered once the turn closes, not dropped"
         );
 
+        client_service.cancel().await.expect("client cancels");
+        server_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn scheduled_notification_delivers_at_max_hold_with_an_open_turn() {
+        let _catalog_lock = serial_catalog();
+        reset_for_test();
+        let peers = Default::default();
+        let (client, client_service, server_handle) = connect_peer(&peers, true).await;
+        let call = InFlightToolCall::enter();
+        let started = tokio::time::Instant::now();
+        let max_hold = crate::mcp::catalog_coalesce::max_hold();
+        schedule_catalog_notification(
+            &peers,
+            CatalogNotificationChanges::new(true, false, false),
+            labby_runtime::catalog_notify::SOURCE_MCP_CALL_CODEMODE,
+        );
+        tokio::time::timeout(max_hold + Duration::from_secs(2), client.notify.notified())
+            .await
+            .expect("deliver even while this call is held open");
+        assert!(started.elapsed() >= max_hold);
+        assert_eq!(client.tool_count.load(Ordering::SeqCst), 1);
+        drop(call);
         client_service.cancel().await.expect("client cancels");
         server_handle.abort();
     }

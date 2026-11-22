@@ -80,6 +80,7 @@ async fn handle(
     let execution_caller = auth.as_ref().map_or(
         crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal,
         |value| crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: labby_codemode::CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -116,14 +117,12 @@ async fn handle(
         crate::dispatch::snippets::ACTIONS,
         move |action, params| async move {
             if crate::dispatch::snippets::dispatch::requires_execution_context(&action) {
-                let manager = manager
-                    .as_ref()
-                    .ok_or_else(|| ToolError::internal_message("gateway manager not wired"))?;
-                return crate::dispatch::snippets::dispatch::dispatch_with_manager_and_context(
-                    manager,
+                return crate::dispatch::snippets::dispatch::dispatch_inner(
+                    manager.as_deref(),
                     &action,
                     params,
                     Some(dispatch_context.clone()),
+                    None,
                 )
                 .await;
             }
@@ -201,11 +200,23 @@ mod tests {
             };
             let response =
                 post_snippets(app.clone(), json!({"action": action, "params": params})).await;
-            assert_ne!(
-                response.status(),
-                StatusCode::FORBIDDEN,
-                "read-only action `{action}` must not require admin scope"
-            );
+            assert_eq!(response.status(), StatusCode::OK, "{action}");
+            if action == "snippets.list" {
+                let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+                    .await
+                    .unwrap();
+                let listing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                let items = listing["snippets"].as_array().expect("snippet list");
+                assert!(items.iter().any(|item| item["name"] == "axon-fanout"));
+                for item in items {
+                    assert_eq!(item["source"], "builtin");
+                    let path = item["path"].as_str().unwrap();
+                    assert_eq!(std::path::Path::new(path).file_name().unwrap(), path);
+                    assert_eq!(item["shadowed"], false);
+                }
+                assert_eq!(listing["diagnostics"], json!([]));
+                assert_eq!(listing["diagnostics_omitted"], 0);
+            }
         }
     }
 

@@ -63,7 +63,7 @@ fn coalesce_window() -> Duration {
     Duration::from_millis(*MS)
 }
 
-fn max_hold() -> Duration {
+pub(super) fn max_hold() -> Duration {
     static MS: LazyLock<u64> = LazyLock::new(|| {
         env_parsed("LABBY_MCP_CATALOG_MAX_HOLD_MS")
             .map(|ms: u64| ms.clamp(MIN_MAX_HOLD_MS, MAX_MAX_HOLD_MS))
@@ -147,7 +147,7 @@ async fn flush_when_settled(peers: PeerRegistry) {
     // ongoing burst is delivered once at its end.
     loop {
         let epoch_before = pending().epoch;
-        tokio::time::sleep(coalesce).await;
+        tokio::time::sleep_until(deadline.min(tokio::time::Instant::now() + coalesce)).await;
         let settled = pending().epoch == epoch_before;
         if settled || tokio::time::Instant::now() >= deadline {
             break;
@@ -162,7 +162,10 @@ async fn flush_when_settled(peers: PeerRegistry) {
         if tokio::time::Instant::now() >= deadline {
             break;
         }
-        tokio::time::sleep(Duration::from_millis(DRAIN_POLL_MS)).await;
+        tokio::time::sleep_until(
+            deadline.min(tokio::time::Instant::now() + Duration::from_millis(DRAIN_POLL_MS)),
+        )
+        .await;
         deferred_for_calls_ms = drain_started.elapsed().as_millis();
     }
 

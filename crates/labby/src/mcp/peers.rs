@@ -52,6 +52,7 @@ pub struct RegisteredPeer {
     /// cannot identify a registry entry shared by all transports.
     pub(crate) registration_id: u64,
     pub(crate) target: NotificationTarget,
+    pub(crate) subscription_owner: Option<String>,
     pub(crate) contract: crate::mcp::peer_contract::PeerContract,
     /// Last complete contract this peer actually received from `tools/list`,
     /// or `None` when it subscribed before completing a listing.
@@ -68,7 +69,7 @@ fn next_registration_id() -> u64 {
 pub(crate) enum NotificationTarget {
     #[cfg(test)]
     LegacyPeer(Peer<RoleServer>),
-    Subscription(SubscriptionSink),
+    Subscription(SubscriptionSink, tokio_util::sync::CancellationToken),
 }
 
 impl NotificationTarget {
@@ -76,7 +77,7 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(_) => true,
-            Self::Subscription(sink) => sink.accepted().tools_list_changed == Some(true),
+            Self::Subscription(sink, _) => sink.accepted().tools_list_changed == Some(true),
         }
     }
 
@@ -84,7 +85,7 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(_) => true,
-            Self::Subscription(sink) => sink.accepted().resources_list_changed == Some(true),
+            Self::Subscription(sink, _) => sink.accepted().resources_list_changed == Some(true),
         }
     }
 
@@ -92,7 +93,7 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(_) => true,
-            Self::Subscription(sink) => sink.accepted().prompts_list_changed == Some(true),
+            Self::Subscription(sink, _) => sink.accepted().prompts_list_changed == Some(true),
         }
     }
 
@@ -100,11 +101,19 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(_) => true,
-            Self::Subscription(sink) => sink
+            Self::Subscription(sink, _) => sink
                 .accepted()
                 .resource_subscriptions
                 .as_ref()
                 .is_some_and(|uris| uris.iter().any(|accepted| accepted == uri)),
+        }
+    }
+
+    pub(crate) fn cancel_subscription(&self) {
+        match self {
+            Self::Subscription(_, cancellation) => cancellation.cancel(),
+            #[cfg(test)]
+            Self::LegacyPeer(_) => {}
         }
     }
 
@@ -114,7 +123,7 @@ impl NotificationTarget {
             Self::LegacyPeer(peer) => peer.is_transport_closed(),
             // Subscriptions are removed when `listen` returns. A failed send is
             // also pruned by the fanout path.
-            Self::Subscription(_) => false,
+            Self::Subscription(_, cancelled) => cancelled.is_cancelled(),
         }
     }
 
@@ -122,7 +131,7 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(peer) => peer.notify_tool_list_changed().await.map_err(|_| ()),
-            Self::Subscription(sink) => sink.notify_tool_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink, _) => sink.notify_tool_list_changed().await.map_err(|_| ()),
         }
     }
 
@@ -130,7 +139,9 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(peer) => peer.notify_resource_list_changed().await.map_err(|_| ()),
-            Self::Subscription(sink) => sink.notify_resource_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink, _) => {
+                sink.notify_resource_list_changed().await.map_err(|_| ())
+            }
         }
     }
 
@@ -138,7 +149,7 @@ impl NotificationTarget {
         match self {
             #[cfg(test)]
             Self::LegacyPeer(peer) => peer.notify_prompt_list_changed().await.map_err(|_| ()),
-            Self::Subscription(sink) => sink.notify_prompt_list_changed().await.map_err(|_| ()),
+            Self::Subscription(sink, _) => sink.notify_prompt_list_changed().await.map_err(|_| ()),
         }
     }
 
@@ -149,7 +160,7 @@ impl NotificationTarget {
                 .notify_resource_updated(rmcp::model::ResourceUpdatedNotificationParam::new(uri))
                 .await
                 .map_err(|_| ()),
-            Self::Subscription(sink) => sink.notify_resource_updated(uri).await.map_err(|_| ()),
+            Self::Subscription(sink, _) => sink.notify_resource_updated(uri).await.map_err(|_| ()),
         }
     }
 }
@@ -157,12 +168,15 @@ impl NotificationTarget {
 impl RegisteredPeer {
     pub(crate) fn from_subscription(
         sink: SubscriptionSink,
+        cancellation: tokio_util::sync::CancellationToken,
+        subscription_owner: Option<String>,
         contract: crate::mcp::peer_contract::PeerContract,
         last_contract: Option<crate::mcp::catalog::ToolCatalogSnapshot>,
     ) -> Self {
         Self {
             registration_id: next_registration_id(),
-            target: NotificationTarget::Subscription(sink),
+            target: NotificationTarget::Subscription(sink, cancellation),
+            subscription_owner,
             contract,
             last_contract,
         }
@@ -290,6 +304,7 @@ impl RegisteredPeer {
         Self {
             registration_id: next_registration_id(),
             target: NotificationTarget::LegacyPeer(peer),
+            subscription_owner: None,
             contract: crate::mcp::peer_contract::PeerContract {
                 registry: Arc::new(crate::registry::ToolRegistry::default()),
                 #[cfg(feature = "gateway")]
@@ -438,8 +453,43 @@ impl PeerNotifier {
                     forwarder.forward_list_changed(upstream, kinds);
                 },
             );
+            // A blocked downstream resource subscriber must not hold up list
+            // refreshes. The existing bounded broadcast preserves update order.
+            let mut resource_events = pool.subscribe_notifications();
+            let resource_delivery = async {
+                loop {
+                    match resource_events.recv().await {
+                        Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
+                            // Acknowledged subscribers can still be registering.
+                            self.peers.record_resource_update(&upstream, &uri).await;
+                            crate::mcp::catalog_notifications::notify_resource_update_peers(
+                                &self.peers,
+                                &upstream,
+                                &uri,
+                            )
+                            .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "resource delivery lagged the upstream notification stream"
+                            );
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                        Ok(_) => {}
+                    }
+                }
+            };
+            tokio::pin!(resource_delivery);
+            let mut reconciliation = tokio::task::JoinSet::new();
             loop {
                 tokio::select! {
+                    () = &mut resource_delivery => break,
+                    Some(result) = reconciliation.join_next(), if !reconciliation.is_empty() => {
+                        if let Err(error) = result {
+                            tracing::warn!(%error, "lag reconciliation task failed");
+                        }
+                    }
                     changed = pool_changes.changed() => {
                         if changed.is_err() {
                             return;
@@ -466,20 +516,14 @@ impl PeerNotifier {
                             Ok(UpstreamNotificationEvent::ResourceListChanged { upstream }) => {
                                 refresher.schedule(&upstream, ListChangedKinds::RESOURCES);
                             }
-                            Ok(UpstreamNotificationEvent::ResourceUpdated { upstream, uri }) => {
-                                // Journal first. rmcp sends subscriptions/acknowledged before
-                                // invoking LabMcpServer::listen, so a newly acknowledged peer
-                                // may not be in the registry yet. listen replays this bounded
-                                // edge-event journal after registration.
-                                self.peers.record_resource_update(&upstream, &uri).await;
-                                crate::mcp::catalog_notifications::notify_resource_update_peers(
-                                    &self.peers,
-                                    &upstream,
-                                    &uri,
-                                ).await;
-                            }
                             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                                self.reconcile_after_notification_lag(&pool, skipped).await;
+                                if reconciliation.is_empty() {
+                                    let notifier = self.clone();
+                                    let pool = Arc::clone(&pool);
+                                    reconciliation.spawn(async move {
+                                        notifier.reconcile_after_notification_lag(&pool, skipped).await;
+                                    });
+                                }
                             }
                             Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                             Ok(_) => {}

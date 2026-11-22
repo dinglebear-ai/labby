@@ -20,6 +20,8 @@ async fn generated_fixture_preserves_optional_input_omissions_for_replay() {
         "fixture-input-omission",
     )
     .unwrap();
+    let schema = labby_primitives::action::schema_for::<FixtureDraft>();
+    let validator = jsonschema::validator_for(&schema).unwrap();
     for supplied in [
         Value::Null,
         json!({}),
@@ -30,6 +32,10 @@ async fn generated_fixture_preserves_optional_input_omissions_for_replay() {
             "schemas":{"synthetic::lookup":{"output_schema":{"type":"boolean"}}}});
         let report = generate(None, request, None).await.unwrap();
         assert_eq!(report["ready"], true);
+        assert!(report.get("changed_tools").is_none());
+        validator
+            .validate(&report)
+            .expect("serialized fixture draft must conform to its output schema");
         let fixture: SnippetFixture = serde_json::from_value(report["fixture"].clone()).unwrap();
         let replay_params = serde_json::to_value(&fixture.params).unwrap();
         assert_eq!(

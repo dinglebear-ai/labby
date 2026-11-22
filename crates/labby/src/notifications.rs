@@ -35,7 +35,7 @@ pub struct NotificationRecord {
     pub dedupe_key: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SourceCursor {
     key: String,
     at: String,
@@ -144,10 +144,19 @@ impl NotificationCenter {
             .cloned()
     }
 
-    async fn advance_source_cursor(&self, source_id: &str, cursor: SourceCursor) -> Result<()> {
+    async fn advance_source_cursors(&self, cursors: BTreeMap<String, SourceCursor>) -> Result<()> {
+        if cursors.is_empty() {
+            return Ok(());
+        }
         let mut state = self.state.write().await;
+        if cursors
+            .iter()
+            .all(|(id, cursor)| state.source_cursors.get(id) == Some(cursor))
+        {
+            return Ok(());
+        }
         let mut snapshot = state.clone();
-        snapshot.source_cursors.insert(source_id.to_owned(), cursor);
+        snapshot.source_cursors.extend(cursors);
         self.persist(&snapshot).await?;
         *state = snapshot;
         Ok(())
@@ -246,11 +255,12 @@ pub(crate) fn spawn_depot_failure_monitor(
         return None;
     }
     Some(tokio::spawn(async move {
+        let apprise = AppriseTarget::from_env();
         let mut interval = tokio::time::interval(depot_monitor_interval());
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if let Err(error) = poll_depot_failures(&depot, &center).await {
+            if let Err(error) = poll_depot_failures(&depot, &center, apprise.as_ref()).await {
                 tracing::warn!(
                     subsystem = "notifications",
                     source = "depot",
@@ -265,10 +275,10 @@ pub(crate) fn spawn_depot_failure_monitor(
 async fn poll_depot_failures(
     depot: &DepotClient,
     center: &NotificationCenter,
+    apprise: Option<&AppriseTarget>,
 ) -> std::result::Result<(), String> {
-    let apprise = AppriseTarget::from_env();
     let mut attempted_apprise = BTreeSet::new();
-    if let Some(target) = &apprise {
+    if let Some(target) = apprise {
         deliver_pending_apprise(center, target, &mut attempted_apprise).await?;
     }
     depot
@@ -295,12 +305,12 @@ async fn poll_depot_failures(
         .and_then(Value::as_array)
         .ok_or_else(|| "sources response missing result.sources".to_string())?;
 
+    let mut cursors = BTreeMap::new();
     for source in sources {
         let source_id = source
             .get("id")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        let label = source_label(source);
         let Some(history) = source.get("history").and_then(Value::as_array) else {
             continue;
         };
@@ -318,14 +328,20 @@ async fn poll_depot_failures(
             if event.get("status").and_then(Value::as_str) != Some("failed") {
                 continue;
             }
-            let phase = event
-                .get("phase")
-                .and_then(Value::as_str)
-                .unwrap_or("refresh");
+            let label = source_label(source);
+            let phase = labby_runtime::redact::sanitize_log_text(
+                event
+                    .get("phase")
+                    .and_then(Value::as_str)
+                    .unwrap_or("refresh"),
+                MAX_NOTIFICATION_TEXT_CHARS,
+            );
             let error = event
                 .get("error")
                 .and_then(Value::as_str)
-                .map(bounded_text)
+                .map(|message| {
+                    labby_runtime::redact::sanitize_error_text(message, MAX_NOTIFICATION_TEXT_CHARS)
+                })
                 .unwrap_or_else(|| "unknown ingestion failure".to_string());
             let dedupe_key = history_key(source_id, event);
             let record = NotificationRecord {
@@ -351,14 +367,17 @@ async fn poll_depot_failures(
                 );
             }
         }
-        if let Some(cursor) = newest_cursor {
-            center
-                .advance_source_cursor(source_id, cursor)
-                .await
-                .map_err(|error| format!("notification cursor: {error:#}"))?;
+        if let Some(cursor) = newest_cursor
+            && previous_cursor.as_ref() != Some(&cursor)
+        {
+            cursors.insert(source_id.to_owned(), cursor);
         }
     }
-    if let Some(target) = &apprise {
+    center
+        .advance_source_cursors(cursors)
+        .await
+        .map_err(|error| format!("notification cursors: {error:#}"))?;
+    if let Some(target) = apprise {
         deliver_pending_apprise(center, target, &mut attempted_apprise).await?;
     }
     Ok(())
@@ -457,14 +476,17 @@ fn source_label(source: &Value) -> String {
             .iter()
             .find_map(|key| args.get(*key).and_then(Value::as_str))
     });
-    target
-        .unwrap_or_else(|| {
-            source
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("Depot source")
-        })
-        .to_string()
+    let label = target.unwrap_or_else(|| {
+        source
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("Depot source")
+    });
+    if Url::parse(label).is_ok() {
+        labby_runtime::redact::redact_url(label)
+    } else {
+        labby_runtime::redact::sanitize_log_text(label, MAX_NOTIFICATION_TEXT_CHARS)
+    }
 }
 
 #[derive(Clone)]
@@ -676,13 +698,13 @@ mod tests {
             Vec::<NotificationRecord>::new()
         );
         center
-            .advance_source_cursor(
-                "source",
+            .advance_source_cursors(BTreeMap::from([(
+                "source".to_string(),
                 SourceCursor {
                     key: "latest".into(),
                     at: "2026-09-29T00:00:00Z".into(),
                 },
-            )
+            )]))
             .await
             .unwrap();
         let migrated: Value =
@@ -758,6 +780,83 @@ mod tests {
         assert_eq!(
             reopened.pending_apprise().await,
             Vec::<NotificationRecord>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn depot_failure_redacts_store_and_apprise_and_skips_unchanged_cursor_writes() {
+        let server = MockServer::start().await;
+        let fixture: Value = serde_json::from_str(include_str!(
+            "../../../docs/contracts/fixtures/depot-control-plane/operations-v1.json"
+        ))
+        .unwrap();
+        let operation = fixture["operations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|op| op["name"] == "depot.sources.list")
+            .unwrap();
+        Mock::given(method("GET"))
+            .and(path("/api/operations/catalog"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"operations":[operation]})),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("POST")).and(path("/api/operations/depot.sources.list"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"result":{"sources":[{
+                "id":"source", "args":{"url":"https://fixture-user:fixture-pass@example.test/repo?access_token=fixture-query"},
+                "history":[{"status":"failed","at":"2026-09-29T00:00:00Z","phase":"sync","error":"Authorization: Bearer fixture-header-value"}]
+            }]}}))).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/notify"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("notifications.json");
+        let center = NotificationCenter {
+            state: Default::default(),
+            path: Some(Arc::new(path.clone())),
+            retention: 8,
+        };
+        let depot = DepotClient::for_test(Url::parse(&server.uri()).unwrap(), "fixture");
+        let apprise = AppriseTarget {
+            endpoint: Url::parse(&format!("{}/notify", server.uri())).unwrap(),
+            client: apprise_client(),
+        };
+        poll_depot_failures(&depot, &center, Some(&apprise))
+            .await
+            .unwrap();
+        let stored = center.list().await;
+        assert_eq!(stored.len(), 1);
+        let sent = server
+            .received_requests()
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|req| req.url.path() == "/notify")
+            .unwrap();
+        let body: Value = serde_json::from_slice(&sent.body).unwrap();
+        assert_eq!(body["body"], stored[0].body);
+        for value in [
+            "fixture-user",
+            "fixture-pass",
+            "fixture-query",
+            "fixture-header-value",
+        ] {
+            assert!(!stored[0].body.contains(value));
+        }
+        tokio::fs::rename(&path, dir.path().join("previous.json"))
+            .await
+            .unwrap();
+        poll_depot_failures(&depot, &center, Some(&apprise))
+            .await
+            .unwrap();
+        assert!(
+            !path.exists(),
+            "unchanged poll should not recreate the state file"
         );
     }
 
@@ -849,7 +948,7 @@ mod tests {
             at: old["at"].as_str().unwrap().into(),
         };
         center
-            .advance_source_cursor("source", cursor.clone())
+            .advance_source_cursors(BTreeMap::from([("source".into(), cursor.clone())]))
             .await
             .unwrap();
         assert_eq!(
@@ -884,7 +983,10 @@ mod tests {
             key: history_key("source", &wrapped[0]),
             at: wrapped[0]["at"].as_str().unwrap().into(),
         };
-        center.advance_source_cursor("source", after).await.unwrap();
+        center
+            .advance_source_cursors(BTreeMap::from([("source".into(), after)]))
+            .await
+            .unwrap();
         assert_eq!(
             unseen_history(
                 "source",
@@ -897,6 +999,10 @@ mod tests {
 
     #[test]
     fn source_label_prefers_repository_url() {
+        let redacted = source_label(&json!({
+            "args":{"url":"https://sample:fixture@example.test/repo?access_token=example-value"}
+        }));
+        assert!(!redacted.contains("fixture") && !redacted.contains("example-value"));
         assert_eq!(
             source_label(&json!({
                 "id":"src_1",

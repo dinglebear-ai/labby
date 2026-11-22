@@ -8,12 +8,8 @@
 //! `impl LabMcpServer` method. The `ServerHandler` trait impl in
 //! `server.rs` keeps a one-line delegator.
 //!
-//! Early-return ordering: loadout route-scope denial → destructive elicitation
-//! → codemode → visibility → action → code_mode-hidden → admin-scope →
-//! builtin → upstream tail. Elicitation runs before the later gates, so
-//! `tool_request_is_destructive` reports a builtin action as destructive only
-//! when the route and the caller's scope would let it run; otherwise the
-//! denying gate answers with the real cause. The codemode and upstream
+//! Registered built-ins reach destructive confirmation after the route, visibility,
+//! action policy, Code Mode and caller-scope gates. The Code Mode and upstream
 //! branches live in `call_tool_codemode.rs` / `call_tool_upstream.rs`.
 
 #[cfg(feature = "gateway")]
@@ -142,10 +138,9 @@ use crate::mcp::context::{
     tool_execute_scope_allowed,
 };
 use crate::mcp::envelope::{build_error, build_error_extra};
-use crate::mcp::error::DispatchError;
 #[cfg(feature = "gateway")]
 use crate::mcp::handlers_resources::admin_app_resources_visible;
-use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel, spawn_dispatch_notification};
+use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 #[cfg(feature = "gateway")]
 use crate::mcp::permanent_tools::PermanentToolId;
 use crate::mcp::result_format::{
@@ -176,26 +171,11 @@ async fn synthetic_gateway_authority(
         }
         (None, crate::mcp::context::AbsentAuth::Untrusted) => return Err(denied()),
     };
-    let store = server.access_runtime.store().await.map_err(|error| {
-        crate::dispatch::access_errors::map_action_runtime_error("gateway", action, error)
-    })?;
-    let installation_id = store
-        .installation_id()
-        .await
-        .map_err(|error| {
-            crate::dispatch::access_errors::map_store_error("gateway", error, || {
-                ToolError::Forbidden {
-                    message: "Gateway operation is not authorized".into(),
-                    required_scopes: Vec::new(),
-                }
-            })
-        })?
-        .unwrap_or_else(|| "installation".into());
     let authority = crate::access::authorize_gateway_action(
         &server.access_runtime,
         identity,
         ceiling,
-        &installation_id,
+        None,
         None,
         action,
     )
@@ -528,7 +508,7 @@ impl LabMcpServer {
                 "Add Server dispatch error"
             );
         }
-        self.emit_dispatch_notification(
+        self.trace_dispatch_outcome(
             context,
             ADD_SERVER_TOOL_NAME,
             action,
@@ -541,8 +521,7 @@ impl LabMcpServer {
                 },
                 kind: kind.into(),
             },
-        )
-        .await;
+        );
     }
 
     pub(crate) fn log_route_scope_denial(
@@ -564,23 +543,6 @@ impl LabMcpServer {
             kind = "route_scope_denied",
             error = %message,
             "MCP call denied by protected route scope"
-        );
-        if !self.should_emit_logging_notification(LoggingLevel::Warning) {
-            return;
-        }
-
-        let actor_key = crate::mcp::context::actor_key_from_extensions(&context.extensions)
-            .map(ToOwned::to_owned);
-        spawn_dispatch_notification(
-            context.peer.clone(),
-            actor_key,
-            service.to_string(),
-            action.to_string(),
-            elapsed_ms,
-            DispatchLogOutcome::Failure {
-                level: LoggingLevel::Warning,
-                kind: "route_scope_denied".into(),
-            },
         );
     }
 
@@ -689,29 +651,40 @@ impl LabMcpServer {
             "dispatch start"
         );
         let access_context_unavailable = binding.is_none();
-        let result = match (binding, self.gateway_manager.as_deref()) {
-            (Some((transport, identity)), Some(manager)) => {
-                #[cfg(feature = "tailcat")]
-                let cleanup = context
-                    .extensions
-                    .get::<axum::http::request::Parts>()
-                    .and_then(|parts| {
-                        parts
-                            .extensions
-                            .get::<Arc<crate::dispatch::tailcat::cleanup::CleanupSession>>()
-                    });
-                #[cfg(feature = "tailcat")]
-                if let Some(cleanup) = cleanup {
-                    crate::mcp::tool_execution::execute_tailcat_project_complete_tool(
-                        self.access_runtime.as_ref(),
-                        manager,
-                        transport,
-                        identity,
-                        request,
-                        cleanup,
-                    )
-                    .await
-                } else {
+        let execution = async {
+            match (binding, self.gateway_manager.as_deref()) {
+                (Some((transport, identity)), Some(manager)) => {
+                    #[cfg(feature = "tailcat")]
+                    let cleanup = context
+                        .extensions
+                        .get::<axum::http::request::Parts>()
+                        .and_then(|parts| {
+                            parts
+                                .extensions
+                                .get::<Arc<crate::dispatch::tailcat::cleanup::CleanupSession>>()
+                        });
+                    #[cfg(feature = "tailcat")]
+                    if let Some(cleanup) = cleanup {
+                        crate::mcp::tool_execution::execute_tailcat_project_complete_tool(
+                            self.access_runtime.as_ref(),
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                            cleanup,
+                        )
+                        .await
+                    } else {
+                        crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
+                            self.access_runtime.as_ref(),
+                            manager,
+                            transport,
+                            identity,
+                            request,
+                        )
+                        .await
+                    }
+                    #[cfg(not(feature = "tailcat"))]
                     crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
                         self.access_runtime.as_ref(),
                         manager,
@@ -721,29 +694,25 @@ impl LabMcpServer {
                     )
                     .await
                 }
-                #[cfg(not(feature = "tailcat"))]
-                crate::mcp::tool_execution::execute_transport_bound_project_complete_tool(
-                    self.access_runtime.as_ref(),
-                    manager,
-                    transport,
-                    identity,
-                    request,
-                )
-                .await
+                _ => Err(crate::mcp::tool_execution::ToolExecutionResolutionError::Unavailable),
             }
-            _ => Err(crate::mcp::tool_execution::ToolExecutionResolutionError::Unavailable),
+        };
+        let cancellation = super::call_tool_upstream::request_cancellation_token(context);
+        let result = tokio::select! {
+            biased;
+            () = cancellation.cancelled() => Err(crate::mcp::tool_execution::ToolExecutionResolutionError::Cancelled),
+            result = execution => result,
         };
         let elapsed_ms = start.elapsed().as_millis();
         match result {
             Ok(result) => {
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     &service,
                     "call_tool",
                     elapsed_ms,
                     DispatchLogOutcome::Success,
-                )
-                .await;
+                );
                 Ok(CallToolResponse::Complete(result))
             }
             Err(error) => {
@@ -752,6 +721,12 @@ impl LabMcpServer {
                     E::Unavailable => (
                         "not_found",
                         "Tool is unavailable.",
+                        None,
+                        LoggingLevel::Warning,
+                    ),
+                    E::AuthorityChanged => (
+                        "authority_changed",
+                        "Tool authority changed after dispatch. The result is unavailable.",
                         None,
                         LoggingLevel::Warning,
                     ),
@@ -806,7 +781,7 @@ impl LabMcpServer {
                         LoggingLevel::Error,
                     ),
                 };
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     &service,
                     "call_tool",
@@ -819,8 +794,7 @@ impl LabMcpServer {
                             kind.into()
                         },
                     },
-                )
-                .await;
+                );
                 let envelope = extra.as_ref().map_or_else(
                     || build_error(&service, "call_tool", kind, message),
                     |extra| build_error_extra(&service, "call_tool", kind, message, extra),
@@ -880,11 +854,6 @@ impl LabMcpServer {
                 }
                 #[cfg(feature = "skills")]
                 if is_project_artifact_management_call(&request) {
-                    if let Some(response) =
-                        Box::pin(self.destructive_confirmation_response(&request, &context)).await
-                    {
-                        return Ok(response);
-                    }
                     return Box::pin(self.call_tool_response_dispatch_impl(request, context, true))
                         .await;
                 }
@@ -902,16 +871,8 @@ impl LabMcpServer {
             return Box::pin(self.call_messages(request, &context)).await;
         }
         let project_owned = false;
-        // A gate that would deny the call answers before any human is asked to
-        // confirm it: elicitation runs after the route-scope denial here, and
-        // `tool_request_is_destructive` yields to the route and admin gates.
         #[cfg(feature = "gateway")]
         if let Some(response) = self.direct_tool_route_scope_denial(&context, request.name.as_ref())
-        {
-            return Ok(response);
-        }
-        if let Some(response) =
-            Box::pin(self.destructive_confirmation_response(&request, &context)).await
         {
             return Ok(response);
         }
@@ -1711,6 +1672,13 @@ impl LabMcpServer {
                                     .into());
                                 }
                             };
+                        if let Some(response) = Box::pin(
+                            self.destructive_confirmation_response(&upstream_request, &context),
+                        )
+                        .await
+                        {
+                            return Ok(response);
+                        }
                         let params = inject_gateway_origin_param(
                             gateway_action,
                             params,
@@ -1758,8 +1726,7 @@ impl LabMcpServer {
                     }
                     envelope
                 });
-                let result =
-                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let result = result.map_err(anyhow::Error::from);
                 let elapsed_ms = start.elapsed().as_millis();
                 let input_tokens = estimate_tokens_args(&args);
                 let (mut result, outcome) = format_dispatch_result(
@@ -1774,14 +1741,13 @@ impl LabMcpServer {
                 if let Some(envelope) = error_envelope {
                     result = error_result_from_envelope(envelope);
                 }
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     &service,
                     synthetic_action,
                     elapsed_ms,
                     outcome,
-                )
-                .await;
+                );
                 return Ok(result.into());
             }
 
@@ -1819,11 +1785,9 @@ impl LabMcpServer {
                                         .map(std::borrow::Cow::into_owned),
                                 };
                             if synthetic_action == "refresh" {
-                                drop(
-                                    manager
-                                        .refresh_gateway_status_catalog(&enrichment_scope, None)
-                                        .await,
-                                );
+                                manager
+                                    .refresh_gateway_status_catalog(&enrichment_scope, None)
+                                    .await?;
                             }
                             let response =
                                 Box::pin(crate::dispatch::gateway::dispatch_with_manager_scoped(
@@ -1857,8 +1821,7 @@ impl LabMcpServer {
                     }
                     envelope
                 });
-                let result =
-                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let result = result.map_err(anyhow::Error::from);
                 let elapsed_ms = start.elapsed().as_millis();
                 let input_tokens = estimate_tokens_args(&args);
                 let (mut result, outcome) = format_dispatch_result(
@@ -1873,14 +1836,13 @@ impl LabMcpServer {
                 if let Some(envelope) = error_envelope {
                     result = error_result_from_envelope(envelope);
                 }
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     &service,
                     synthetic_action,
                     elapsed_ms,
                     outcome,
-                )
-                .await;
+                );
                 return Ok(result.into());
             }
 
@@ -1903,6 +1865,43 @@ impl LabMcpServer {
                     _ => None,
                 };
                 let result = if let Some(setup_action) = setup_action {
+                    if !self.action_allowed_on_mcp("setup", setup_action).await {
+                        return Ok(error_result_from_envelope(build_error(
+                            &service,
+                            synthetic_action,
+                            "unknown_action",
+                            "Settings action is not exposed",
+                        ))
+                        .into());
+                    }
+                    if !self.registry.service("setup").is_some_and(|entry| {
+                        tool_execute_builtin_action_allowed(
+                            entry,
+                            setup_action,
+                            &resolve_caller_authorization(
+                                auth_context_from_extensions(&context.extensions),
+                                self.absent_auth_trust(),
+                                propagated_caller_auth(request.meta.as_ref()),
+                            ),
+                        )
+                    }) {
+                        return Ok(error_result_from_envelope(build_error_extra(
+                            &service,
+                            synthetic_action,
+                            "forbidden",
+                            "Settings action requires administrator access",
+                            &serde_json::json!({"required_scopes":["lab:admin"]}),
+                        ))
+                        .into());
+                    }
+
+                    if let Some(response) = Box::pin(
+                        self.destructive_confirmation_response(&upstream_request, &context),
+                    )
+                    .await
+                    {
+                        return Ok(response);
+                    }
                     Box::pin(crate::dispatch::setup::dispatch(setup_action, params)).await
                 } else {
                     Err(ToolError::UnknownAction {
@@ -1914,8 +1913,7 @@ impl LabMcpServer {
                         hint: None,
                     })
                 };
-                let result =
-                    result.map_err(|error| anyhow::Error::from(DispatchError::from(error)));
+                let result = result.map_err(anyhow::Error::from);
                 let elapsed_ms = start.elapsed().as_millis();
                 let input_tokens = estimate_tokens_args(&args);
                 let (result, outcome) = format_dispatch_result(
@@ -1927,14 +1925,13 @@ impl LabMcpServer {
                     self.request_actor_key(&context),
                     input_tokens,
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     &service,
                     synthetic_action,
                     elapsed_ms,
                     outcome,
-                )
-                .await;
+                );
                 return Ok(result.into());
             }
         }
@@ -2151,6 +2148,12 @@ impl LabMcpServer {
 
         // Try built-in dispatch first.
         if let Some(entry) = svc {
+            if let Some(response) =
+                Box::pin(self.destructive_confirmation_response(&upstream_request, &context)).await
+            {
+                return Ok(response);
+            }
+
             let mut native_task = None;
             tracing::info!(
                 surface = "mcp",
@@ -2210,7 +2213,27 @@ impl LabMcpServer {
                 #[cfg(not(feature = "gateway"))]
                 unreachable!("snippet promotion is gateway-only")
             } else if matches!(action.as_str(), "help" | "schema") {
-                (entry.dispatch)(action.clone(), params).await
+                if entry
+                    .actions
+                    .iter()
+                    .any(|spec| crate::catalog::http_only_action(entry.name, spec.name))
+                {
+                    let actions: Vec<_> = entry
+                        .actions
+                        .iter()
+                        .copied()
+                        .filter(|spec| !crate::catalog::http_only_action(entry.name, spec.name))
+                        .collect();
+                    if action == "help" {
+                        Ok(crate::dispatch::helpers::help_payload(entry.name, &actions))
+                    } else {
+                        crate::dispatch::helpers::require_str(&params, "action").and_then(|name| {
+                            crate::dispatch::helpers::action_schema(&actions, name)
+                        })
+                    }
+                } else {
+                    (entry.dispatch)(action.clone(), params).await
+                }
             } else if service == "access" {
                 let auth = auth_context_from_extensions(&context.extensions);
                 let identity =
@@ -2342,14 +2365,8 @@ impl LabMcpServer {
                 match seed {
                     Ok(seed) => {
                         native_task = seed;
-                        self.dispatch_caller_bound_service(
-                            &service,
-                            &action,
-                            params,
-                            &context,
-                            request.meta.as_ref(),
-                        )
-                        .await
+                        self.dispatch_caller_bound_service(&service, &action, params, &context)
+                            .await
                     }
                     Err(error) => Err(error),
                 }
@@ -2425,55 +2442,11 @@ impl LabMcpServer {
                             .into());
                         }
                     };
-                    // Installation-scoped platform actions authorize against the
-                    // real installation id, as HTTP does; a store outage is a
-                    // typed unavailability, never a silent denial.
-                    let store = match self.access_runtime.store().await {
-                        Ok(store) => store,
-                        Err(error) => {
-                            // Keep the mapped message: a setup gate must name
-                            // its remediation, not claim an outage.
-                            let mapped = crate::dispatch::access_errors::map_action_runtime_error(
-                                "gateway", &action, error,
-                            );
-                            return Ok(error_result_from_envelope(build_error(
-                                &service,
-                                &action,
-                                mapped.kind(),
-                                mapped.user_message(),
-                            ))
-                            .into());
-                        }
-                    };
-                    let installation_id = match store.installation_id().await {
-                        Ok(Some(installation_id)) => installation_id,
-                        // No installation binding yet: the evaluator authorizes
-                        // installation scope on platform-administrator status,
-                        // so the placeholder only names the resource (as HTTP).
-                        Ok(None) => "installation".to_owned(),
-                        Err(error) => {
-                            tracing::warn!(
-                                surface = "mcp",
-                                service = %service,
-                                action = %action,
-                                cause = %error,
-                                kind = "service_unavailable",
-                                "installation identity lookup failed"
-                            );
-                            return Ok(error_result_from_envelope(build_error(
-                                &service,
-                                &action,
-                                "service_unavailable",
-                                "Gateway authority store is unavailable",
-                            ))
-                            .into());
-                        }
-                    };
                     let gateway_authority = match crate::access::authorize_gateway_action(
                         &self.access_runtime,
                         identity,
                         ceiling,
-                        &installation_id,
+                        None,
                         team_id.as_deref(),
                         &action,
                     )
@@ -2493,35 +2466,22 @@ impl LabMcpServer {
                             .into());
                         }
                     };
-                    if let Some(team_id) = team_id.as_deref()
-                        && crate::dispatch::gateway::team_scoped_gateway_action(&action)
-                        && let Err(error) =
-                            crate::dispatch::gateway::validate_team_scoped_upstream_references(
-                                &store, team_id, &action, &params,
-                            )
-                            .await
-                    {
-                        return Ok(error_result_from_envelope(build_error_extra(
-                            &service,
-                            &action,
-                            error.kind(),
-                            "team-scoped gateway policy may only reference upstreams with an active Team credential binding",
-                            &serde_json::json!({ "param": "upstreams" }),
-                        ))
-                        .into());
-                    }
-                    let params = match crate::access::qualify_team_gateway_params(
+                    let params = match crate::access::prepare_gateway_action_params(
+                        gateway_authority.as_ref(),
                         &action,
                         team_id.as_deref(),
                         params,
-                    ) {
+                    )
+                    .await
+                    {
                         Ok(params) => params,
                         Err(error) => {
-                            return Ok(error_result_from_envelope(build_error(
+                            return Ok(error_result_from_envelope(build_error_extra(
                                 &service,
                                 &action,
                                 error.kind(),
                                 error.user_message(),
+                                &error.extra_fields(),
                             ))
                             .into());
                         }
@@ -2589,17 +2549,10 @@ impl LabMcpServer {
             } else {
                 (entry.dispatch)(action.clone(), params).await
             };
-            // Preserve the response-fence contract through the legacy formatter,
-            // while still recording and notifying completion of the executed action.
-            let authority_error_envelope = result
-                .as_ref()
-                .err()
-                .filter(|error| service == "gateway" && error.kind() == "authority_changed")
-                .map(|error| tool_error_envelope(&service, &action, error));
-            let result = result.map_err(|te| anyhow::Error::from(DispatchError::from(te)));
+            let result = result.map_err(anyhow::Error::from);
             let elapsed_ms = start.elapsed().as_millis();
             let input_tokens = estimate_tokens_args(&args);
-            let (mut result, outcome) = format_dispatch_result(
+            let (result, outcome) = format_dispatch_result(
                 result,
                 &service,
                 &action,
@@ -2608,11 +2561,7 @@ impl LabMcpServer {
                 actor_key,
                 input_tokens,
             );
-            if let Some(envelope) = authority_error_envelope {
-                result = error_result_from_envelope(envelope);
-            }
-            self.emit_dispatch_notification(&context, &service, &action, elapsed_ms, outcome)
-                .await;
+            self.trace_dispatch_outcome(&context, &service, &action, elapsed_ms, outcome);
             if result.is_error != Some(true)
                 && let Some(task) = native_task
             {
@@ -2633,7 +2582,7 @@ impl LabMcpServer {
                 let elapsed_ms = start.elapsed().as_millis();
                 let envelope =
                     build_error(&service, "call_tool", "not_found", "Tool is unavailable.");
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     &context,
                     &service,
                     "call_tool",
@@ -2642,8 +2591,7 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: "not_found".into(),
                     },
-                )
-                .await;
+                );
                 return Ok(error_result_from_envelope(envelope).into());
             }
             self.boxed_call_tool_upstream_impl(
@@ -2676,29 +2624,18 @@ impl LabMcpServer {
         request: &CallToolRequestParams,
         context: &RequestContext<RoleServer>,
     ) -> Option<CallToolResponse> {
-        #[cfg(feature = "gateway")]
-        {
-            let auth = auth_context_from_extensions(&context.extensions);
-            if !tool_execute_scope_allowed(auth)
-                && self.code_mode_visibility().await.hides_raw_tools()
-                && request.name.as_ref() != SERVER_LOGS_TOOL_NAME
-                && matches!(
-                    self.resolve_widget_callback_gate(request.name.as_ref(), context)
-                        .await,
-                    Ok(Some(WidgetCallbackGate::Destructive { .. }))
-                )
-            {
-                // Authorization precedes elicitation: a read-only caller must not
-                // be prompted to confirm a destructive app operation they cannot
-                // execute. The normal call path will return `forbidden`.
-                return None;
-            }
-        }
-
         if !self.tool_request_is_destructive(request, context).await {
             return None;
         }
 
+        self.confirm_destructive_request(request, context)
+    }
+
+    pub(super) fn confirm_destructive_request(
+        &self,
+        request: &CallToolRequestParams,
+        context: &RequestContext<RoleServer>,
+    ) -> Option<CallToolResponse> {
         let service = request.name.as_ref();
         let action = request
             .arguments
@@ -2751,6 +2688,15 @@ impl LabMcpServer {
             crate::mcp::elicitation::DestructiveConfirmation::Proceed => None,
             crate::mcp::elicitation::DestructiveConfirmation::InputRequired(result) => {
                 Some(CallToolResponse::InputRequired(result))
+            }
+            crate::mcp::elicitation::DestructiveConfirmation::AtCapacity => {
+                let envelope = build_error(
+                    service,
+                    action,
+                    "rate_limited",
+                    "Too many confirmations are pending. Complete a pending confirmation or retry after it expires.",
+                );
+                Some(error_result_from_envelope(envelope).into())
             }
             crate::mcp::elicitation::DestructiveConfirmation::Refused => {
                 let envelope = build_error(
@@ -3321,7 +3267,7 @@ fn classify_widget_callback_candidates(
 ///
 /// Tools that also list `model` keep the gate: those are reachable by the
 /// model and the confirmation is meaningful there.
-fn upstream_tool_is_app_only(tool: &rmcp::model::Tool) -> bool {
+pub(super) fn upstream_tool_is_app_only(tool: &rmcp::model::Tool) -> bool {
     let Some(meta) = tool.meta.as_ref() else {
         return false;
     };

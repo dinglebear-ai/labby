@@ -36,6 +36,7 @@ struct BridgeAuthority {
 
 struct CachedProof {
     signed_expiry: i64,
+    refreshed: Instant,
     deadline: Instant,
 }
 
@@ -44,9 +45,11 @@ impl CachedProof {
         let remaining = signed_expiry
             .saturating_sub(now_ms())
             .clamp(0, BRIDGE_PROOF_MS);
+        let refreshed = Instant::now();
         Self {
             signed_expiry,
-            deadline: Instant::now() + Duration::from_millis(remaining as u64),
+            refreshed,
+            deadline: refreshed + Duration::from_millis(remaining as u64),
         }
     }
 
@@ -162,7 +165,29 @@ impl LocalMessageSession {
             return Ok(());
         }
         // Bound proof traffic and serialize definitive revocation with refreshes.
-        let _refresh = bridge.refresh.try_lock().map_err(|_| NoticeError::Busy)?;
+        let started = Instant::now();
+        let _refresh = match bridge.refresh.try_lock() {
+            Ok(refresh) => refresh,
+            Err(_) => {
+                let refresh = tokio::time::timeout(
+                    Duration::from_millis(BRIDGE_PROOF_MS as u64),
+                    bridge.refresh.lock(),
+                )
+                .await
+                .map_err(|_| NoticeError::Busy)?;
+                if self.visible()
+                    && bridge
+                        .cached
+                        .lock()
+                        .map_err(|_| NoticeError::Unavailable)?
+                        .as_ref()
+                        .is_some_and(|proof| proof.refreshed >= started && proof.is_current())
+                {
+                    return Ok(());
+                }
+                refresh
+            }
+        };
         if !self.visible() {
             return Err(NoticeError::Identity);
         }
@@ -244,4 +269,45 @@ impl LocalMessageSession {
         self.close().await;
         result
     }
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn concurrent_bridge_authorizations_share_a_current_signed_proof() {
+    use crate::dispatch::agent_messages::proof::{BRIDGE_PROOF_PATH, BridgeProofRequest};
+    use wiremock::{
+        Mock, MockServer, ResponseTemplate,
+        matchers::{method, path},
+    };
+    let key = MessageKey::from_test_bytes([7; 32]);
+    let signer = key.clone();
+    let epoch = ulid::Ulid::new().to_string();
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path(BRIDGE_PROOF_PATH))
+        .respond_with(move |wire: &wiremock::Request| {
+            let request: BridgeProofRequest = wire.body_json().unwrap();
+            let proof = BridgeProof::issue(
+                &signer,
+                &request,
+                "fixture",
+                &signer.static_owner("fixture"),
+                &epoch,
+                now_ms(),
+            )
+            .unwrap();
+            ResponseTemplate::new(200).set_body_json(proof)
+        })
+        .expect(2)
+        .mount(&server)
+        .await;
+    let gateway = crate::live_gateway::tests::test_gateway(server.uri(), Some("fixture".into()));
+    let store = NoticeStore::memory().unwrap();
+    let recipient = ChannelSession::new(store.clone()).recipient.clone();
+    let session = LocalMessageSession::bridge(store, key, "a".repeat(64), recipient, gateway)
+        .await
+        .unwrap();
+    let (left, right) = tokio::join!(session.authorize(), session.authorize());
+    assert!(left.is_ok() && right.is_ok());
+    server.verify().await;
 }

@@ -34,7 +34,6 @@ use crate::mcp::handlers_tools::{
     mcp_app_tool_meta, mcp_app_tool_schema, server_logs_tool_meta, settings_tool_meta,
     settings_tool_schema, strip_resource_backed_ui_meta,
 };
-use crate::mcp::logging::logging_level_rank;
 use crate::mcp::server::LabMcpServer;
 use crate::registry::{RegisteredService, ToolRegistry};
 use labby_primitives::action::ActionSpec;
@@ -53,7 +52,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
     Arc,
-    atomic::{AtomicU8, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 const TEST_ACTIONS_ONE: &[ActionSpec] = &[
@@ -126,7 +125,7 @@ const DESTRUCTIVE_ACTIONS: &[ActionSpec] = &[ActionSpec {
     requires_admin: false,
     params: &[],
     returns: "object",
-    output_schema: None,
+    output_schema: Some(labby_primitives::action::schema_for::<Value>),
 }];
 
 fn noop_dispatch(
@@ -242,7 +241,6 @@ fn test_server(
     registry: ToolRegistry,
     gateway_manager: Option<Arc<crate::dispatch::gateway::manager::GatewayManager>>,
     route_scope: crate::mcp::route_scope::McpRouteScope,
-    logging_level: crate::mcp::logging::LoggingLevel,
 ) -> LabMcpServer {
     let code_mode_app_state = gateway_manager
         .as_ref()
@@ -260,7 +258,6 @@ fn test_server(
         route_runtime: Default::default(),
         client_registry: Default::default(),
         transport_label: "test",
-        logging_level: Arc::new(AtomicU8::new(logging_level_rank(logging_level))),
         route_scope,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -706,7 +703,6 @@ async fn call_tool_server_logs_requires_admin_scope() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -740,7 +736,6 @@ async fn call_tool_add_server_opens_for_admin_without_reserving_hidden_name() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -781,6 +776,47 @@ async fn call_tool_add_server_opens_for_admin_without_reserving_hidden_name() {
 }
 
 #[tokio::test]
+async fn native_service_catalog_and_wire_listing_agree_on_mcp_surface() {
+    let manager = restricted_gateway_manager(&["gateway.test"]).await;
+    let mut config = manager.current_config().await;
+    config.virtual_servers[0].surfaces.mcp = false;
+    manager.seed_config_unchecked_for_tests(config).await;
+    for (manager, gateway_visible) in [(None, true), (Some(manager), false)] {
+        let server = test_server(
+            crate::registry::build_default_registry(),
+            manager,
+            crate::mcp::route_scope::McpRouteScope::Root,
+        );
+        let (transport, _client) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let tools = running
+            .service()
+            .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            tools.tools.iter().any(|t| t.name == "gateway"),
+            gateway_visible
+        );
+        let catalog = running.service().visible_catalog().await;
+        assert_eq!(
+            catalog.services.iter().any(|s| s.name == "gateway"),
+            gateway_visible
+        );
+        assert!(catalog.services.iter().any(|s| s.name == "stash"));
+        assert!(
+            running
+                .service()
+                .service_actions_json("stash")
+                .await
+                .is_ok()
+        );
+    }
+}
+
+#[tokio::test]
 async fn add_server_app_obeys_gateway_action_policy_for_discovery_and_callbacks() {
     let manager = restricted_gateway_manager(&["gateway.test"]).await;
     assert!(
@@ -797,7 +833,6 @@ async fn add_server_app_obeys_gateway_action_policy_for_discovery_and_callbacks(
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -857,7 +892,6 @@ async fn add_server_app_handles_missing_gateway_registry_without_panicking() {
         ToolRegistry::new(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -903,7 +937,6 @@ async fn add_server_app_is_hidden_without_gateway_manager() {
         crate::registry::build_default_registry(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -941,7 +974,6 @@ async fn hidden_add_server_name_is_reserved_from_discovery_but_legacy_call_still
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -992,7 +1024,6 @@ async fn call_tool_blocks_destructive_builtin_when_elicitation_is_not_supported(
             ["danger"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1021,6 +1052,47 @@ async fn call_tool_blocks_destructive_builtin_when_elicitation_is_not_supported(
         0,
         "unsupported elicitation must fail closed before destructive dispatch"
     );
+}
+
+#[tokio::test]
+async fn denied_destructive_router_and_atomic_calls_return_without_elicitation() {
+    let mut registry = destructive_test_registry(noop_dispatch);
+    registry.set_tool_projection_mode(crate::mcp::permanent_tools::ToolProjectionMode::Both);
+    assert!(
+        registry
+            .resolve_atomic_action("danger.danger.delete")
+            .is_some()
+    );
+    let server = test_server(
+        registry,
+        None,
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "limited",
+            ["upstream"],
+            ["other"],
+            false,
+        ),
+    );
+    let (transport, _client) = tokio::io::duplex(64);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    for request in [
+        destructive_request(),
+        CallToolRequestParams::new("danger.danger.delete"),
+    ] {
+        let result = running
+            .service()
+            .call_tool_impl(
+                request,
+                request_context_with_elicitation(running.peer().clone()),
+            )
+            .await
+            .expect("denial must complete without requesting input");
+        let envelope: Value =
+            serde_json::from_str(&result.content[0].as_text().unwrap().text).unwrap();
+        assert_eq!(envelope["error"]["kind"], "route_scope_denied");
+    }
 }
 
 fn destructive_request() -> CallToolRequestParams {
@@ -1062,7 +1134,6 @@ async fn destructive_builtin_uses_single_use_bound_mrtr_elicitation() {
             ["danger"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1124,13 +1195,11 @@ async fn destructive_confirmation_cannot_cross_mcp_sessions_and_is_burned() {
         destructive_test_registry(destructive_counting_dispatch_cross_session),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Info,
     );
     let mut second_server = test_server(
         destructive_test_registry(destructive_counting_dispatch_cross_session),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Info,
     );
     second_server.relay_session_id = 1;
     let (first_transport, _first_client) = tokio::io::duplex(64);
@@ -1406,7 +1475,6 @@ async fn list_tools_advertises_code_mode_output_schemas() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1501,7 +1569,6 @@ async fn mcp_app_telemetry_is_app_only_for_read_scoped_callers() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1535,7 +1602,6 @@ async fn mcp_app_control_tool_survives_manager_ui_disable() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1592,7 +1658,6 @@ async fn mcp_app_manager_stays_visible_when_code_mode_is_disabled() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1638,7 +1703,6 @@ async fn manager_config_is_authoritative_over_a_stale_code_mode_app_mirror() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state.set_enabled(false);
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
@@ -1704,7 +1768,6 @@ async fn mcp_app_status_reports_runtime_state() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state = manager.code_mode_app_state();
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
@@ -1747,7 +1810,6 @@ async fn mcp_app_event_accepts_runtime_telemetry_for_read_scope() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1794,7 +1856,6 @@ async fn mcp_app_enable_is_idempotent_for_admin_scope() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -1833,7 +1894,6 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state = shared_state.clone();
 
@@ -1841,7 +1901,6 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     sibling_session.code_mode_app_state = shared_state;
     let independent_manager = code_mode_manager(true).await;
@@ -1849,7 +1908,6 @@ async fn mcp_app_disable_hides_ui_surface_and_enable_restores_it() {
         completion_test_registry(),
         Some(Arc::clone(&independent_manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     independent_gateway.code_mode_app_state = independent_manager.code_mode_app_state();
 
@@ -1986,7 +2044,6 @@ async fn mcp_app_individual_disable_only_changes_selected_surface() {
         crate::registry::build_default_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state = shared_state;
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -2108,7 +2165,6 @@ async fn mcp_app_manager_is_hidden_but_telemetry_is_allowed_on_protected_routes(
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2199,7 +2255,6 @@ async fn mcp_app_bulk_disable_hides_managed_apps_but_keeps_manager() {
         crate::registry::build_default_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state = shared_state;
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -2387,7 +2442,6 @@ async fn mcp_app_mutation_requires_admin_scope() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2419,7 +2473,6 @@ async fn mcp_app_rejects_malformed_control_shape_without_mutation() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2482,7 +2535,6 @@ async fn list_tools_keeps_server_logs_visible_when_code_mode_hides_raw_tools() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2522,7 +2574,6 @@ async fn code_mode_snippets_router_preserves_cli_discovery_and_contract() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2599,7 +2650,6 @@ async fn code_mode_snippets_router_keeps_admin_validation_and_denies_non_admins(
             crate::registry::build_default_registry(),
             Some(code_mode_manager(true).await),
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::logging::LoggingLevel::Emergency,
         );
         server.transport_label = transport_label;
         let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -2649,7 +2699,6 @@ async fn list_tools_advertises_add_server_app_only_to_admins() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2715,7 +2764,6 @@ async fn gateway_mcp_error_envelope(
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = access_runtime;
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -2747,14 +2795,12 @@ async fn gateway_tool_updates_code_mode_search_policy_without_restart() {
         crate::registry::build_default_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let peer_server = test_server(
         ToolRegistry::new(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2843,7 +2889,6 @@ async fn gateway_status_app_is_admin_only_and_returns_gateway_list() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -2928,7 +2973,6 @@ async fn gateway_status_app_obeys_gateway_list_policy() {
         crate::registry::build_default_registry(),
         Some(restricted_gateway_manager(&["gateway.test"]).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -2975,13 +3019,11 @@ async fn gateway_status_app_requires_manager_and_gateway_registry() {
             crate::registry::build_default_registry(),
             None,
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::logging::LoggingLevel::Emergency,
         ),
         test_server(
             ToolRegistry::new(),
             Some(code_mode_manager(true).await),
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::logging::LoggingLevel::Emergency,
         ),
     ] {
         let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
@@ -3023,7 +3065,6 @@ async fn gateway_status_app_returns_only_route_visible_upstreams() {
             ["gateway"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
@@ -3083,7 +3124,6 @@ async fn gateway_status_app_preserves_credential_catalog_scope() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
@@ -3120,7 +3160,6 @@ async fn list_tools_does_not_advertise_unreadable_server_logs_ui_metadata() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3193,7 +3232,6 @@ async fn artifact_management_is_distinct_from_sep_skill_exposure() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3206,17 +3244,17 @@ async fn artifact_management_is_distinct_from_sep_skill_exposure() {
         .list_tools_impl(None, context.clone())
         .await
         .expect("list tools for Skills-disabled loadout");
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
+    assert_eq!(listed.tools, contract);
     assert!(
         listed
             .tools
             .iter()
-            .any(|tool| tool.name.as_ref() == "artifacts")
-    );
-    assert!(
-        listed
-            .tools
-            .iter()
-            .all(|tool| tool.name.as_ref() != "skills")
+            .all(|tool| !matches!(tool.name.as_ref(), "artifacts" | "skills"))
     );
 
     let denied = Box::pin(running.service().call_tool_impl(
@@ -3277,7 +3315,6 @@ async fn resource_disabled_loadout_hides_unreadable_mcp_app_bindings() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state.set_enabled(true);
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -3285,12 +3322,28 @@ async fn resource_disabled_loadout_hides_unreadable_mcp_app_bindings() {
         server, transport, None,
     );
 
+    let context = scoped_context(running.peer().clone(), &["lab:admin"]);
+    let stash_error = running
+        .service()
+        .read_resource_impl(
+            ReadResourceRequestParams::new("stash://me/files/01ARZ3NDEKTSV4RRFFQ69G5FAV"),
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        )
+        .await
+        .expect_err("a resource-disabled route cannot read a stash URI");
+    assert_eq!(stash_error.code, rmcp::model::ErrorCode::RESOURCE_NOT_FOUND);
+    let contract = running
+        .service()
+        .peer_contract_for_request(&context)
+        .visible_tool_descriptors()
+        .await;
     let result = running
         .service()
-        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:admin"]))
+        .list_tools_impl(None, context)
         .await
         .expect("list tools for resource-disabled loadout");
 
+    assert_eq!(result.tools, contract);
     assert!(
         result
             .tools
@@ -3370,7 +3423,6 @@ async fn list_tools_promotes_upstream_mcp_app_tools_when_raw_tools_are_hidden() 
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3437,7 +3489,6 @@ async fn tool_catalog_snapshot_keeps_code_mode_contract_health_independent() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_app_state = manager.code_mode_app_state();
 
@@ -3463,7 +3514,6 @@ async fn list_tools_does_not_cold_connect_code_mode_catalog() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3560,7 +3610,6 @@ async fn protected_subset_first_list_tools_discovers_its_allowed_upstream() {
             std::iter::empty::<&str>(),
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3598,34 +3647,27 @@ async fn raw_oauth_list_tools_uses_only_the_subject_cache() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
     );
 
-    let result = tokio::time::timeout(
-        std::time::Duration::from_millis(250),
-        running
-            .service()
-            .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"])),
-    )
-    .await
-    .expect("cached tools/list must return promptly")
-    .expect("list tools");
+    let list = running
+        .service()
+        .list_tools_impl(None, scoped_context(running.peer().clone(), &["lab:read"]));
+    let result = tokio::select! {
+        biased;
+        _ = listener.accept() => panic!("root tools/list opened an OAuth upstream connection"),
+        result = list => result.expect("list tools"),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(15)) => panic!("tools/list stalled"),
+    };
 
     assert!(
         result
             .tools
             .iter()
             .all(|tool| tool.name.as_ref() != "remote")
-    );
-    assert!(
-        tokio::time::timeout(std::time::Duration::from_millis(50), listener.accept())
-            .await
-            .is_err(),
-        "root tools/list must not open an OAuth upstream connection"
     );
 }
 
@@ -3649,7 +3691,6 @@ async fn raw_oauth_list_tools_preserves_cached_subject_tools() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3698,7 +3739,6 @@ async fn list_tools_does_not_promote_upstream_mcp_app_tools_when_resources_are_n
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3753,7 +3793,6 @@ async fn list_tools_skips_upstream_ui_tools_that_collide_with_synthetic_names() 
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3836,7 +3875,6 @@ async fn protected_code_mode_list_tools_hides_raw_siblings_and_disallowed_builti
             ["gateway-alpha"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3879,7 +3917,6 @@ async fn protected_list_tools_hides_code_mode_when_route_disables_it() {
             ["gateway-alpha"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3927,7 +3964,6 @@ async fn codemode_description_lists_route_scoped_enabled_upstreams_and_hints() {
             ["gateway-alpha"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -3979,7 +4015,6 @@ async fn protected_list_tools_filters_disallowed_builtins_when_code_mode_is_off(
             ["gateway-alpha"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4032,7 +4067,6 @@ async fn call_tool_allows_mcp_app_sibling_callbacks_when_raw_tools_are_hidden() 
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4085,13 +4119,13 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
     );
 
+    let builds = crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get();
     let result = Box::pin(running.service().call_tool_impl(
         CallToolRequestParams::new("youtube_search_ui"),
         scoped_context(running.peer().clone(), &["lab:read"]),
@@ -4099,6 +4133,10 @@ async fn call_tool_allows_direct_mcp_app_ui_callbacks_with_read_scope() {
     .await
     .expect("call tool result");
 
+    assert_eq!(
+        crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get() - builds,
+        0
+    );
     assert!(result.is_error.unwrap_or(false));
     let text = result.content[0].as_text().expect("text").text.as_str();
     assert!(
@@ -4134,7 +4172,6 @@ async fn destructive_direct_mcp_app_tools_require_execute_scope_and_elicitation(
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4211,7 +4248,6 @@ async fn app_callback_markers_without_ui_owner_stay_hidden_and_uncallable() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4273,7 +4309,6 @@ async fn call_tool_rejects_priority_zero_direct_mcp_app_ui_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4330,7 +4365,6 @@ async fn call_tool_rejects_priority_zero_mcp_app_sibling_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4387,7 +4421,6 @@ async fn call_tool_rejects_disabled_mcp_app_sibling_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4462,7 +4495,6 @@ async fn call_tool_preserves_selected_mcp_app_sibling_upstream() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4515,7 +4547,6 @@ async fn call_tool_requires_execute_scope_for_hidden_mcp_app_sibling_callbacks()
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4565,7 +4596,6 @@ async fn call_tool_requires_execute_scope_for_legacy_widget_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_widget_callbacks_enabled_for_test = true;
     let (transport, _client_transport) = tokio::io::duplex(64);
@@ -4596,7 +4626,6 @@ async fn codemode_requires_execute_scope_not_read_scope() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4627,7 +4656,6 @@ async fn read_scope_lists_and_routes_only_codemode_read() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4704,7 +4732,6 @@ async fn codemode_read_rejects_artifact_writes_through_the_mcp_surface() {
         completion_test_registry(),
         Some(code_mode_manager_with_test_runner(true, Vec::new(), None).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4762,7 +4789,6 @@ async fn codemode_read_rejects_mutating_upstream_before_dispatch() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4802,7 +4828,6 @@ async fn codemode_allows_execute_scope_to_reach_runner_path() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4850,7 +4875,6 @@ async fn codemode_routes_to_code_mode_path() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4919,7 +4943,6 @@ async fn call_tool_allows_execute_scope_for_hidden_mcp_app_sibling_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -4980,7 +5003,6 @@ async fn call_tool_honors_route_scope_for_mcp_app_sibling_callbacks() {
             ["gateway"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
 
     let text = call_tool_error_text(server, "youtube_probe").await;
@@ -5015,7 +5037,6 @@ async fn list_tools_passes_through_subject_scoped_oauth_mcp_apps_in_code_mode() 
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5062,7 +5083,6 @@ async fn list_tools_hides_subject_scoped_oauth_app_when_ui_resource_is_not_expos
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5113,7 +5133,6 @@ async fn call_tool_blocks_oauth_mcp_app_sibling_callback_before_subject_route_di
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5170,7 +5189,6 @@ async fn call_tool_rejects_priority_zero_oauth_subject_scoped_callbacks() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
 
     let text = call_tool_error_text(server, "youtube_probe").await;
@@ -5189,7 +5207,6 @@ async fn list_tools_paginates_large_builtin_catalog() {
         large_test_registry(250),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5302,12 +5319,12 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
             registry,
             Some(manager),
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::logging::LoggingLevel::Emergency,
         );
         let (transport, _client_transport) = tokio::io::duplex(64);
         let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
             server, transport, None,
         );
+        let builds = crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get();
         let mut cursor = None;
         let mut names = Vec::new();
         loop {
@@ -5325,16 +5342,21 @@ async fn list_tools_pagination_is_independent_of_registry_insertion_order() {
             };
             cursor = Some(next);
         }
+        assert_eq!(
+            crate::mcp::peer_contract::CONTRACT_BUILD_COUNT.get() - builds,
+            1,
+            "all pages share one assembled Tools contract"
+        );
         names
     }
 
-    let ascending = collect_names(large_test_registry(250)).await;
-    let rebuilt = collect_names(reverse_large_test_registry(250)).await;
+    let ascending = collect_names(large_test_registry(1000)).await;
+    let rebuilt = collect_names(reverse_large_test_registry(1000)).await;
 
     assert_eq!(ascending, rebuilt);
-    assert_eq!(ascending.len(), 252);
+    assert_eq!(ascending.len(), 1002);
     assert_eq!(ascending[0], MCP_APP_TOOL_NAME);
-    assert_eq!(ascending[251], SETTINGS_TOOL_NAME);
+    assert_eq!(ascending[1001], SETTINGS_TOOL_NAME);
     assert!(ascending.is_sorted());
 }
 
@@ -5345,7 +5367,6 @@ async fn list_tools_rejects_cursor_after_catalog_revision_changes() {
         large_test_registry(250),
         Some(original_manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (original_transport, _original_client_transport) = tokio::io::duplex(64);
     let original = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5363,7 +5384,6 @@ async fn list_tools_rejects_cursor_after_catalog_revision_changes() {
         large_test_registry(251),
         Some(changed_manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (changed_transport, _changed_client_transport) = tokio::io::duplex(64);
     let changed = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5394,7 +5414,6 @@ async fn list_tools_rejects_invalid_cursor() {
         completion_test_registry(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5444,7 +5463,6 @@ async fn call_tool_blocks_destructive_mcp_app_sibling_callbacks_without_elicitat
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5494,7 +5512,6 @@ async fn call_tool_blocks_destructive_direct_mcp_app_callbacks_without_elicitati
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
 
     let text = call_tool_error_text(server, "youtube_delete_ui").await;
@@ -5527,7 +5544,6 @@ async fn call_tool_blocks_destructive_legacy_widget_callbacks_without_elicitatio
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_widget_callbacks_enabled_for_test = true;
     let (transport, _client_transport) = tokio::io::duplex(64);
@@ -5579,7 +5595,6 @@ async fn call_tool_allows_legacy_widget_callbacks_for_route_allowed_upstream() {
             ["gateway"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_widget_callbacks_enabled_for_test = true;
     let (transport, _client_transport) = tokio::io::duplex(64);
@@ -5638,7 +5653,6 @@ async fn call_tool_honors_route_scope_for_legacy_widget_callbacks() {
             ["gateway"],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.code_mode_widget_callbacks_enabled_for_test = true;
     let (transport, _client_transport) = tokio::io::duplex(64);
@@ -5724,7 +5738,6 @@ async fn call_tool_rejects_ambiguous_mcp_app_sibling_callbacks_when_one_candidat
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5811,7 +5824,6 @@ async fn call_tool_rejects_ambiguous_non_destructive_mcp_app_sibling_callbacks()
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5866,7 +5878,6 @@ async fn call_tool_blocks_destructive_mcp_app_sibling_callback_without_elicitati
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5948,7 +5959,6 @@ async fn call_tool_refuses_ambiguous_mcp_app_sibling_callback() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -5995,7 +6005,6 @@ async fn call_tool_rejects_hidden_tool_without_ui_sibling_in_code_mode() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6045,7 +6054,6 @@ async fn call_tool_allows_direct_mcp_app_ui_tool_in_code_mode() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6091,7 +6099,6 @@ async fn code_mode_tools_list_keeps_gateway_control_plane_visible() {
         registry,
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
 
     let (transport, _client_transport) = tokio::io::duplex(64);
@@ -6132,7 +6139,6 @@ async fn snapshot_catalog_shows_no_gateway_tools_when_surface_is_disabled() {
         completion_test_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
 
     let snapshot = server.snapshot_catalog().await;
@@ -6164,7 +6170,6 @@ async fn protected_scope_denies_direct_code_mode_calls_when_hidden() {
             ["gateway-alpha"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6218,9 +6223,6 @@ async fn server_reads_current_pool_from_gateway_manager() {
         route_runtime: Default::default(),
         client_registry: notifier.client_registry.clone(),
         transport_label: "test",
-        logging_level: Arc::new(AtomicU8::new(logging_level_rank(
-            crate::mcp::logging::LoggingLevel::Info,
-        ))),
         route_scope: crate::mcp::route_scope::McpRouteScope::Root,
         relay_session_id: 0,
         code_mode_widget_callbacks_enabled_for_test: false,
@@ -6270,7 +6272,6 @@ async fn snapshot_catalog_hides_mcp_disabled_virtual_services() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Info,
     );
 
     let snapshot = server.snapshot_catalog().await;
@@ -6330,14 +6331,12 @@ async fn gateway_add_through_mcp_protected_route_suppresses_hidden_enrichment_su
             ["gateway".to_string()],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let peer_server = test_server(
         ToolRegistry::new(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6426,14 +6425,12 @@ async fn gateway_pending_import_approve_through_mcp_protected_route_suppresses_h
             ["gateway".to_string()],
             true,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let peer_server = test_server(
         ToolRegistry::new(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6512,7 +6509,6 @@ async fn service_actions_json_filters_to_allowed_mcp_actions() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Info,
     );
 
     let value = server
@@ -6566,7 +6562,6 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
         completion_test_registry(),
         Some(Arc::clone(&manager)),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     )
     .peer_contract();
     let raw_peer = test_server(
@@ -6578,7 +6573,6 @@ async fn peer_contracts_diverge_by_route_scope_under_global_code_mode() {
             ["gateway"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     )
     .peer_contract();
 
@@ -6623,7 +6617,6 @@ async fn peer_contract_removes_codemode_when_execute_scope_is_revoked() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     )
     .peer_contract();
     let mut unauthorized = authorized.clone();
@@ -6649,7 +6642,6 @@ async fn peer_contract_removes_all_codemode_tools_when_read_and_execute_are_revo
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     )
     .peer_contract();
     contract.audience.code_mode_read_allowed = false;
@@ -6683,12 +6675,7 @@ async fn raw_mode_builtin_descriptors_match_across_builders() {
         ["hidden-upstream", "gateway-alpha"],
         /* expose_code_mode */ false,
     );
-    let server = test_server(
-        completion_test_registry(),
-        None,
-        scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
-    );
+    let server = test_server(completion_test_registry(), None, scope);
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
@@ -6778,7 +6765,6 @@ async fn authenticated_http_gets_scoped_artifact_management_while_local_peers_do
         crate::registry::build_docs_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.transport_label = "http";
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
@@ -6892,7 +6878,6 @@ async fn proxy_aggregate_catalog_matches_peer_contract_and_preserves_collisions(
         ToolRegistry::proxy_aggregate(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -6954,12 +6939,7 @@ async fn raw_mode_preserves_upstream_annotations_verbatim_on_both_listing_paths(
         Vec::<String>::new(),
         false,
     );
-    let server = test_server(
-        ToolRegistry::new(),
-        Some(manager),
-        scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
-    );
+    let server = test_server(ToolRegistry::new(), Some(manager), scope);
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
         server, transport, None,
@@ -7024,7 +7004,6 @@ async fn builtin_help_success_sets_conformant_structured_content() {
             ["hidden-upstream", "gateway-alpha"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7105,7 +7084,6 @@ async fn builtin_unknown_action_error_is_exempt_from_success_schema() {
             ["hidden-upstream", "gateway-alpha"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7143,7 +7121,6 @@ async fn call_tool_add_server_denies_non_admin_scope_at_dispatch() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7186,7 +7163,6 @@ async fn settings_mutations_use_the_setup_destructive_policy() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7265,7 +7241,6 @@ async fn gateway_call_on_team_bound_route_rejects_mismatching_team_id_param() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         scope,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7313,7 +7288,6 @@ async fn browser_callbacks_remain_destructive_despite_page_annotations() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(false).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7401,7 +7375,6 @@ async fn personal_oauth_authorize_enforces_mcp_execute_scope() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.transport_label = "http";
     let identity = labby_auth::VerifiedIdentity::local_credential(
@@ -7524,7 +7497,6 @@ async fn macpoo_code_mode_server(
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7673,7 +7645,6 @@ async fn codemode_call_to_disabled_upstream_reports_unavailable() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -7724,7 +7695,6 @@ async fn code_mode_stash_native_discovery_matches_retained_contract_and_dispatch
         registry,
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.transport_label = "http";
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -7883,7 +7853,6 @@ async fn code_mode_stash_exception_does_not_admit_in_process_peers() {
         crate::registry::build_default_registry(),
         Some(code_mode_manager(true).await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.transport_label = "in-process";
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -7952,7 +7921,6 @@ async fn synthetic_gateway_callbacks_require_current_durable_authority() {
             crate::registry::build_default_registry(),
             Some(code_mode_manager(true).await),
             crate::mcp::route_scope::McpRouteScope::Root,
-            crate::mcp::logging::LoggingLevel::Emergency,
         );
         server.access_runtime = runtime;
         let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -8083,7 +8051,6 @@ async fn gateway_mcp_fences_revocation_during_discovery() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = access.clone();
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -8193,7 +8160,6 @@ async fn synthetic_gateway_create_retains_authorized_admin_success() {
         crate::registry::build_default_registry(),
         Some(manager.clone()),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = authorized_test_access_runtime().await;
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -8264,7 +8230,6 @@ async fn synthetic_gateway_test_fences_revocation_during_probe() {
         crate::registry::build_default_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.access_runtime = access.clone();
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -8344,7 +8309,6 @@ async fn tool_and_hash_agree_on_message_visibility() {
         completion_test_registry(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     server.transport_label = "http";
     let (transport, _client) = tokio::io::duplex(256 * 1024);
@@ -8423,7 +8387,6 @@ async fn raw_upstream_tools_respect_the_read_execute_ceiling() {
         completion_test_registry(),
         Some(manager),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(128 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -8550,7 +8513,6 @@ async fn destructive_elicitation_yields_to_the_gate_that_denies() {
             ["other"],
             false,
         ),
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -8574,7 +8536,6 @@ async fn destructive_elicitation_yields_to_the_gate_that_denies() {
         gated_destructive_registry(),
         None,
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(64);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -8606,7 +8567,6 @@ async fn disabled_read_tool_is_hidden_from_listing_and_contract_and_rejected_on_
         completion_test_registry(),
         Some(code_mode_manager_without_read_tool().await),
         crate::mcp::route_scope::McpRouteScope::Root,
-        crate::mcp::logging::LoggingLevel::Emergency,
     );
     let (transport, _client_transport) = tokio::io::duplex(256 * 1024);
     let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
@@ -8674,4 +8634,156 @@ async fn disabled_read_tool_is_hidden_from_listing_and_contract_and_rejected_on_
     let text = call.content[0].as_text().expect("text").text.as_str();
     assert!(text.contains("unknown_tool"), "{text}");
     assert!(text.contains("code_mode.read_tool_enabled"), "{text}");
+}
+
+#[tokio::test]
+async fn setup_help_and_schema_exclude_http_only_actions() {
+    let server = test_server(
+        crate::registry::build_docs_registry(),
+        Some(code_mode_manager(false).await),
+        crate::mcp::route_scope::McpRouteScope::Root,
+    );
+    let (transport, _client) = tokio::io::duplex(128 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    for (action, name, denied) in [
+        ("help", "", false),
+        ("schema", "settings.schema", false),
+        ("schema", "clients.session.start", true),
+    ] {
+        let request =
+            CallToolRequestParams::new("setup").with_arguments(serde_json::Map::from_iter([
+                ("action".into(), serde_json::json!(action)),
+                ("params".into(), serde_json::json!({"action": name})),
+            ]));
+        let response = Box::pin(running.service().call_tool_impl(
+            request,
+            scoped_context(running.peer().clone(), &["lab:admin"]),
+        ))
+        .await
+        .expect("setup discovery response");
+        let text = &response.content[0].as_text().expect("text").text;
+        assert_eq!(response.is_error.unwrap_or(false), denied, "{text}");
+        if denied {
+            assert!(text.contains("unknown_action"), "{text}");
+        } else {
+            assert!(text.contains("settings.schema"), "{text}");
+            assert!(!text.contains("clients.session.start"), "{text}");
+        }
+    }
+}
+
+#[cfg(feature = "proxy-testkit")]
+#[tokio::test]
+async fn protected_subscription_acknowledges_only_deliverable_route_resources() {
+    use labby_gateway::upstream::pool::notification_testkit::{
+        SubscriptionServer, add_subscription_server,
+    };
+    use rmcp::ServerHandler;
+    use rmcp::model::SubscriptionFilter;
+
+    let pool = Arc::new(UpstreamPool::new());
+    for (upstream, ui) in [("alpha", "ui://alpha/widget"), ("beta", "ui://beta/widget")] {
+        let fixture = SubscriptionServer::accepting();
+        fixture
+            .replace_resources_and_notify(&["file:///example", ui])
+            .await;
+        add_subscription_server(&pool, upstream, fixture).await;
+        assert!(pool.refresh_resources_after_list_changed(upstream).await);
+    }
+    tokio::time::timeout(std::time::Duration::from_secs(15), async {
+        while pool.subscribable_resource_uris_snapshot().len() < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("both upstream acknowledgements are visible");
+    let alpha = "lab://upstream/alpha/file:///example".to_owned();
+    let beta = "lab://upstream/beta/file:///example".to_owned();
+    let manager = code_mode_manager_with_pool_multi(
+        false,
+        vec![
+            fixture_upstream_config("alpha"),
+            fixture_upstream_config("beta"),
+        ],
+        pool,
+    )
+    .await;
+    let server = test_server(
+        completion_test_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::protected_subset(
+            "only-alpha",
+            ["alpha"],
+            std::iter::empty::<&str>(),
+            false,
+        ),
+    );
+    let requested = SubscriptionFilter::builder()
+        .tools_list_changed()
+        .resource_subscriptions(vec![
+            alpha.clone(),
+            beta,
+            "ui://alpha/widget".into(),
+            "ui://beta/widget".into(),
+            "ui://unknown/widget".into(),
+        ])
+        .build();
+    let accepted = server.accepted_subscription_filter(&requested).unwrap();
+    assert_eq!(accepted.tools_list_changed, Some(true));
+    assert_eq!(
+        accepted.resource_subscriptions.unwrap(),
+        vec![alpha, "ui://alpha/widget".to_owned()]
+    );
+}
+
+#[tokio::test]
+async fn settings_state_applies_transport_trust_when_auth_is_absent() {
+    for (transport_label, allowed) in [
+        ("stdio", true),
+        ("http", true),
+        (
+            crate::mcp::in_process_peer::IN_PROCESS_TRANSPORT_LABEL,
+            false,
+        ),
+    ] {
+        let mut server = test_server(
+            crate::registry::build_default_registry(),
+            Some(code_mode_manager(false).await),
+            crate::mcp::route_scope::McpRouteScope::Root,
+        );
+        server.transport_label = transport_label;
+        let (transport, _client) = tokio::io::duplex(64 * 1024);
+        let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+            server, transport, None,
+        );
+        let request = CallToolRequestParams::new(SETTINGS_TOOL_NAME).with_arguments(
+            serde_json::Map::from_iter([
+                ("action".into(), serde_json::json!("state")),
+                ("params".into(), serde_json::json!({"section":"features"})),
+            ]),
+        );
+        let response = Box::pin(
+            running
+                .service()
+                .call_tool_impl(request, request_context_with_peer(running.peer().clone())),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            !response.is_error.unwrap_or(false),
+            allowed,
+            "{transport_label}"
+        );
+        if !allowed {
+            assert!(
+                response.content[0]
+                    .as_text()
+                    .unwrap()
+                    .text
+                    .contains("forbidden")
+            );
+        }
+    }
 }

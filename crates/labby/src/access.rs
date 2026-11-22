@@ -111,12 +111,6 @@ impl AccessPrincipalId {
         &self.0
     }
 
-    /// Rehydrate an ID that was minted by this process for its private
-    /// in-process MCP peer. Network callers must never reach this constructor.
-    pub(crate) fn from_propagated(value: String) -> Option<Self> {
-        (!value.is_empty() && value.len() <= 255).then_some(Self(value))
-    }
-
     #[cfg(test)]
     pub(crate) fn for_test(value: &str) -> Self {
         Self(value.to_owned())
@@ -185,7 +179,7 @@ pub(crate) use error::AccessStoreError;
 #[cfg(feature = "gateway")]
 pub(crate) use gateway_authority::{
     GatewayActionAuthorization, authorize_gateway_action, filter_team_gateway_projection,
-    gateway_runtime_subject, gateway_transport_requires_admin, qualify_team_gateway_params,
+    gateway_runtime_subject, gateway_transport_requires_admin, prepare_gateway_action_params,
 };
 #[cfg(feature = "gateway")]
 #[allow(unused_imports)]

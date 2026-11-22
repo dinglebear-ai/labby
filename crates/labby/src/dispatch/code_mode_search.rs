@@ -20,7 +20,7 @@ use sha2::{Digest as _, Sha256};
 
 use crate::config::depot::PUBLIC_ID;
 use crate::dispatch::depot::manager::Manager;
-use crate::skills::facade::{code_mode_skill_context, search_visible_skills_bounded};
+use crate::skills::facade::{code_mode_caller_skill_context, search_visible_skills_bounded};
 
 // One sentinel beyond the public 50-result limit lets Code Mode report
 // truncation when a queried source has more matches than the caller requested.
@@ -229,20 +229,7 @@ impl ProductCodeModeArtifactSearchProvider {
         caller: &CodeModeCaller,
         scope: &ToolScope,
     ) -> Option<crate::skills::facade::SkillRegistryContext> {
-        let context = match caller.without_authority() {
-            CodeModeCaller::ScopedSkills {
-                skill_context_token,
-                ..
-            }
-            | CodeModeCaller::ScopedHostProviderSkills {
-                skill_context_token,
-                ..
-            } => code_mode_skill_context(skill_context_token),
-            CodeModeCaller::TrustedLocal => Some(Arc::new(
-                crate::skills::facade::SkillRegistryContext::first_party_only(),
-            )),
-            _ => None,
-        };
+        let context = code_mode_caller_skill_context(caller, scope);
         context.map(|context| context.narrowed_to_upstreams(scope.allowed_namespaces()))
     }
 
@@ -1143,7 +1130,7 @@ async fn provider_visible_to_caller(
     }
     match caller.authority_token() {
         Some(token) => {
-            crate::mcp::code_mode_authority::authorize_artifact_discovery(token, project_id)
+            crate::dispatch::code_mode_authority::authorize_artifact_discovery(token, project_id)
                 .await
                 .is_ok()
         }
@@ -1398,14 +1385,18 @@ mod tests {
             gateway,
             SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
         ));
-        let caller = CodeModeCaller::ScopedSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some(guard.token().to_owned()),
+                ..Default::default()
+            },
+
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
                 ..Default::default()
             },
             sub: Some("reader".into()),
-            skill_context_token: guard.token().to_owned(),
         };
         let preferences = crate::config::depot::DepotPreferences::default();
         let provider = ProductCodeModeArtifactSearchProvider {
@@ -1487,14 +1478,18 @@ mod tests {
             gateway,
             SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
         ));
-        let caller = CodeModeCaller::ScopedSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some(guard.token().to_owned()),
+                ..Default::default()
+            },
+
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
                 ..Default::default()
             },
             sub: Some("reader".into()),
-            skill_context_token: guard.token().to_owned(),
         };
         let provider = ProductCodeModeArtifactSearchProvider {
             depot: Arc::new(Manager::default()),
@@ -1547,14 +1542,18 @@ mod tests {
             manager,
             SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
         ));
-        let caller = CodeModeCaller::ScopedSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some(guard.token().into()),
+                ..Default::default()
+            },
+
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
                 ..Default::default()
             },
             sub: Some("reader".into()),
-            skill_context_token: guard.token().into(),
         };
         let provider = ProductCodeModeArtifactSearchProvider {
             depot: Arc::new(Manager::default()),
@@ -1648,14 +1647,18 @@ mod tests {
             manager,
             SkillCallerScope::root(Some("reader".into()), ToolAccess::CodeModeOnly),
         ));
-        let caller = CodeModeCaller::ScopedSkills {
+        let caller = CodeModeCaller::Scoped {
+            host_context: labby_codemode::CodeModeHostContext {
+                skill_context_token: Some(guard.token().into()),
+                ..Default::default()
+            },
+
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
                 ..Default::default()
             },
             sub: Some("reader".into()),
-            skill_context_token: guard.token().into(),
         };
         let provider = ProductCodeModeArtifactSearchProvider {
             depot: Arc::new(Manager::new(
@@ -2421,6 +2424,7 @@ mod tests {
             ),
         };
         let caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 ..Default::default()
@@ -2443,6 +2447,7 @@ mod tests {
     #[tokio::test]
     async fn scoped_caller_without_request_authority_cannot_use_bound_public_provider() {
         let caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 ..Default::default()
@@ -2498,6 +2503,7 @@ mod tests {
         assert!(provider_visible_to_caller(&team, &CodeModeCaller::TrustedLocal).await);
 
         let scoped = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 ..Default::default()
@@ -2538,6 +2544,63 @@ mod tests {
             team_provider_ids(&topology, &scoped).await,
             Vec::<String>::new()
         );
+    }
+
+    #[tokio::test]
+    async fn bound_depot_provider_requires_live_project_discovery_authority() {
+        use crate::access::{AccessRuntime, AuthorityCeiling, test_support};
+        use crate::dispatch::code_mode_authority::register_personal_authority;
+        let (dir, _store, owner) = test_support::fixture().await;
+        let access = Arc::new(AccessRuntime::initialize(dir.path().join("access.db")).await);
+        let provider = crate::config::depot::ProviderView {
+            id: "team".into(),
+            name: "Team".into(),
+            endpoint: "https://team.example.test".into(),
+            enabled: true,
+            auth_mode: crate::config::depot::AuthMode::Bearer,
+            bearer_token_env: None,
+            host_managed: true,
+            read_project_id: Some("bootstrap-default".into()),
+            expected_deployment_id: None,
+        };
+        for (subject, identity, visible) in [
+            ("owner-subject", owner, true),
+            ("outsider", test_support::browser("outsider"), false),
+        ] {
+            let auth = labby_auth::auth_context::AuthContext {
+                sub: subject.into(),
+                actor_key: None,
+                scopes: vec!["lab:read".into()],
+                issuer: "test".into(),
+                via_session: true,
+                csrf_token: None,
+                email: None,
+            };
+            let guard = register_personal_authority(
+                access.clone(),
+                identity,
+                AuthorityCeiling::from_auth_context(&auth),
+                auth.sub,
+                None,
+            );
+            let caller = CodeModeCaller::WithAuthority {
+                caller: Box::new(CodeModeCaller::Scoped {
+                    host_context: Default::default(),
+                    capabilities: CodeModeCallerCapabilities {
+                        can_read: true,
+                        ..Default::default()
+                    },
+                    sub: Some(subject.into()),
+                }),
+                authority_token: guard.token().to_owned(),
+            };
+            assert_eq!(
+                provider_visible_to_caller(&provider, &caller).await,
+                visible
+            );
+            drop(guard);
+            assert!(!provider_visible_to_caller(&provider, &caller).await);
+        }
     }
 
     #[test]
@@ -2623,6 +2686,7 @@ mod tests {
         let library_id = format!("labby::{}", library.descriptor.id);
         let draft_id = format!("labby::{}", draft.descriptor.id);
         let scoped = |is_admin: bool| CodeModeCaller::Scoped {
+            host_context: Default::default(),
             capabilities: CodeModeCallerCapabilities {
                 can_read: true,
                 can_execute: true,
@@ -2638,11 +2702,25 @@ mod tests {
             admin.contains(&draft_id),
             "scoped admins still see local drafts"
         );
-        let member = search(&scoped(false));
-        assert!(
-            member.is_empty(),
-            "non-admins see neither drafts nor library records: {member:?}"
-        );
+        // Vary each publication field independently on the same non-library head.
+        let head = store
+            .workspace_path(&draft.descriptor.id)
+            .unwrap()
+            .with_file_name("artifact.json");
+        let mut record = draft;
+        for (state, visibility, visible) in [
+            (PublicationState::Draft, Visibility::Private, false),
+            (PublicationState::Draft, Visibility::Public, false),
+            (PublicationState::Published, Visibility::Private, false),
+            (PublicationState::Published, Visibility::Public, true),
+        ] {
+            record.publication.state = state;
+            record.publication.visibility = visibility;
+            std::fs::write(&head, serde_json::to_vec(&record).unwrap()).unwrap();
+            let member = search(&scoped(false));
+            let expected: Vec<_> = visible.then_some(draft_id.clone()).into_iter().collect();
+            assert_eq!(member, expected, "{state:?}, {visibility:?}");
+        }
         let operator = search(&CodeModeCaller::TrustedLocal);
         assert!(operator.contains(&library_id) && operator.contains(&draft_id));
     }

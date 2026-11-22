@@ -269,20 +269,7 @@ pub fn optional_str<'a>(params: &'a Value, key: &str) -> Result<Option<&'a str>,
 pub fn help_payload(service: &str, actions: &[ActionSpec]) -> Value {
     serde_json::json!({
         "service": service,
-        "actions": actions.iter().map(|a| serde_json::json!({
-            "name": a.name,
-            "description": a.description,
-            "destructive": a.destructive,
-            "requires_admin": a.requires_admin,
-            "required_scopes": if a.requires_admin { vec!["lab:admin"] } else { Vec::<&str>::new() },
-            "returns": a.returns,
-            "params": a.params.iter().map(|p| serde_json::json!({
-                "name": p.name,
-                "type": p.ty,
-                "required": p.required,
-                "description": p.description,
-            })).collect::<Vec<_>>(),
-        })).collect::<Vec<_>>(),
+        "actions": actions.iter().map(|spec| crate::catalog::ActionEntry::from(spec).dispatch_value("name")).collect::<Vec<_>>(),
     })
 }
 
@@ -299,20 +286,7 @@ pub fn action_schema(actions: &[ActionSpec], action_name: &str) -> Result<Value,
             valid: actions.iter().map(|a| a.name.to_string()).collect(),
             hint: None,
         })?;
-    Ok(serde_json::json!({
-        "action": spec.name,
-        "description": spec.description,
-        "destructive": spec.destructive,
-        "requires_admin": spec.requires_admin,
-        "required_scopes": if spec.requires_admin { vec!["lab:admin"] } else { Vec::<&str>::new() },
-        "returns": spec.returns,
-        "params": spec.params.iter().map(|p| serde_json::json!({
-            "name": p.name,
-            "type": p.ty,
-            "required": p.required,
-            "description": p.description,
-        })).collect::<Vec<_>>(),
-    }))
+    Ok(crate::catalog::ActionEntry::from(spec).dispatch_value("action"))
 }
 
 /// Handle the `help` and `schema` built-in actions that every service dispatcher

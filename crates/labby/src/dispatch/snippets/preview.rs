@@ -6,7 +6,6 @@ use super::store::{
 };
 use crate::dispatch::error::ToolError;
 use crate::dispatch::gateway::manager::GatewayManager;
-use crate::dispatch::helpers::lab_home;
 use labby_codemode::{
     CatalogDescriptor, CodeModeCatalogKind, CodeModeHost, CodeModeToolSafety, ToolScope,
 };
@@ -154,7 +153,11 @@ pub(super) async fn prepare(
     previous: Option<&SnippetExecutionReceipt>,
 ) -> Result<PreparedSnippet, ToolError> {
     authorize(context)?;
-    let snippet = resolve_snippet(&lab_home(), &builtin_snippet_dir(), name)?;
+    let name = name.to_owned();
+    let snippet = super::dispatch::store_operation(move |home| {
+        resolve_snippet(home, &builtin_snippet_dir(), &name)
+    })
+    .await?;
     prepare_resolved(manager, snippet, supplied, context, previous).await
 }
 
@@ -206,6 +209,11 @@ async fn prepare_resolved(
             .max_source_bytes
             .min(labby_codemode::MAX_SOURCE_BYTES),
     )?;
+    let (include_snippets, use_cache) = labby_codemode::discovery_render_params(
+        &context.execution_caller,
+        context.execution_surface,
+        &scope,
+    );
     let render = tokio::time::timeout(
         std::time::Duration::from_secs(10),
         super::own_operation_future(|| {
@@ -214,8 +222,8 @@ async fn prepare_resolved(
                 &context.execution_caller,
                 context.execution_surface,
                 &scope,
-                false,
-                true,
+                include_snippets,
+                use_cache,
             )
         }),
     )

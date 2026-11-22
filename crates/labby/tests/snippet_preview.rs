@@ -17,6 +17,7 @@ fn context(subject: &str) -> SnippetDispatchContext {
     context.execution_surface = CodeModeSurface::Api;
     context.actor_key = Some("preview-operator".into());
     context.execution_caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         sub: Some(subject.into()),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
@@ -141,7 +142,8 @@ fn run(home: &Path) {
         assert_eq!(call(&manager,"snippets.preview",json!({"execution_id":id,"params":input}),&context("bob")).await.unwrap_err().kind(),"unknown_execution");
         let mut nonadmin=alice.clone();nonadmin.is_admin=false;
         assert_eq!(call(&manager,"snippets.preview",json!({"name":"preview-demo","params":input}),&nonadmin).await.unwrap_err().kind(),"forbidden");
-        let mut caller_nonadmin=alice.clone();caller_nonadmin.execution_caller=CodeModeCaller::Scoped {sub:Some("alice".into()),capabilities:CodeModeCallerCapabilities {can_read:true,can_execute:true,can_use_snippets:true,is_admin:false}};
+        let mut caller_nonadmin=alice.clone();caller_nonadmin.execution_caller=CodeModeCaller::Scoped {
+ host_context: Default::default(),sub:Some("alice".into()),capabilities:CodeModeCallerCapabilities {can_read:true,can_execute:true,can_use_snippets:true,is_admin:false}};
         assert_eq!(call(&manager,"snippets.preview",json!({"name":"preview-demo","params":input}),&caller_nonadmin).await.unwrap_err().kind(),"forbidden");
         let wrong=call(&manager,"snippets.replay",json!({"execution_id":id,"params":input,"expected_preview_fingerprint":"old","acknowledged_drift":[]}),&alice).await.unwrap_err();
         assert_eq!(wrong.kind(),"preview_stale");assert_eq!(count(home),1);

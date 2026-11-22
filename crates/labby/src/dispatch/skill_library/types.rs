@@ -28,7 +28,8 @@ pub(crate) struct SkillLibrarySummary {
     pub(crate) name: String,
     pub(crate) archived: bool,
     pub(crate) active_revision_id: Option<String>,
-    pub(crate) latest_revision_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) latest_revision_id: Option<String>,
     pub(crate) visibility: &'static str,
     pub(crate) access_label: &'static str,
     pub(crate) can_mutate: bool,

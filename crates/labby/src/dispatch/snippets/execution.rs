@@ -30,10 +30,22 @@ pub(super) fn value_digest(value: &Value) -> String {
     digest(&serde_json::to_vec(value).expect("JSON Value serialization is infallible"))
 }
 
+pub(crate) fn execution_owner_key(
+    actor: Option<&str>,
+    subject: Option<&str>,
+    caller: &CodeModeCaller,
+) -> String {
+    value_digest(
+        &json!({"actor":actor, "subject":subject, "trusted_local":matches!(caller.without_authority(), CodeModeCaller::TrustedLocal)}),
+    )
+}
+
 pub(super) fn receipt_owner(context: &SnippetDispatchContext) -> SnippetReceiptOwner {
     SnippetReceiptOwner {
-        owner_key: value_digest(
-            &json!({"actor":context.actor_key,"subject":context.authenticated_principal,"trusted_local":matches!(context.execution_caller.without_authority(), CodeModeCaller::TrustedLocal)}),
+        owner_key: execution_owner_key(
+            context.actor_key.as_deref(),
+            context.authenticated_principal.as_deref(),
+            &context.execution_caller,
         ),
         route_scope: context.route_scope.clone(),
         capability_fingerprint: context.capability_filter_fingerprint.clone(),
@@ -60,15 +72,13 @@ async fn persist(
     owner: &SnippetReceiptOwner,
 ) -> String {
     // Execution already has side effects; telemetry failure must never invite replay.
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        manager.record_snippet_receipt(receipt.clone(), owner.clone()),
-    )
-    .await
+    match manager
+        .record_snippet_receipt(receipt.clone(), owner.clone())
+        .await
     {
-        Ok(Ok(true)) => "persisted".into(),
-        Ok(Ok(false)) => "disabled".into(),
-        _ => {
+        Ok(true) => "persisted".into(),
+        Ok(false) => "disabled".into(),
+        Err(_) => {
             tracing::warn!(execution_id = %receipt.execution_id, "snippet receipt persistence unavailable; do not replay execution to recover telemetry");
             "unavailable".into()
         }
@@ -243,14 +253,9 @@ pub(super) async fn execute_prepared_outcome(
         route_scope: owner.route_scope.clone(),
         capability_filter_fingerprint: Some(owner.capability_fingerprint.clone()),
     };
-    let flush = manager.flush_step_journal(&execution_id, &journal_owner);
-    if tokio::time::timeout(std::time::Duration::from_millis(500), flush)
-        .await
-        .is_err()
-    {
-        manager.discard_step_buffer(&execution_id);
-        tracing::warn!(%execution_id, "snippet journal flush timed out");
-    }
+    manager
+        .flush_step_journal(&execution_id, &journal_owner)
+        .await;
     let receipt_status = persist(manager, &receipt, &owner).await;
     let outcome = outcome.map_err(|error| {
         let mut error = error.into_contract_tool_error();
@@ -291,17 +296,20 @@ mod tests {
         context.route_scope = "team-a".into();
         assert_ne!(local.route_scope, receipt_owner(&context).route_scope);
         context.execution_caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             sub: Some("alice".into()),
             capabilities: Default::default(),
         };
         context.authenticated_principal = Some("alice".into());
         let alice = receipt_owner(&context).owner_key;
         context.execution_caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             sub: Some("team:shared-oauth-subject".into()),
             capabilities: Default::default(),
         };
         assert_eq!(alice, receipt_owner(&context).owner_key);
         context.execution_caller = CodeModeCaller::Scoped {
+            host_context: Default::default(),
             sub: Some("bob".into()),
             capabilities: Default::default(),
         };

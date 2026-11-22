@@ -251,11 +251,6 @@ impl LabMcpServer {
         if matches!(action, "help" | "schema") {
             return crate::dispatch::artifacts::dispatch(action, params).await;
         }
-        let service =
-            crate::dispatch::skill_library::process_service().ok_or_else(|| ToolError::Sdk {
-                sdk_kind: "service_unavailable".to_owned(),
-                message: "Skill Library is unavailable".to_owned(),
-            })?;
         let parts = context
             .extensions
             .get::<axum::http::request::Parts>()
@@ -305,6 +300,11 @@ impl LabMcpServer {
             transport,
         )
         .with_selected_team_id(selected_team_id.clone());
+        let service =
+            crate::dispatch::skill_library::process_service().ok_or_else(|| ToolError::Sdk {
+                sdk_kind: "service_unavailable".to_owned(),
+                message: "Skill Library is unavailable".to_owned(),
+            })?;
         crate::dispatch::skill_library::surface::dispatch_authorized_action(
             &service,
             crate::dispatch::skill_library::process_imports(),
@@ -420,7 +420,12 @@ impl LabMcpServer {
                 action,
                 subject = %subject_log,
                 elapsed_ms = start.elapsed().as_millis(),
-                kind = %error.code.0,
+                kind = error.data.as_ref().and_then(|data| data.get("kind")).and_then(serde_json::Value::as_str).unwrap_or(match error.code {
+                    rmcp::model::ErrorCode::INVALID_PARAMS => "invalid_param",
+                    rmcp::model::ErrorCode::INVALID_REQUEST => "invalid_request",
+                    _ => "internal_error",
+                }),
+                rpc_code = error.code.0,
                 "dispatch error"
             ),
         }
@@ -541,15 +546,16 @@ pub(crate) fn skill_read_error(error: ToolError) -> ErrorData {
     if kind == "invalid_param" {
         return ErrorData::invalid_params("Invalid skill request", data);
     }
+    if kind == "not_found" {
+        return ErrorData::invalid_params("Unknown skill resource", None);
+    }
     let message = match kind {
         labby_runtime::skills::KIND_SKILL_DIGEST_MISMATCH => {
             "Skill content failed integrity verification"
         }
         labby_runtime::skills::KIND_SKILL_MANIFEST_STALE => "Skill manifest is stale",
         "forbidden" => "Skill read is not authorized",
-        "upstream_unavailable" | "runtime_unavailable" | "service_unavailable" => {
-            "Skill provider is unavailable"
-        }
+        "runtime_unavailable" | "service_unavailable" => "Skill provider is unavailable",
         _ => "Skill read failed",
     };
     ErrorData::internal_error(message, data)
@@ -614,9 +620,16 @@ mod serve_tests {
         assert_eq!(malformed.code, rmcp::model::ErrorCode::INVALID_PARAMS);
         assert_eq!(malformed.message, "Invalid skill request");
 
+        let missing = skill_read_error(ToolError::Sdk {
+            sdk_kind: "not_found".into(),
+            message: "unavailable file".into(),
+        });
+        assert_eq!(missing.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+        assert!(missing.data.is_none());
+
         for transient in [
             ToolError::Sdk {
-                sdk_kind: "upstream_unavailable".into(),
+                sdk_kind: "runtime_unavailable".into(),
                 message: "connect 10.0.0.7:8443 refused".into(),
             },
             ToolError::Sdk {
@@ -867,11 +880,13 @@ mod serve_tests {
 
         for uri in ["skill://labby/nonexistent/SKILL.md"] {
             assert!(get_visible_skill(&registry, uri).await.unwrap().is_none());
-            assert!(
-                crate::skills::facade::read_visible_skill_file(&registry, uri)
+            let missing =
+                crate::mcp::handlers_resources::read_skill_resource_with_registry(&registry, uri)
                     .await
-                    .is_err()
-            );
+                    .map_err(skill_read_error)
+                    .unwrap_err();
+            assert_eq!(missing.code, rmcp::model::ErrorCode::INVALID_PARAMS);
+            assert!(missing.data.is_none());
         }
     }
 

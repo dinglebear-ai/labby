@@ -129,8 +129,9 @@ fn metadata_matches(entry: &SkillEntry, query: &str) -> bool {
         .filter(|(key, _)| key.as_str() != "name" && key.as_str() != "description")
         .any(|(_, value)| value_contains_query(value, query))
         || entry.meta.as_ref().is_some_and(|meta| {
-            meta.values()
-                .any(|value| value_contains_query(value, query))
+            meta.iter()
+                .filter(|(key, _)| key.as_str() != super::aggregate::SKILL_ORIGIN_META_KEY)
+                .any(|(_, value)| value_contains_query(value, query))
         })
 }
 
@@ -165,6 +166,19 @@ mod tests {
             resources: None,
             meta: None,
         }
+    }
+
+    #[test]
+    fn gateway_origin_metadata_is_not_searchable() {
+        let mut entry = skill("skill://up/a/SKILL.md", "alpha", "a skill");
+        entry.meta = Some(Map::from_iter([(
+            super::super::aggregate::SKILL_ORIGIN_META_KEY.into(),
+            json!({"name":"gateway-origin-marker"}),
+        )]));
+        assert_eq!(
+            search_skill_entries(&[entry], "gateway-origin-marker", 1),
+            []
+        );
     }
 
     #[test]

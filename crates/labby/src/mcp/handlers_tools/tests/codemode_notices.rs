@@ -3,7 +3,7 @@ use super::{code_mode_manager, completion_test_registry, test_server};
 use crate::dispatch::codemode_notices::{
     NoticeConsumer, NoticeLevel, NoticeProducer, NoticeRecipient, PublishNotice,
 };
-use crate::mcp::{logging::LoggingLevel, route_scope::McpRouteScope};
+use crate::mcp::route_scope::McpRouteScope;
 use rmcp::{
     ServiceExt,
     model::{CallToolRequestParams, ProtocolVersion},
@@ -33,7 +33,6 @@ async fn notice_production_denied_execution_never_drains_inbox() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         McpRouteScope::Root,
-        LoggingLevel::Emergency,
     );
     server.route_runtime = Arc::new(
         crate::mcp::runtime::McpRouteRuntime::with_notification_store(
@@ -118,7 +117,6 @@ async fn notice_production_native_mcp_real_runner() {
         completion_test_registry(),
         Some(code_mode_manager(true).await),
         McpRouteScope::Root,
-        LoggingLevel::Emergency,
     );
     server.transport_label = "stdio";
     server.relay_session_id = crate::mcp::server::next_relay_session_id();

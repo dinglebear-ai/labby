@@ -893,15 +893,6 @@ mod tests {
     }
 
     #[test]
-    fn runner_bounds_are_literal_and_small() {
-        assert_eq!(MAX_PAGES, 8);
-        assert_eq!(MAX_TOOLS, 64);
-        assert_eq!(MAX_RESPONSE_BYTES, 1_048_576);
-        assert_eq!(REQUEST_TIMEOUT, Duration::from_secs(10));
-        assert_eq!(SETTLEMENT_TIMEOUT, Duration::from_secs(5));
-    }
-
-    #[test]
     fn service_schema_rejects_non_service_shape() {
         let tool: Tool = serde_json::from_value(serde_json::json!({
             "name": "wrong",

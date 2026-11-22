@@ -3,7 +3,7 @@ use serde_json::{Value, json};
 use crate::dispatch::error::ToolError;
 use crate::dispatch::helpers::{action_schema, help_payload, require_str, to_json};
 use crate::skills::facade::{
-    SkillRegistryContext, list_visible_skills, read_visible_skill_file, resolve_visible_skill,
+    SkillRegistryContext, cached_skill_listing, read_visible_skill_file, resolve_visible_skill,
 };
 use crate::skills::search::search_skill_entries;
 
@@ -65,7 +65,7 @@ async fn list(context: &SkillRegistryContext, params: Value) -> Result<Value, To
     };
     let origin = normalized_origin(params.origin)?;
     let limit = list_limit(params.limit)?;
-    let listing = list_visible_skills(context).await;
+    let mut listing = cached_skill_listing(context).await?;
     let mut entries = listing.skills;
     if let Some(origin) = origin.as_deref() {
         entries.retain(|entry| entry_origin(entry).as_deref() == Some(origin));
@@ -84,10 +84,15 @@ async fn list(context: &SkillRegistryContext, params: Value) -> Result<Value, To
             .and_then(|meta| meta.get("truncated"))
             .and_then(Value::as_bool)
             .unwrap_or(false);
+    let origins = returned_origins(
+        &mut listing.meta,
+        skills.iter().map(|skill| skill.origin.as_str()),
+    );
     to_json(SkillListResponse {
         total_returned: skills.len(),
         skills,
-        incomplete: listing.meta,
+        incomplete: listing.meta.filter(|meta| !meta.is_empty()),
+        origins,
         truncated,
     })
 }
@@ -97,7 +102,7 @@ async fn search(context: &SkillRegistryContext, params: Value) -> Result<Value, 
     let query = normalized_query(&params.query)?;
     let origin = normalized_origin(params.origin)?;
     let limit = search_limit(params.limit)?;
-    let listing = list_visible_skills(context).await;
+    let mut listing = cached_skill_listing(context).await?;
     let mut entries = listing.skills;
     if let Some(origin) = origin.as_deref() {
         entries.retain(|entry| entry_origin(entry).as_deref() == Some(origin));
@@ -110,12 +115,30 @@ async fn search(context: &SkillRegistryContext, params: Value) -> Result<Value, 
             skill: SkillSummary::from(hit.skill),
         })
         .collect::<Vec<_>>();
+    let origins = returned_origins(
+        &mut listing.meta,
+        matches.iter().map(|hit| hit.skill.origin.as_str()),
+    );
     to_json(SkillSearchResponse {
         query,
         total_returned: matches.len(),
         matches,
-        incomplete: listing.meta,
+        incomplete: listing.meta.filter(|meta| !meta.is_empty()),
+        origins,
     })
+}
+
+fn returned_origins<'a>(
+    metadata: &mut Option<serde_json::Map<String, Value>>,
+    labels: impl Iterator<Item = &'a str>,
+) -> Option<Value> {
+    let mut origins = metadata
+        .as_mut()?
+        .remove(crate::skills::aggregate::SKILL_ORIGINS_META_KEY)?;
+    let labels = labels.collect::<std::collections::BTreeSet<_>>();
+    let map = origins.as_object_mut()?;
+    map.retain(|origin, _| labels.contains(origin.as_str()));
+    (!map.is_empty()).then_some(origins)
 }
 
 async fn get(context: &SkillRegistryContext, params: Value) -> Result<Value, ToolError> {

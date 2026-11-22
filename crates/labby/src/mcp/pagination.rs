@@ -102,6 +102,24 @@ impl<T> PageCollector<T> {
         self.seen += 1;
     }
 
+    /// Resume a retained snapshot without cloning or walking its prefix.
+    pub(crate) fn finish_snapshot(
+        mut self,
+        items: &[T],
+    ) -> Result<(Vec<T>, Option<String>), ErrorData>
+    where
+        T: Clone,
+    {
+        let suffix = items
+            .get(self.start..)
+            .ok_or_else(|| invalid_cursor("cursor is past the end of the result set"))?;
+        self.seen = self.start;
+        for item in suffix.iter().take(MCP_LIST_PAGE_SIZE + 1) {
+            self.accept(item.clone());
+        }
+        self.finish()
+    }
+
     pub(crate) fn finished(&self) -> bool {
         self.has_next
     }
@@ -149,6 +167,27 @@ impl<T: Clone> CatalogSnapshotCollector<T> {
     /// A snapshot build deliberately consumes the complete live catalog.
     pub(crate) const fn finished(&self) -> bool {
         false
+    }
+
+    pub(crate) fn content_revision(&self, audience: &str) -> Result<String, ErrorData>
+    where
+        T: serde::Serialize,
+    {
+        if self.catalog.len() <= MCP_LIST_PAGE_SIZE {
+            return Ok(next_catalog_snapshot_revision());
+        }
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(audience.as_bytes());
+        let mut encoded = Vec::new();
+        for item in &self.catalog {
+            encoded.clear();
+            serde_json::to_writer(&mut encoded, item)
+                .map_err(|_| ErrorData::internal_error("cannot identify resource catalog", None))?;
+            hash.update((encoded.len() as u64).to_be_bytes());
+            hash.update(&encoded);
+        }
+        Ok(hex::encode(hash.finalize()))
     }
 
     pub(crate) fn bind_revision(&mut self, revision: &str) -> Result<(), ErrorData> {
@@ -239,6 +278,26 @@ pub(crate) fn invalid_cursor(message: &str) -> ErrorData {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retained_page_clones_only_the_page_and_lookahead() {
+        struct Counted<'a>(&'a std::cell::Cell<usize>);
+        impl Clone for Counted<'_> {
+            fn clone(&self) -> Self {
+                self.0.set(self.0.get() + 1);
+                Counted(self.0)
+            }
+        }
+        let clones = std::cell::Cell::new(0);
+        let catalog = (0..1000).map(|_| Counted(&clones)).collect::<Vec<_>>();
+        let request = PaginatedRequestParams::default().with_cursor(Some("v1:800:revision".into()));
+        let mut page = PageCollector::new(Some(request)).unwrap();
+        page.bind_revision("revision").unwrap();
+        let (rows, cursor) = page.finish_snapshot(&catalog).unwrap();
+        assert_eq!(rows.len(), MCP_LIST_PAGE_SIZE);
+        assert!(cursor.is_some());
+        assert!(clones.get() <= MCP_LIST_PAGE_SIZE + 1);
+    }
 
     #[test]
     fn page_collector_stops_after_page_plus_lookahead() {

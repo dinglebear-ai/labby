@@ -1,6 +1,7 @@
 //! Snapshot-backed bundled and operator-local Skill providers.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::time::Instant;
 
 use labby_runtime::artifacts::{LibraryOwnership, SkillVisibility};
@@ -16,14 +17,14 @@ use super::{EMBEDDED_FILES, first_party_uri, local};
 #[derive(Debug, Clone)]
 struct SnapshotSkill {
     validated: ValidatedSkill,
-    files: BTreeMap<String, Vec<u8>>,
+    files: Arc<BTreeMap<String, String>>,
 }
 
 /// Immutable provider whose descriptor and bytes come from one verified snapshot.
 #[derive(Debug, Clone)]
 pub(crate) struct SnapshotSkillProvider {
     id: SkillProviderId,
-    skills: BTreeMap<String, SnapshotSkill>,
+    skills: BTreeMap<String, Arc<SnapshotSkill>>,
 }
 
 impl SnapshotSkillProvider {
@@ -48,9 +49,13 @@ impl SnapshotSkillProvider {
             };
             let files = group
                 .into_iter()
-                .map(|(path, body)| (first_party_uri(&name, path), body.as_bytes().to_vec()))
-                .collect();
-            skills.insert(skill.entry.uri.clone(), SnapshotSkill { validated, files });
+                .map(|(path, body)| (first_party_uri(&name, path), body.to_string()))
+                .collect::<BTreeMap<_, _>>()
+                .into();
+            skills.insert(
+                skill.entry.uri.clone(),
+                Arc::new(SnapshotSkill { validated, files }),
+            );
         }
         for name in grouped.keys() {
             tracing::error!(skill = %name, "embedded file group produced no bundled provider entry");
@@ -75,12 +80,8 @@ impl SnapshotSkillProvider {
                     }
                 };
                 let source_id = skill.entry.uri.clone();
-                let files = skill
-                    .files
-                    .into_iter()
-                    .map(|(uri, body)| (uri, body.into_bytes()))
-                    .collect();
-                Some((source_id, SnapshotSkill { validated, files }))
+                let files = skill.files;
+                Some((source_id, Arc::new(SnapshotSkill { validated, files })))
             })
             .collect();
         Self {
@@ -361,7 +362,7 @@ impl FirstPartySkillProviders {
         let mut resources = 0;
         for provider in [&self.bundled, &self.operator_local] {
             for skill in provider.skills.values() {
-                let skill_bytes = skill.files.values().map(Vec::len).sum::<usize>();
+                let skill_bytes = skill.files.values().map(String::len).sum::<usize>();
                 bytes += skill_bytes;
                 max_skill_bytes = max_skill_bytes.max(skill_bytes);
                 resources += skill.files.len();
@@ -535,7 +536,7 @@ impl SkillProvider for SnapshotSkillProvider {
             let result = SkillResourceReadResult {
                 skill_id: request.skill_id.clone(),
                 resource_id: request.resource_id.clone(),
-                bytes: bytes.clone(),
+                bytes: bytes.as_bytes().to_vec(),
                 media_type: None,
                 representation: labby_runtime::skills::SkillResourceRepresentation::Text,
             };
@@ -566,14 +567,14 @@ mod tests {
             digest: labby_runtime::skills::ResourceDigest::of_bytes(body.as_bytes()).to_wire(),
             size: body.len() as u64,
         }];
-        let mut files = BTreeMap::from([(manifest.clone(), body.into_bytes())]);
+        let mut files = BTreeMap::from([(manifest.clone(), body)]);
         if let Some(uri) = extra_uri {
             resources.push(SkillResource {
                 uri: uri.to_string(),
                 digest: labby_runtime::skills::ResourceDigest::of_bytes(b"extra").to_wire(),
                 size: b"extra".len() as u64,
             });
-            files.insert(uri.to_string(), b"extra".to_vec());
+            files.insert(uri.to_string(), "extra".to_owned());
         }
         let entry = SkillEntry {
             uri: manifest.clone(),
@@ -587,7 +588,13 @@ mod tests {
         let validated = validate_skill_entry(&entry).unwrap();
         SnapshotSkillProvider {
             id: SkillProviderId::new(SkillProviderKind::Bundled, "test"),
-            skills: BTreeMap::from([(manifest, SnapshotSkill { validated, files })]),
+            skills: BTreeMap::from([(
+                manifest,
+                Arc::new(SnapshotSkill {
+                    validated,
+                    files: Arc::new(files),
+                }),
+            )]),
         }
     }
 
@@ -606,7 +613,7 @@ mod tests {
                 }]),
                 meta: None,
             },
-            files: BTreeMap::from([(manifest, body)]),
+            files: Arc::new(BTreeMap::from([(manifest, body)])),
         }
     }
 
@@ -617,6 +624,22 @@ mod tests {
                 LibraryActorId::from_canonical_projection("owner-a").unwrap(),
             ),
             visibility: SkillVisibility::Tenant,
+        }
+    }
+
+    #[test]
+    fn successive_artifact_generations_share_the_cached_file_map() {
+        let skill = local_skill("shared-bytes", "artifact", "shared");
+        let manifest = skill.entry.uri.clone();
+        let files = Arc::clone(&skill.files);
+        let first =
+            FirstPartySkillProviders::from_artifact_skills([(skill.clone(), artifact_access())]);
+        let next = first.with_artifact_skills([(skill, artifact_access())]);
+        for generation in [&first, &next] {
+            assert!(Arc::ptr_eq(
+                &generation.operator_local.skills[&manifest].files,
+                &files
+            ));
         }
     }
 
@@ -849,7 +872,7 @@ mod tests {
                 }]),
                 meta: None,
             },
-            files: BTreeMap::from([(manifest.to_owned(), body.to_owned())]),
+            files: Arc::new(BTreeMap::from([(manifest.to_owned(), body.to_owned())])),
         };
         let access = ArtifactSkillAccess {
             ownership: LibraryOwnership::canonical(
@@ -889,7 +912,7 @@ mod tests {
                     }]),
                     meta: None,
                 },
-                files: BTreeMap::from([(manifest.to_owned(), body)]),
+                files: Arc::new(BTreeMap::from([(manifest.to_owned(), body)])),
             };
             let access = ArtifactSkillAccess {
                 ownership: LibraryOwnership::canonical(
@@ -925,11 +948,13 @@ mod tests {
         let parent = provider_with("first", Some(child_uri));
         let mut child = provider_with("second", None);
         let (_, mut skill) = child.skills.pop_first().unwrap();
-        let old_uri = skill.validated.entry.uri.clone();
-        skill.validated.entry.uri = child_uri.to_string();
-        skill.validated.entry.resources.as_mut().unwrap()[0].uri = child_uri.to_string();
-        let bytes = skill.files.remove(&old_uri).unwrap();
-        skill.files.insert(child_uri.to_string(), bytes);
+        let snapshot = Arc::make_mut(&mut skill);
+        let old_uri = snapshot.validated.entry.uri.clone();
+        snapshot.validated.entry.uri = child_uri.to_string();
+        snapshot.validated.entry.resources.as_mut().unwrap()[0].uri = child_uri.to_string();
+        let files = Arc::make_mut(&mut snapshot.files);
+        let bytes = files.remove(&old_uri).unwrap();
+        files.insert(child_uri.to_string(), bytes);
         child.skills.insert(child_uri.to_string(), skill);
         let providers = FirstPartySkillProviders::from_providers(parent, child);
 

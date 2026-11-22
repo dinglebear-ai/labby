@@ -34,7 +34,7 @@ use crate::mcp::context::{
 use crate::mcp::logging::{DispatchLogOutcome, LoggingLevel};
 use crate::mcp::resource_errors::{
     classify_fetch_failure as classify_resource_fetch_failure,
-    fetch_classified as resource_fetch_classified, render as resource_render_error,
+    fetch_classified as resource_fetch_classified,
 };
 use crate::mcp::server::LabMcpServer;
 
@@ -43,9 +43,7 @@ fn classified_resource_fetch_error(
     error: &CapabilityCallError,
 ) -> (LoggingLevel, &'static str, &'static str, ErrorData) {
     let (kind, summary) = classify_resource_fetch_failure(error);
-    // A policy denial reads as an unknown resource, exactly like the pooled
-    // branch, so it neither reveals that the resource exists nor invites a retry.
-    if matches!(error, CapabilityCallError::NotExposed { .. }) {
+    if kind == "not_found" {
         return (
             LoggingLevel::Warning,
             kind,
@@ -109,7 +107,7 @@ impl LabMcpServer {
                 kind = "unavailable",
                 "upstream pool not configured"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 context,
                 "lab",
                 "read_resource",
@@ -118,12 +116,8 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: "unavailable".into(),
                 },
-            )
-            .await;
-            return Err(ErrorData::resource_not_found(
-                "upstream pool not configured".to_string(),
-                None,
-            ));
+            );
+            return Err(crate::mcp::resource_errors::unknown(uri, false));
         };
 
         let auth = auth_context_from_extensions(&context.extensions);
@@ -143,6 +137,7 @@ impl LabMcpServer {
                 labby_codemode::CodeModeCaller::TrustedLocal
             } else {
                 labby_codemode::CodeModeCaller::Scoped {
+                    host_context: Default::default(),
                     sub: self.request_subject(context).map(str::to_owned),
                     capabilities: labby_codemode::CodeModeCallerCapabilities {
                         can_read: true,
@@ -165,7 +160,10 @@ impl LabMcpServer {
             });
         }
         let scope = crate::dispatch::gateway::GatewayEnrichmentScope {
-            route_visible_upstreams: self.route_scope.allowed_upstreams().cloned(),
+            route_visible_upstreams: self
+                .route_upstreams_with_valid_team_credential()
+                .await
+                .or_else(|| self.route_scope.allowed_upstreams().cloned()),
             oauth_subject: self
                 .route_oauth_subject(oauth_upstream_subject_for_request(
                     auth,
@@ -189,12 +187,10 @@ impl LabMcpServer {
         };
         let json = match json {
             Ok(json) => json,
+            Err(error) if matches!(error.kind(), "not_found" | "unknown_upstream") => None,
             Err(error) => {
                 let elapsed_ms = start.elapsed().as_millis();
-                let error_kind = match &error {
-                    labby_runtime::error::ToolError::Sdk { sdk_kind, .. } => sdk_kind.as_str(),
-                    _ => "internal_error",
-                };
+                let error_kind = error.kind();
                 tracing::warn!(
                     surface = "mcp",
                     service = "labby",
@@ -207,18 +203,17 @@ impl LabMcpServer {
                     error = %error,
                     "synthetic gateway resource discovery failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Failure {
                         level: LoggingLevel::Warning,
-                        kind: "upstream_error".into(),
+                        kind: error_kind.to_owned().into(),
                     },
-                )
-                .await;
-                return Err(resource_render_error(uri, error.to_string()));
+                );
+                return Err(resource_fetch_classified(uri, error_kind, "lookup failed"));
             }
         };
 
@@ -252,14 +247,13 @@ impl LabMcpServer {
                     elapsed_ms,
                     "synthetic resource ok"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Success,
-                )
-                .await;
+                );
                 Ok(ReadResourceResult::new(vec![
                     ResourceContents::text(text, uri.to_string())
                         .with_mime_type("application/json"),
@@ -277,7 +271,7 @@ impl LabMcpServer {
                     kind = "not_found",
                     "synthetic resource not found"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
@@ -286,12 +280,8 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: "not_found".into(),
                     },
-                )
-                .await;
-                Err(ErrorData::resource_not_found(
-                    format!("unknown resource: {uri}"),
-                    None,
-                ))
+                );
+                Err(crate::mcp::resource_errors::unknown(uri, false))
             }
         }
     }
@@ -340,7 +330,7 @@ impl LabMcpServer {
                 kind = "credential_unavailable",
                 "upstream resource read denied: route Team credential is unavailable"
             );
-            self.emit_dispatch_notification(
+            self.trace_dispatch_outcome(
                 context,
                 "lab",
                 "read_resource",
@@ -349,35 +339,30 @@ impl LabMcpServer {
                     level: LoggingLevel::Warning,
                     kind: "forbidden".into(),
                 },
-            )
-            .await;
+            );
             return Err(crate::mcp::resource_errors::forbidden(
                 &uri,
                 "Gateway credential is unavailable",
                 &[],
             ));
         }
-        let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
-        let relay_config = if relay_capabilities.is_some() {
-            match &self.gateway_manager {
-                Some(manager) => manager
-                    .upstream_config(&upstream_name)
-                    .await
-                    // A tools-only (`proxy_resources = false`) or disabled
-                    // upstream must not become readable by URI through the
-                    // relay; the pooled branch already refuses both.
-                    .filter(UpstreamConfig::serves_resources)
-                    .filter(crate::mcp::context::upstream_uses_capability_relay),
-                None => None,
-            }
-        } else {
-            None
+        let capabilities = forwardable_client_capabilities(request.meta.as_ref());
+        let relay_config = match &self.gateway_manager {
+            Some(manager) => manager
+                .upstream_config(&upstream_name)
+                .await
+                // A tools-only (`proxy_resources = false`) or disabled
+                // upstream must not become readable by URI through the
+                // relay; the pooled branch already refuses both.
+                .filter(UpstreamConfig::serves_resources)
+                .filter(crate::mcp::context::upstream_uses_capability_relay),
+            None => None,
         };
         let result = if !route_allows {
             None
         } else {
-            match (relay_config, relay_capabilities) {
-                (Some(config), Some(capabilities)) => {
+            match relay_config {
+                Some(config) => {
                     pool.read_resource_relayed_typed(
                         &config,
                         None,
@@ -390,16 +375,15 @@ impl LabMcpServer {
                     )
                     .await
                 }
-                _ => match pool
-                    .read_upstream_resource_request_allowed_typed(
+                _ => tokio::select! {
+                    biased;
+                    () = context.ct.cancelled() => Some(Err(CapabilityCallError::Cancelled {
+                        message: "downstream resource read cancelled".into(),
+                    })),
+                    result = pool.read_upstream_resource_request_allowed_typed(
                         request,
                         self.route_scope.allowed_upstreams(),
-                    )
-                    .await
-                {
-                    Some(Ok(result)) => Some(Ok(result.into())),
-                    Some(Err(error)) => Some(Err(error)),
-                    None => None,
+                    ) => result.map(|outcome| outcome.map(Into::into)),
                 },
             }
         };
@@ -420,14 +404,13 @@ impl LabMcpServer {
                     elapsed_ms,
                     "resource proxy ok"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Success,
-                )
-                .await;
+                );
                 Ok(result)
             }
             Some(Err(message)) => {
@@ -448,7 +431,7 @@ impl LabMcpServer {
                     failure_summary = summary,
                     "resource proxy failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
@@ -457,8 +440,7 @@ impl LabMcpServer {
                         level,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 Err(error)
             }
             None => {
@@ -490,7 +472,7 @@ impl LabMcpServer {
                         "upstream resource read outside the caller's route reported as not found"
                     );
                 }
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
@@ -499,12 +481,8 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: "not_found".into(),
                     },
-                )
-                .await;
-                Err(ErrorData::resource_not_found(
-                    format!("unknown resource: {uri}"),
-                    None,
-                ))
+                );
+                Err(crate::mcp::resource_errors::unknown(&uri, false))
             }
         }
     }
@@ -592,7 +570,7 @@ impl LabMcpServer {
                         error = %message,
                         "OAuth UI resource cannot be routed safely"
                     );
-                    self.emit_dispatch_notification(
+                    self.trace_dispatch_outcome(
                         context,
                         "lab",
                         "read_resource",
@@ -601,12 +579,8 @@ impl LabMcpServer {
                             level: LoggingLevel::Warning,
                             kind: "subject_scoped_ui_unavailable".into(),
                         },
-                    )
-                    .await;
-                    return Err(ErrorData::resource_not_found(
-                        format!("unavailable UI resource: {uri}"),
-                        None,
-                    ));
+                    );
+                    return Err(crate::mcp::resource_errors::unknown(&uri, true));
                 }
                 Ok(None) => {}
             }
@@ -626,9 +600,13 @@ impl LabMcpServer {
         let allowed = credentialed
             .as_ref()
             .or_else(|| self.route_scope.allowed_upstreams());
-        let result = pool
-            .read_upstream_ui_resource_allowed_typed(&uri, allowed)
-            .await;
+        let result = tokio::select! {
+            biased;
+            () = context.ct.cancelled() => Some(Err(CapabilityCallError::Cancelled {
+                message: "downstream resource read cancelled".into(),
+            })),
+            result = pool.read_upstream_ui_resource_allowed_typed(&uri, allowed) => result,
+        };
         let elapsed_ms = start.elapsed().as_millis();
         let (outcome, response) = match result {
             Some(Ok(result)) => {
@@ -678,15 +656,11 @@ impl LabMcpServer {
                         level: LoggingLevel::Warning,
                         kind: "not_found".into(),
                     },
-                    Err(ErrorData::resource_not_found(
-                        format!("unknown UI resource: {uri}"),
-                        None,
-                    )),
+                    Err(crate::mcp::resource_errors::unknown(&uri, true)),
                 )
             }
         };
-        self.emit_dispatch_notification(context, "lab", "read_resource", elapsed_ms, outcome)
-            .await;
+        self.trace_dispatch_outcome(context, "lab", "read_resource", elapsed_ms, outcome);
         response
     }
 
@@ -714,8 +688,8 @@ impl LabMcpServer {
             oauth_subject = redacted_oauth_subject_label(),
             "dispatch route selected"
         );
-        let relay_capabilities = forwardable_client_capabilities(request.meta.as_ref());
-        let upstream_outcome = if let Some(capabilities) = relay_capabilities {
+        let capabilities = forwardable_client_capabilities(request.meta.as_ref());
+        let upstream_outcome = if crate::mcp::context::upstream_uses_capability_relay(config) {
             match pool
                 .read_resource_relayed_typed(
                     config,
@@ -735,9 +709,13 @@ impl LabMcpServer {
                 }),
             }
         } else {
-            pool.subject_scoped_read_resource_request_typed(config, oauth_subject, request)
-                .await
-                .map(Into::into)
+            tokio::select! {
+                biased;
+                () = context.ct.cancelled() => Err(CapabilityCallError::Cancelled {
+                    message: "downstream resource read cancelled".into(),
+                }),
+                result = pool.subject_scoped_read_resource_request_typed(config, oauth_subject, request) => result.map(Into::into),
+            }
         };
         match upstream_outcome {
             Ok(result) => {
@@ -753,14 +731,13 @@ impl LabMcpServer {
                     elapsed_ms,
                     "subject-scoped resource proxy ok"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
                     elapsed_ms,
                     DispatchLogOutcome::Success,
-                )
-                .await;
+                );
                 Ok(result)
             }
             Err(message) => {
@@ -777,7 +754,7 @@ impl LabMcpServer {
                     failure_summary = summary,
                     "subject-scoped resource proxy failed"
                 );
-                self.emit_dispatch_notification(
+                self.trace_dispatch_outcome(
                     context,
                     "lab",
                     "read_resource",
@@ -786,8 +763,7 @@ impl LabMcpServer {
                         level,
                         kind: kind.into(),
                     },
-                )
-                .await;
+                );
                 Err(error)
             }
         }

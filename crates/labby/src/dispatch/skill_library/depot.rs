@@ -178,7 +178,6 @@ impl DepotConnection {
                 return Err(ArtifactError::Conflict("catalog_authority_changed"));
             }
         }
-        acquisition.validate()?;
         let provenance_matches = match self.source {
             ExactArtifactSource::Depot => {
                 acquisition.interchange.provenance.provider.as_deref() == Some("depot")

@@ -145,11 +145,9 @@ export const skillLibrary = {
   },
   save(input: {
     artifactId: string
-    revisionId: string
     files: SkillLibraryFile[]
-    expectedLibraryVersion: number
     idempotencyKey: string
-  }) {
+  } & ({ revisionId: string; expectedLibraryVersion?: number } | { revisionId?: string; expectedLibraryVersion: number })) {
     return skillsAction<SkillMutationReceipt>('artifacts.save', {
       artifact_id: input.artifactId,
       expected_revision_id: input.revisionId,

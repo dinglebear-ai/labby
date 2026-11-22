@@ -555,7 +555,7 @@ fn owner_and_global_quotas_are_independent() {
          SELECT 'fixture-'||n,'fixture','fixture','test','test','test','digest','[]',1,10000
          FROM seq;
          WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<479)
-         INSERT INTO agent_inboxes SELECT 'fixture-'||n,'fixture-'||n,'message_session',10000 FROM seq;
+         INSERT INTO agent_inboxes(id,recipient,scope,expires) SELECT 'fixture-'||n,'fixture-'||n,'message_session',10000 FROM seq;
          WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n+1 FROM seq WHERE n<479)
          INSERT INTO agent_message_sessions(id,owner_key,binding_key,inbox_id,label,kind,
                  last_seen,active_until,retained_until)

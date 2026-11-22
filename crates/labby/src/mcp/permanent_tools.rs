@@ -205,7 +205,13 @@ fn atomic_dispatch_output_schema(
     service: &RegisteredService,
     action: &ActionSpec,
 ) -> Option<Arc<Map<String, Value>>> {
-    let data_schema = (action.output_schema?)();
+    let mut data_schema = (action.output_schema?)();
+    let definitions = data_schema
+        .as_object_mut()
+        .and_then(|schema| schema.remove("$defs"));
+    let dialect = data_schema
+        .as_object_mut()
+        .and_then(|schema| schema.remove("$schema"));
     match json!({
         "type": "object",
         "properties": {
@@ -217,7 +223,15 @@ fn atomic_dispatch_output_schema(
         "required": ["ok", "service", "action", "data"],
         "additionalProperties": true
     }) {
-        Value::Object(map) => Some(Arc::new(map)),
+        Value::Object(mut map) => {
+            if let Some(definitions) = definitions {
+                map.insert("$defs".into(), definitions);
+            }
+            if let Some(dialect) = dialect {
+                map.insert("$schema".into(), dialect);
+            }
+            Some(Arc::new(map))
+        }
         _ => unreachable!("atomic dispatch output schema must be an object"),
     }
 }
@@ -237,6 +251,12 @@ pub(crate) enum SkillLibraryDescriptorMode<'a> {
         app_visible: bool,
         allowed_actions: Option<&'a [String]>,
     },
+}
+
+impl SkillLibraryDescriptorMode<'_> {
+    pub(super) fn exposes_service(self, service: &str) -> bool {
+        service != "artifacts" || matches!(self, Self::Management { .. })
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -287,6 +307,24 @@ pub(crate) fn proxy_upstream_descriptor(
     upstream: &str,
     mut tool: Tool,
 ) -> Tool {
+    if let Some(meta) = tool.meta.as_mut() {
+        if let Some(ui) = meta.0.get_mut("ui").and_then(Value::as_object_mut)
+            && ui
+                .get("resourceUri")
+                .and_then(Value::as_str)
+                .is_some_and(super::handlers_resources::is_lab_owned_ui_resource_uri)
+        {
+            ui.remove("resourceUri");
+        }
+        if meta
+            .0
+            .get("openai/outputTemplate")
+            .and_then(Value::as_str)
+            .is_some_and(super::handlers_resources::is_lab_owned_ui_resource_uri)
+        {
+            meta.0.remove("openai/outputTemplate");
+        }
+    }
     if registry.is_proxy_aggregate() {
         tool.name = format!("{upstream}::{}", tool.name).into();
     }
@@ -810,9 +848,7 @@ mod tests {
         };
         let tool = descriptor();
         assert_eq!(tool.title.as_deref(), Some("Gateway Alpha"));
-        let icon = &tool.icons.as_ref().expect("native icon")[0];
-        assert!(icon.src.starts_with("data:image/png;base64,"));
-        assert_eq!(icon.mime_type.as_deref(), Some("image/png"));
+        assert!(tool.icons.is_none());
         assert_eq!(
             serde_json::to_value(&tool).unwrap(),
             serde_json::to_value(descriptor()).unwrap()
@@ -922,6 +958,33 @@ mod tests {
             serialized.get("icons").is_none(),
             "do not add Labby branding to provider tools"
         );
+    }
+
+    #[cfg(feature = "gateway")]
+    #[test]
+    fn upstream_app_bindings_respect_the_labby_uri_authority() {
+        let registry = crate::registry::ToolRegistry::new();
+        for (uri, retained) in [("ui://lab/app", false), ("ui://vendor/app", true)] {
+            let tool = serde_json::from_value(serde_json::json!({
+                "name": "search",
+                "inputSchema": {"type": "object"},
+                "_meta": {
+                    "ui": {"resourceUri": uri, "visibility": ["model"]},
+                    "openai/outputTemplate": uri
+                }
+            }))
+            .unwrap();
+            let published =
+                serde_json::to_value(super::proxy_upstream_descriptor(&registry, "vendor", tool))
+                    .unwrap();
+            let meta = &published["_meta"];
+            assert_eq!(meta["ui"]["resourceUri"].as_str(), retained.then_some(uri));
+            assert_eq!(
+                meta["openai/outputTemplate"].as_str(),
+                retained.then_some(uri)
+            );
+            assert_eq!(meta["ui"]["visibility"][0], "model");
+        }
     }
 
     #[test]
@@ -1486,6 +1549,21 @@ mod tests {
             output["properties"]["data"]["properties"]["healthy"]["type"],
             serde_json::json!("boolean")
         );
+    }
+
+    #[test]
+    fn atomic_output_references_resolve_in_the_advertised_document() {
+        for service in crate::registry::build_default_registry().services() {
+            for action in service.actions {
+                let Some(schema) = super::atomic_dispatch_output_schema(service, action) else {
+                    continue;
+                };
+                let root = Value::Object((*schema).clone());
+                assert!(root["properties"]["data"].get("$schema").is_none());
+                jsonschema::validator_for(&root)
+                    .unwrap_or_else(|error| panic!("{}.{}: {error}", service.name, action.name));
+            }
+        }
     }
 
     #[cfg(feature = "gateway")]

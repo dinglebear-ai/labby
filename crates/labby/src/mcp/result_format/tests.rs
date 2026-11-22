@@ -27,6 +27,9 @@ fn auth_errors_carry_mcp_reauthentication_metadata() {
         "auth_failed",
         "sign in required",
     );
+    let mut upstream = envelope.clone();
+    upstream["error"]["upstream"] = Value::from("fixture");
+    assert!(error_result_from_envelope(upstream).meta.is_none());
     let result = error_result_from_envelope(envelope);
     assert_eq!(
         result
@@ -379,7 +382,16 @@ fn tool_error_envelope_preserves_contract_variant_metadata() {
     assert_eq!(error.origin, CodeModeErrorOrigin::ToolExecution);
     let err = error.into_contract_tool_error();
 
-    let envelope = tool_error_envelope("snippets", "snippets.run", &err);
+    let (result, _) = format_dispatch_result(
+        Err(anyhow::Error::from(err)),
+        "snippets",
+        "snippets.run",
+        0,
+        "fixture",
+        None,
+        0,
+    );
+    let envelope = result.structured_content.unwrap();
 
     assert_eq!(envelope["service"], "snippets");
     assert_eq!(envelope["action"], "snippets.run");

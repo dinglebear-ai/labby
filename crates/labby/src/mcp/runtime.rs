@@ -20,7 +20,8 @@ use rmcp::model::{Prompt, Resource, ResourceTemplate};
 use sha2::{Digest, Sha256};
 use tokio::sync::RwLock;
 
-const MAX_CATALOG_SNAPSHOTS_PER_KIND: usize = 8;
+const MAX_CATALOG_SNAPSHOTS_PER_KIND: usize = 64;
+const MAX_CATALOG_SNAPSHOTS_PER_AUDIENCE: usize = 8;
 
 #[cfg(feature = "gateway")]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,22 +68,37 @@ impl ProjectShadowSnapshotKey {
 #[derive(Clone, Eq, PartialEq)]
 pub(crate) struct ProjectShadowSnapshotKey;
 
-struct CatalogSnapshot<T> {
+#[derive(Clone, Default)]
+pub(crate) struct ResourceSnapshotDiagnostics {
+    pub(crate) checked: usize,
+    pub(crate) would_suppress: usize,
+    pub(crate) owned_app_uris: Arc<[String]>,
+}
+
+struct ToolSnapshotMetadata {
+    peer: super::peer_contract::PeerContract,
+    contract: super::catalog::ToolCatalogSnapshot,
+    source_revision: String,
+}
+
+struct CatalogSnapshot<T, M = ()> {
+    metadata: M,
     audience: String,
     revision: String,
     items: Arc<[T]>,
-    resource_provenance: Arc<[ResourceProvenance]>,
-    resource_template_provenance: Arc<[ResourceTemplateProvenance]>,
+    diagnostics: ResourceSnapshotDiagnostics,
     prompt_provenance: Arc<[PromptProvenance]>,
     project_shadow_key: Option<ProjectShadowSnapshotKey>,
 }
 
+#[cfg(any(feature = "gateway", test))]
 #[derive(Clone)]
 pub(crate) struct ResourceProvenance {
     pub(crate) upstream: String,
     pub(crate) native_uri: String,
 }
 
+#[cfg(any(feature = "gateway", test))]
 #[derive(Clone)]
 pub(crate) struct ResourceTemplateProvenance {
     pub(crate) upstream: String,
@@ -95,11 +111,11 @@ pub(crate) struct PromptProvenance {
     pub(crate) native_name: String,
 }
 
-struct CatalogSnapshotStore<T> {
-    entries: VecDeque<CatalogSnapshot<T>>,
+struct CatalogSnapshotStore<T, M = ()> {
+    entries: VecDeque<CatalogSnapshot<T, M>>,
 }
 
-impl<T> Default for CatalogSnapshotStore<T> {
+impl<T, M> Default for CatalogSnapshotStore<T, M> {
     fn default() -> Self {
         Self {
             entries: VecDeque::new(),
@@ -107,63 +123,56 @@ impl<T> Default for CatalogSnapshotStore<T> {
     }
 }
 
-impl<T> CatalogSnapshotStore<T> {
-    fn insert_with_provenance(
-        &mut self,
-        audience: String,
-        revision: String,
-        items: Arc<[T]>,
-        resource_provenance: Arc<[ResourceProvenance]>,
-        project_shadow_key: Option<ProjectShadowSnapshotKey>,
-    ) {
-        if let Some(index) = self
+impl<T, M> CatalogSnapshotStore<T, M> {
+    fn insert(&mut self, entry: CatalogSnapshot<T, M>) {
+        self.entries
+            .retain(|old| old.audience != entry.audience || old.revision != entry.revision);
+        self.entries.push_back(entry);
+        self.retain_capacity();
+    }
+
+    fn retain_capacity(&mut self) {
+        let Some(newest) = self.entries.back() else {
+            return;
+        };
+        let audience = &newest.audience;
+        if self
             .entries
             .iter()
-            .position(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
+            .filter(|entry| &entry.audience == audience)
+            .count()
+            > MAX_CATALOG_SNAPSHOTS_PER_AUDIENCE
+            && let Some(oldest) = self
+                .entries
+                .iter()
+                .position(|entry| &entry.audience == audience)
         {
-            self.entries.remove(index);
+            self.entries.remove(oldest);
         }
-        self.entries.push_back(CatalogSnapshot {
-            audience,
-            revision,
-            items,
-            resource_provenance,
-            resource_template_provenance: Arc::from([]),
-            prompt_provenance: Arc::from([]),
-            project_shadow_key,
-        });
-        while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
+        if self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
             self.entries.pop_front();
         }
     }
+}
 
-    fn insert_with_template_provenance(
+impl<T> CatalogSnapshotStore<T> {
+    fn insert_with_resource_diagnostics(
         &mut self,
         audience: String,
         revision: String,
         items: Arc<[T]>,
-        resource_template_provenance: Arc<[ResourceTemplateProvenance]>,
+        diagnostics: ResourceSnapshotDiagnostics,
         project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
-        {
-            self.entries.remove(index);
-        }
-        self.entries.push_back(CatalogSnapshot {
+        self.insert(CatalogSnapshot {
+            metadata: (),
             audience,
             revision,
             items,
-            resource_provenance: Arc::from([]),
-            resource_template_provenance,
+            diagnostics,
             prompt_provenance: Arc::from([]),
             project_shadow_key,
         });
-        while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
-            self.entries.pop_front();
-        }
     }
 
     fn insert_with_prompt_provenance(
@@ -174,25 +183,15 @@ impl<T> CatalogSnapshotStore<T> {
         prompt_provenance: Arc<[PromptProvenance]>,
         project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
-        if let Some(index) = self
-            .entries
-            .iter()
-            .position(|snapshot| snapshot.audience == audience && snapshot.revision == revision)
-        {
-            self.entries.remove(index);
-        }
-        self.entries.push_back(CatalogSnapshot {
+        self.insert(CatalogSnapshot {
+            metadata: (),
             audience,
             revision,
             items,
-            resource_provenance: Arc::from([]),
-            resource_template_provenance: Arc::from([]),
+            diagnostics: ResourceSnapshotDiagnostics::default(),
             prompt_provenance,
             project_shadow_key,
         });
-        while self.entries.len() > MAX_CATALOG_SNAPSHOTS_PER_KIND {
-            self.entries.pop_front();
-        }
     }
 }
 
@@ -220,6 +219,7 @@ pub(crate) struct McpRouteRuntime {
     pub(crate) event_credential_adapter: Option<Arc<crate::access::AccessCredentialAdapter>>,
     #[cfg(feature = "gateway")]
     pub(crate) claude_channel: Option<Arc<super::claude_channel::ChannelSession>>,
+    tools: RwLock<CatalogSnapshotStore<rmcp::model::Tool, ToolSnapshotMetadata>>,
     resources: RwLock<CatalogSnapshotStore<Resource>>,
     resource_templates: RwLock<CatalogSnapshotStore<ResourceTemplate>>,
     prompts: RwLock<CatalogSnapshotStore<Prompt>>,
@@ -250,13 +250,67 @@ impl McpRouteRuntime {
     pub(crate) fn depot(&self) -> Option<&Arc<crate::dispatch::depot::DepotClient>> {
         self.depot.get()
     }
+    pub(crate) async fn tool_snapshot(
+        &self,
+        audience: &str,
+        revision: &str,
+        sources: &str,
+        peer: &super::peer_contract::PeerContract,
+    ) -> Option<(
+        Arc<[rmcp::model::Tool]>,
+        super::catalog::ToolCatalogSnapshot,
+    )> {
+        self.tools
+            .read()
+            .await
+            .entries
+            .iter()
+            .rev()
+            .find(|snapshot| {
+                snapshot.audience == audience
+                    && snapshot.revision == revision
+                    && snapshot.metadata.source_revision == sources
+                    && snapshot.metadata.peer.same_inputs(peer)
+            })
+            .map(|snapshot| {
+                (
+                    Arc::clone(&snapshot.items),
+                    snapshot.metadata.contract.clone(),
+                )
+            })
+    }
+
+    pub(crate) async fn store_tool_snapshot(
+        &self,
+        audience: String,
+        revision: String,
+        sources: String,
+        tools: Vec<rmcp::model::Tool>,
+        peer: super::peer_contract::PeerContract,
+        contract: super::catalog::ToolCatalogSnapshot,
+    ) {
+        self.tools.write().await.insert(CatalogSnapshot {
+            audience,
+            revision,
+            items: tools.into(),
+            metadata: ToolSnapshotMetadata {
+                peer,
+                contract,
+                source_revision: sources,
+            },
+            diagnostics: Default::default(),
+            prompt_provenance: Arc::from([]),
+            project_shadow_key: None,
+        });
+    }
+
     pub(crate) async fn resource_snapshot(
         &self,
         audience: &str,
         revision: &str,
     ) -> Option<(
         Arc<[Resource]>,
-        Arc<[ResourceProvenance]>,
+        ResourceSnapshotDiagnostics,
         Option<ProjectShadowSnapshotKey>,
     )> {
         let resources = self.resources.read().await;
@@ -268,7 +322,7 @@ impl McpRouteRuntime {
             .map(|snapshot| {
                 (
                     Arc::clone(&snapshot.items),
-                    Arc::clone(&snapshot.resource_provenance),
+                    snapshot.diagnostics.clone(),
                     snapshot.project_shadow_key.clone(),
                 )
             })
@@ -279,16 +333,19 @@ impl McpRouteRuntime {
         audience: String,
         revision: String,
         resources: Arc<[Resource]>,
-        resource_provenance: Arc<[ResourceProvenance]>,
+        diagnostics: ResourceSnapshotDiagnostics,
         project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
-        self.resources.write().await.insert_with_provenance(
-            audience,
-            revision,
-            resources,
-            resource_provenance,
-            project_shadow_key,
-        );
+        self.resources
+            .write()
+            .await
+            .insert_with_resource_diagnostics(
+                audience,
+                revision,
+                resources,
+                diagnostics,
+                project_shadow_key,
+            );
     }
 
     pub(crate) async fn resource_template_snapshot(
@@ -297,7 +354,7 @@ impl McpRouteRuntime {
         revision: &str,
     ) -> Option<(
         Arc<[ResourceTemplate]>,
-        Arc<[ResourceTemplateProvenance]>,
+        ResourceSnapshotDiagnostics,
         Option<ProjectShadowSnapshotKey>,
     )> {
         let templates = self.resource_templates.read().await;
@@ -309,7 +366,7 @@ impl McpRouteRuntime {
             .map(|snapshot| {
                 (
                     Arc::clone(&snapshot.items),
-                    Arc::clone(&snapshot.resource_template_provenance),
+                    snapshot.diagnostics.clone(),
                     snapshot.project_shadow_key.clone(),
                 )
             })
@@ -320,13 +377,13 @@ impl McpRouteRuntime {
         audience: String,
         revision: String,
         templates: Arc<[ResourceTemplate]>,
-        provenance: Arc<[ResourceTemplateProvenance]>,
+        provenance: ResourceSnapshotDiagnostics,
         project_shadow_key: Option<ProjectShadowSnapshotKey>,
     ) {
         self.resource_templates
             .write()
             .await
-            .insert_with_template_provenance(
+            .insert_with_resource_diagnostics(
                 audience,
                 revision,
                 templates,
@@ -410,6 +467,48 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn one_audiences_revision_churn_preserves_other_clients_cursors() {
+        let runtime = McpRouteRuntime::default();
+        let items: Arc<[Resource]> = Arc::from([Resource::new("file:///one", "one")]);
+        for client in 0..16 {
+            runtime
+                .store_resource_snapshot(
+                    format!("client-{client}"),
+                    "initial".into(),
+                    items.clone(),
+                    Default::default(),
+                    None,
+                )
+                .await;
+        }
+        for revision in 0..16 {
+            runtime
+                .store_resource_snapshot(
+                    "client-0".into(),
+                    revision.to_string(),
+                    items.clone(),
+                    Default::default(),
+                    None,
+                )
+                .await;
+        }
+        assert!(
+            runtime
+                .resource_snapshot("client-0", "initial")
+                .await
+                .is_none()
+        );
+        for client in 1..16 {
+            assert!(
+                runtime
+                    .resource_snapshot(&format!("client-{client}"), "initial")
+                    .await
+                    .is_some()
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn snapshots_are_isolated_by_audience_and_kind() {
         let runtime = McpRouteRuntime::default();
         runtime
@@ -417,7 +516,7 @@ mod tests {
                 "alice".to_string(),
                 "r1".to_string(),
                 Arc::from(vec![Resource::new("file:///one", "one")]),
-                Arc::from([]),
+                ResourceSnapshotDiagnostics::default(),
                 None,
             )
             .await;
