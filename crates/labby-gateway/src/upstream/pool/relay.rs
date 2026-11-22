@@ -176,6 +176,7 @@ impl RelayTaskRouteState {
 
 #[derive(Default)]
 pub(super) struct RelayRouteState {
+    cancellation_writes: tokio_util::task::TaskTracker,
     requests: Mutex<RelayRequestRouteState>,
     progress: Mutex<RelayProgressRouteState>,
     tasks: Mutex<RelayTaskRouteState>,
@@ -985,7 +986,7 @@ async fn send_relay_request(
             );
             relay_finished.cancel();
             drop(spawn_bounded_handle_cancellation(
-                handle.cancel(Some(reason.clone())),
+                routes.cancellation_writes.track_future(handle.cancel(Some(reason.clone()))),
             ));
             return Err(ServiceError::Cancelled {
                 reason: Some(reason),
@@ -1004,7 +1005,7 @@ async fn send_relay_request(
             );
             relay_finished.cancel();
             drop(spawn_bounded_handle_cancellation(
-                handle.cancel(Some(reason)),
+                routes.cancellation_writes.track_future(handle.cancel(Some(reason))),
             ));
             return Err(ServiceError::Timeout { timeout });
         }
@@ -2456,6 +2457,8 @@ impl UpstreamPool {
     pub(super) async fn evict_relay_connection(&self, key: &RelayCacheKey) {
         let removed = self.relay_connections.write().await.remove(key);
         if let Some(entry) = removed {
+            entry.routes.cancellation_writes.close();
+            entry.routes.cancellation_writes.wait().await;
             entry
                 ._connection
                 .shutdown(&key.0, "relay.cache.evict")
@@ -2470,6 +2473,14 @@ impl UpstreamPool {
             .detach_relay_connections_matching(|key| key.1 == session)
             .await;
         for (name, connection) in connections {
+            // Detached cancellation writes must finish before closing their transport.
+            let writes = &connection
+                ._client_service
+                .service()
+                .routes
+                .cancellation_writes;
+            writes.close();
+            writes.wait().await;
             connection.shutdown(&name, "relay.request.finished").await;
         }
     }
