@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import tomllib
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,7 +47,7 @@ OWNERSHIP = (
     ),
     Ownership(
         ("tool", "resource", "prompt", "completion", "schema"),
-        ("crates/labby/src/mcp/handlers_", "crates/labby/src/mcp/catalog.rs"),
+        ("crates/labby/src/mcp/handlers_", "crates/labby/src/mcp/catalog.rs", "crates/labby-codemode/src/"),
         ("cargo test -p labby --all-features --locked mcp::handlers_",),
     ),
     Ownership(
@@ -117,14 +118,17 @@ def compare_url(repository: str, before: str, after: str) -> str:
 
 def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, bool]:
     spec = baseline["mcp_spec"]
-    rmcp = baseline["rmcp"]
+    fixture = baseline["rmcp"]
+    rmcp = baseline["rmcp_production_base"]
+    manifest = Path(__file__).resolve().parents[2] / "Cargo.toml"
+    fork = tomllib.loads(manifest.read_text())["workspace"]["dependencies"]["rmcp"]
     spec_head = api_json(
         f"https://api.github.com/repos/{spec['repository']}/commits/{spec['ref']}", token
     )["sha"]
     releases = api_json(
         f"https://api.github.com/repos/{rmcp['repository']}/releases?per_page=20", token
     )
-    latest_release = next(release for release in releases if not release["draft"])
+    latest_release = next(release for release in releases if not release["draft"] and not release["prerelease"] and release["tag_name"].startswith("rmcp-v"))
     latest_tag = latest_release["tag_name"]
     latest_commit = api_json(
         f"https://api.github.com/repos/{rmcp['repository']}/commits/{latest_tag}", token
@@ -180,7 +184,9 @@ def generate_report(baseline: dict[str, Any], token: str | None) -> tuple[str, b
         "| Surface | Baseline | Current |",
         "|---|---|---|",
         f"| MCP spec `{spec['protocol_version']}` | `{spec['commit']}` | `{spec_head}` |",
-        f"| rmcp `{rmcp['crate_version']}` | `{rmcp['commit']}` / `{rmcp['release_tag']}` | `{latest_commit}` / `{latest_tag}` |",
+        f"| Production rmcp upstream base `{rmcp['crate_version']}` | `{rmcp['commit']}` / `{rmcp['release_tag']}` | `{latest_commit}` / `{latest_tag}` |",
+        f"| Production fork | `{fork['git']}` | `{fork['rev']}` |",
+        f"| Dated stock fixture | `{fixture['release_tag']}` | `{fixture['commit']}` |",
         *(
             [f"| Skills extension (accepted SEP-2640) | `{skills['commit']}` | `{skills_head}` |"]
             if skills

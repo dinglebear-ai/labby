@@ -281,20 +281,25 @@ if [[ "$actual_commit" != "$RMCP_COMMIT" ]]; then
   exit 1
 fi
 
-npm_config_cache="${work_dir}/npm-cache" npm install \
-  --prefix "${work_dir}/js" \
-  --ignore-scripts \
-  --no-audit \
-  --no-fund \
-  "@modelcontextprotocol/conformance@${MCP_CONFORMANCE_VERSION}"
+fixture_locks="${repo_root}/tools/verification/conformance"
+mkdir -p "${work_dir}/js"
+cp "${fixture_locks}"/package{,-lock}.json "${work_dir}/js/"
+if [[ "$MCP_CONFORMANCE_VERSION" == "$(node -p "require(process.argv[1]).dependencies['@modelcontextprotocol/conformance']" "${fixture_locks}/package.json")" ]]; then
+  npm_config_cache="${work_dir}/npm-cache" npm ci --prefix "${work_dir}/js" --ignore-scripts --no-audit --no-fund
+else
+  # Explicit local qualification against a different runner version.
+  npm_config_cache="${work_dir}/npm-cache" npm install --prefix "${work_dir}/js" --ignore-scripts --no-audit --no-fund "@modelcontextprotocol/conformance@${MCP_CONFORMANCE_VERSION}"
+fi
+
+cp "${fixture_locks}/dated-sdk.Cargo.lock" "${work_dir}/rust-sdk/Cargo.lock"
 
 conformance="${work_dir}/js/node_modules/.bin/conformance"
 
 cargo build \
-  --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
+  --locked --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
   -p mcp-conformance
 cargo test \
-  --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
+  --locked --manifest-path "${work_dir}/rust-sdk/Cargo.toml" \
   -p mcp-conformance \
   --bin conformance-server
 cargo build -p labby --all-features --features proxy-testkit --locked \
@@ -465,7 +470,8 @@ if [[ "$(git -C "${work_dir}/production-sdk" rev-parse HEAD)" != "$LABBY_RMCP_RE
   echo "production SDK fixture does not match the pinned revision" >&2
   exit 1
 fi
-CARGO_TARGET_DIR="$rmcp_target_dir" cargo build --manifest-path "${work_dir}/production-sdk/Cargo.toml" \
+cp "${fixture_locks}/production-sdk.Cargo.lock" "${work_dir}/production-sdk/Cargo.lock"
+CARGO_TARGET_DIR="$rmcp_target_dir" cargo build --locked --manifest-path "${work_dir}/production-sdk/Cargo.toml" \
   -p mcp-conformance --bin conformance-client
 "$conformance" client \
   --command "${rmcp_target_dir}/debug/conformance-client" \

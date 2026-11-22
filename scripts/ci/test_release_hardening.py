@@ -180,7 +180,7 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         bootstrap = next(step for step in steps if step.get("name") == "Build first-release ARM64 N-1 source baseline")
         self.assertIn("mode == 'bootstrap'", bootstrap["if"])
         self.assertIn('git worktree add --detach "$source_dir" "$source_sha"', bootstrap["run"])
-        self.assertIn("cargo build --package labby --bin labby --all-features --locked --release", bootstrap["run"])
+        self.assertIn("cargo build --package labby --bin labby --features product --locked --release", bootstrap["run"])
         qualify = next(step for step in steps if step.get("name") == "N-1 stateful upgrade and rollback qualification")
         self.assertEqual("${{ steps.previous.outputs.mode }}", qualify["env"]["LABBY_N_MINUS_ONE_BASELINE_MODE"])
         self.assertNotIn("continue-on-error", release["jobs"]["upgrade-qualification"])

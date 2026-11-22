@@ -43,6 +43,7 @@ disallowed-methods = [
     { path = "rmcp::model::tool::Tool::new", reason = "Construct Labby-owned descriptors through PermanentToolRegistry (crates/labby/src/mcp/permanent_tools.rs); duplicated Tool::new sites are a descriptor-drift hazard (#210)." },
     { path = "rmcp::service::Peer::list_all_tools", reason = "Unbounded nextCursor loop — use the bounded catalog_pagination.rs wrappers." },
     { path = "rmcp::service::Peer::list_all_prompts", reason = "Unbounded nextCursor loop — use the bounded catalog_pagination.rs wrappers." },
+    { path = "rmcp::service::Peer::list_all_skills", reason = "Unbounded nextCursor loop — use the bounded skills list traversal." },
     { path = "rmcp::service::Peer::list_all_resources", reason = "Unbounded nextCursor loop — use the bounded catalog_pagination.rs wrappers." },
     { path = "rmcp::service::Peer::list_all_resource_templates", reason = "Unbounded nextCursor loop — use the bounded catalog_pagination.rs wrappers." },
 ]
