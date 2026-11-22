@@ -14,19 +14,13 @@ caller with execution authority and a verified subject. Route/tool-scoped runs
 remain excluded. The host resolves the OAuth credential after the sandbox
 boundary; the kernel never interprets or persists it.
 
-`openapi` is the third local provider and the FIRST that does outbound HTTP.
-Unlike `state`/`git` (which serialize access to each workspace through
-`WORKSPACE_LOCKS`), `openapi` dispatches through the isolated `labby-openapi`
-crate's OWN hardened `reqwest` client (redirects off, `https_only`, peer-IP
-re-validated), does **not** share `WORKSPACE_LOCKS` (it has no shared mutable
-local state), and is wired via the registry/client host accessors plus the
-caller-credential resolver (`openapi_registry()`, `openapi_http_client()`, and
-`resolve_openapi_credential()`). Naming this cost explicitly:
-`openapi` is the first provider requiring cross-crate dispatch wiring — the
-runner reads the registry + client from `self.host` at the config-build site and
-branches on the provider **before** the lock in `enqueue_local_provider_call`.
-No new files were added to `labby-codemode`; the spec-parsing / HTTP code all
-lives in `labby-openapi`.
+The `state` and `git` providers serialize workspace access with `WORKSPACE_LOCKS`.
+`enqueue_local_provider_call` dispatches OpenAPI before acquiring a workspace
+lock. Read the registry and HTTP client from the host via `openapi_registry()`
+and `openapi_http_client()`, and resolve caller credentials through
+`resolve_openapi_credential()`. Keep outbound HTTP in `labby-openapi`: its
+`reqwest` client requires HTTPS, disables redirects, and revalidates peer IPs.
+Keep specification parsing and HTTP dispatch there.
 
 `sandbox` is the optional disposable-workload provider. Its `microsandbox-sdk`
 feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON` are separate

@@ -1,4 +1,6 @@
 //! Reproducible, isolated listing + real QuickJS batch benchmark; JSON output.
+// This executable instantiates the same runner futures as the product binary.
+#![recursion_limit = "256"]
 #![allow(unknown_lints)]
 #![allow(clippy::unused_async_trait_impl)]
 use labby_codemode::error::ToolError;
