@@ -52,7 +52,15 @@ fn entries_bytes_errors_and_revision_replacement_are_bounded() {
         }),
     );
     assert!(cache.bytes <= MAX_BYTES);
-    assert!(cache.entries.back().unwrap().4 >= 100_000);
+    assert!(
+        cache
+            .entries
+            .iter()
+            .find(|entry| entry.0 == "error")
+            .unwrap()
+            .4
+            >= 100_000
+    );
 }
 #[test]
 fn nested_defaults_and_tool_strings_are_charged() {
@@ -108,4 +116,19 @@ fn metadata_cache_distinguishes_source_formats_for_identical_bytes() {
         )
         .is_ok()
     );
+}
+
+#[test]
+fn scanning_beyond_capacity_preserves_reusable_metadata() {
+    let mut cache = Cache::default();
+    for index in 0..MAX_ENTRIES * 2 {
+        cache.insert(index.to_string(), "revision".into(), false, entry(8));
+    }
+    assert_eq!(cache.entries.len(), MAX_ENTRIES);
+    let first_scan_hits = cache
+        .entries
+        .iter()
+        .filter(|entry| entry.0.parse::<usize>().unwrap() < MAX_ENTRIES)
+        .count();
+    assert_eq!(first_scan_hits, MAX_ENTRIES - 1);
 }

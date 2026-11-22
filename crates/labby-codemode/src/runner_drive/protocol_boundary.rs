@@ -16,7 +16,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
     deadline: tokio::time::Instant,
     cancellation: &CancellationToken,
     pending_tool_calls: &mut FuturesUnordered<ToolCallFut<'a>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     state: &mut DriveState,
@@ -134,6 +134,21 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
         return Ok(());
     }
 
+    let in_flight = pending_tool_calls.len() as u64 + 1;
+    let tool_deadline = external_tool_deadline(tokio::time::Instant::now(), deadline, in_flight);
+    if tool_deadline < deadline && !state.result_ack_reserve_observed {
+        state.result_ack_reserve_observed = true;
+        let result_ack_reserve_use_count = record_result_ack_reserve_use();
+        tracing::debug!(
+            surface = "dispatch",
+            service = "code_mode",
+            action = "codemode.result_ack.reserve",
+            event = "armed",
+            reserve_ms = result_ack_reserve(in_flight).as_millis(),
+            result_ack_reserve_use_count,
+            "reserved Code Mode result acknowledgement budget"
+        );
+    }
     match crate::local_provider::try_parse_local_provider_call(&id) {
         Ok(Some(local)) => enqueue_local_provider_call(
             broker,
@@ -144,24 +159,12 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
             params,
             execution_start,
             cfg,
+            tool_deadline,
+            cancellation,
+            state.artifact_root.clone(),
             pending_tool_calls,
         ),
         Ok(None) => {
-            let tool_deadline =
-                external_tool_deadline(tokio::time::Instant::now(), deadline, state.calls_enqueued);
-            if tool_deadline < deadline && !state.result_ack_reserve_observed {
-                state.result_ack_reserve_observed = true;
-                let result_ack_reserve_use_count = record_result_ack_reserve_use();
-                tracing::debug!(
-                    surface = "dispatch",
-                    service = "code_mode",
-                    action = "codemode.result_ack.reserve",
-                    event = "armed",
-                    reserve_ms = result_ack_reserve(state.calls_enqueued).as_millis(),
-                    result_ack_reserve_use_count,
-                    "reserved Code Mode result acknowledgement budget"
-                );
-            }
             enqueue_tool_call(
                 broker,
                 seq,
@@ -173,6 +176,7 @@ pub(super) async fn handle_tool_call_event<'a, H: CodeModeHost>(
                 execution_start,
                 cfg,
                 cancellation,
+                state.artifact_root.clone(),
                 pending_tool_calls,
             );
         }
@@ -201,7 +205,7 @@ impl RejectedCall {
     async fn write(
         self,
         seq: u64,
-        stdin: &mut ChildStdin,
+        stdin: &RunnerReplies,
         child: &mut tokio::process::Child,
         child_pid: Option<u32>,
         deadline: tokio::time::Instant,

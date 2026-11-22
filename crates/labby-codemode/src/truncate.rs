@@ -291,15 +291,16 @@ pub(crate) fn response_within_budget(
 ) -> bool {
     #[cfg(test)]
     ENVELOPE_ENCODES.with(|count| count.set(count.get() + 1));
-    match serde_json::to_vec(response) {
-        Ok(bytes) => {
-            bytes.len() <= max_response_bytes
-                && estimated_tokens(bytes.len(), token_estimate_divisor)
-                    <= max_response_tokens.max(1)
-        }
-        Err(e) => {
+    let byte_limit = max_response_bytes.min(
+        max_response_tokens
+            .max(1)
+            .saturating_mul(token_estimate_divisor.max(1) as usize),
+    );
+    match crate::protocol::serialized_len_within(response, byte_limit) {
+        Ok(_) => true,
+        Err(crate::protocol::SerializedLenError::Exceeded) => false,
+        Err(crate::protocol::SerializedLenError::Encode) => {
             tracing::warn!(
-                error = %e,
                 "response_within_budget: failed to serialize response; treating as over-budget"
             );
             false

@@ -7,6 +7,9 @@ use std::io::{self, BufReader, BufWriter};
 
 use crate::CodeModeCallError;
 
+/// Native host/runner wire contract, checked before sending any user source.
+pub(crate) const RUNNER_PROTOCOL_VERSION: u32 = 1;
+
 /// Checked by both the native JS bridge and the host before dispatch or tracing.
 /// This is a UTF-8 byte limit, independent of the framed protocol line cap.
 pub(crate) const MAX_TOOL_ID_BYTES: usize = 1024;
@@ -35,6 +38,7 @@ fn within_byte_limit(
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum CodeModeRunnerInput {
+    ProtocolVersion,
     Start {
         code: String,
         /// Auto-generated `var codemode = {...}` proxy JS (see
@@ -89,6 +93,9 @@ pub(crate) enum CodeModeRunnerInput {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum CodeModeRunnerOutput {
+    ProtocolVersion {
+        version: u32,
+    },
     ToolCall {
         seq: u64,
         id: String,
@@ -122,13 +129,19 @@ pub(crate) enum CodeModeRunnerOutput {
     /// current host always executes; the decision field is reserved for future
     /// replay work. This consumes a `seq` from the same monotonic spine as tool
     /// calls.
-    StepBegin { seq: u64, name: String },
+    StepBegin {
+        seq: u64,
+        name: String,
+    },
     /// The sandbox ran the step `fn` (decision was execute) and is journaling
     /// its result. The host records it and acks with `StepRecorded`.
-    StepResult { seq: u64, value: Value },
+    StepResult {
+        seq: u64,
+        value: Value,
+    },
     /// Runner completed successfully. `result` is the serialized return value of
     /// the async function (`Undefined` when the function returns undefined).
-    /// `logs` carries captured console output or redirected runner stderr.
+    /// `logs` carries console output captured for this execution.
     Done {
         // #[serde(default)] makes this variant forward-compatible: old runner binaries
         // that emit {"type":"done"} without these fields deserialize to Undefined/[] instead
@@ -305,6 +318,9 @@ pub(crate) fn serialized_len_within(
         Err(_) => Err(SerializedLenError::Encode),
     }
 }
+
+/// QuickJS heap limit for a Code Mode execution.
+pub(crate) const CODE_MODE_HEAP_SIZE_LIMIT: usize = 64 * 1024 * 1024;
 
 // Javy interprets this as the native stack size in bytes. The runtime
 // `codemode.*` proxy preamble (one method per tool, ~140+ across the

@@ -62,7 +62,7 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
     seq: u64,
     name: String,
     execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -113,7 +113,9 @@ pub(super) async fn handle_step_begin_event<H: CodeModeHost>(
         step_ordinal: Some(step_ordinal),
     };
     let decision = match broker.host {
-        Some(host) => host.decide_step(ctx, &name).await,
+        Some(host) => tokio::time::timeout_at(deadline, host.decide_step(ctx, &name))
+            .await
+            .map_err(|_| code_mode_timeout_error(&state.calls))?,
         None => StepDecision::Execute,
     };
     let reply = match decision {
@@ -145,7 +147,7 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
     seq: u64,
     value: Value,
     execution_id: Option<Arc<str>>,
-    stdin: &mut ChildStdin,
+    stdin: &RunnerReplies,
     child: &mut tokio::process::Child,
     child_pid: Option<u32>,
     deadline: tokio::time::Instant,
@@ -161,7 +163,11 @@ pub(super) async fn handle_step_result_event<H: CodeModeHost>(
                 step_ordinal: Some(step_ordinal),
             };
             match broker.host {
-                Some(host) => host.record_step(ctx, &name, &value).await,
+                Some(host) => {
+                    tokio::time::timeout_at(deadline, host.record_step(ctx, &name, &value))
+                        .await
+                        .map_err(|_| code_mode_timeout_error(&state.calls))?
+                }
                 None => Ok(()),
             }
         }

@@ -149,7 +149,7 @@ done
 printf '%s\n' '{{"type":"done"}}'
 IFS= read -r _
 "#,
-        limit = host_trace::MAX_HOST_TRACE_ROWS,
+        limit = MAX_HOST_TRACE_ROWS,
         capture = capture.path().display()
     );
     let mut runner = PooledRunner::spawn_stub_script(&script).expect("protocol stub");
@@ -166,7 +166,7 @@ IFS= read -r _
         panic!("trace overflow must fail explicitly")
     };
     assert_eq!(error.kind(), "trace_budget_exceeded");
-    assert_eq!(error.calls().len(), host_trace::MAX_HOST_TRACE_ROWS);
+    assert_eq!(error.calls().len(), MAX_HOST_TRACE_ROWS);
     assert_eq!(
         replies(capture.path()).len(),
         error.calls().len(),
@@ -208,6 +208,7 @@ async fn non_admin_writable_runner_cannot_publish_metadata_path_aliases() {
     let host = NoopHost::default();
     let mut config = test_config(Duration::from_secs(5));
     config.caller = CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: CodeModeCallerCapabilities {
             can_read: true,
             can_execute: true,
@@ -500,4 +501,38 @@ IFS= read -r _
         wire_replies.last(),
         Some(CodeModeRunnerInput::StepDecision { seq, .. }) if *seq == rejected
     ));
+}
+
+#[tokio::test]
+async fn local_provider_gate_and_lock_wait_settle_before_the_runner_deadline() {
+    let (_, lock) = workspace_identity(&CodeModeCaller::TrustedLocal).unwrap();
+    let _guard = lock.lock().await;
+    let host = NoopHost::default();
+    for (scope, expected) in [
+        (ToolScope::new(vec!["fixture".into()], vec![]), "forbidden"),
+        (ToolScope::default(), "timeout"),
+    ] {
+        let mut config = test_config(Duration::from_secs(2));
+        config.capability_filter = scope;
+        let capture = tempfile::NamedTempFile::new().unwrap();
+        let request = CodeModeRunnerOutput::ToolCall {
+            seq: 0,
+            id: "state::list".into(),
+            params: json!({}),
+            full_result: false,
+        };
+        let mut runner =
+            PooledRunner::spawn_stub_script(&request_script(&[request], capture.path())).unwrap();
+        let outcome = CodeModeBroker::new(Some(&host))
+            .drive_runner(
+                &mut runner,
+                &config,
+                tokio::time::Instant::now() + config.timeout,
+            )
+            .await;
+        assert!(matches!(outcome, DriveOutcome::Completed(_)));
+        assert!(
+            matches!(&replies(capture.path())[..], [CodeModeRunnerInput::ToolError { error, .. }] if error.kind() == expected)
+        );
+    }
 }

@@ -9,6 +9,8 @@ mod cache;
 mod types;
 pub use types::*;
 mod inputs;
+mod listing;
+pub use listing::{list_snippets, list_snippets_with_diagnostics};
 mod validation;
 pub use inputs::merge_snippet_input;
 use inputs::parse_inputs_block;
@@ -84,10 +86,26 @@ pub fn user_snippet_dir(lab_home: &Path) -> PathBuf {
     lab_home.join("snippets")
 }
 
-/// Return the checked-in built-in snippet directory.
+const BUILTIN_DIRECTORY: &str = "labby-builtin-snippets:";
+const BUILTIN_FILES: &[(&str, &[u8])] = include!(concat!(env!("OUT_DIR"), "/snippet_assets.rs"));
+
+/// Return the logical directory of snippets embedded in the binary.
 #[must_use]
 pub fn builtin_snippet_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets")
+    PathBuf::from(BUILTIN_DIRECTORY)
+}
+
+/// Read a shipped snippet or fixture by its logical path.
+#[must_use]
+pub fn builtin_snippet_asset(path: &Path) -> Option<&'static [u8]> {
+    if path.parent()? != Path::new(BUILTIN_DIRECTORY) {
+        return None;
+    }
+    let name = path.file_name()?.to_str()?;
+    let index = BUILTIN_FILES
+        .binary_search_by_key(&name, |(entry, _)| entry)
+        .ok()?;
+    Some(BUILTIN_FILES[index].1)
 }
 
 /// Validate a stable lowercase snippet identifier.
@@ -281,51 +299,6 @@ pub fn create_promoted_user_snippet(
     })
 }
 
-/// List user and built-in snippets, marking built-ins shadowed by user overrides.
-pub fn list_snippets(lab_home: &Path, builtin_dir: &Path) -> Result<Vec<SnippetInfo>, ToolError> {
-    Ok(list_snippets_with_diagnostics(lab_home, builtin_dir)?.snippets)
-}
-
-/// List snippets with failures; invalid user overrides still shadow built-ins.
-pub fn list_snippets_with_diagnostics(
-    lab_home: &Path,
-    builtin_dir: &Path,
-) -> Result<SnippetList, ToolError> {
-    let mut snippets = Vec::new();
-    let mut diagnostics = Vec::new();
-    let mut diagnostics_omitted = 0;
-    let user_dir = user_snippet_dir(lab_home);
-    let user_names = collect_snippets(
-        &user_dir,
-        SnippetSource::User,
-        &mut snippets,
-        &mut diagnostics,
-        &mut diagnostics_omitted,
-    )?;
-    collect_snippets(
-        builtin_dir,
-        SnippetSource::Builtin,
-        &mut snippets,
-        &mut diagnostics,
-        &mut diagnostics_omitted,
-    )?;
-
-    for snippet in &mut snippets {
-        snippet.shadowed =
-            snippet.source == SnippetSource::Builtin && user_names.contains(&snippet.name);
-    }
-    snippets.sort_by(|a, b| {
-        a.name
-            .cmp(&b.name)
-            .then_with(|| source_rank(a.source).cmp(&source_rank(b.source)))
-    });
-    Ok(SnippetList {
-        snippets,
-        diagnostics,
-        diagnostics_omitted,
-    })
-}
-
 /// Resolve a snippet by name, preferring a user override over the built-in copy.
 pub fn resolve_snippet(
     lab_home: &Path,
@@ -384,94 +357,17 @@ pub fn remove_user_snippet(
     })
 }
 
-fn collect_snippets(
-    dir: &Path,
-    source: SnippetSource,
-    out: &mut Vec<SnippetInfo>,
-    diagnostics: &mut Vec<SnippetDiagnostic>,
-    diagnostics_omitted: &mut usize,
-) -> Result<std::collections::HashSet<String>, ToolError> {
-    let mut names = std::collections::HashSet::new();
-    if !dir.exists() {
-        return Ok(names);
-    }
-    let entries = fs::read_dir(dir).map_err(|e| io_error("read snippets directory", dir, e))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| io_error("read snippets directory entry", dir, e))?;
-        let path = entry.path();
-        if !path.is_file() || !has_snippet_extension(&path) {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if validate_snippet_name(stem).is_err() {
-            continue;
-        }
-        names.insert(stem.to_string());
-        // Discovery must describe the same effective extension as resolution.
-        if find_snippet_file(dir, stem).as_deref() != Some(path.as_path()) {
-            if diagnostics.len() < 128 {
-                diagnostics.push(SnippetDiagnostic {
-                    name: stem.to_string(),
-                    path,
-                    source,
-                    message:
-                        "inactive duplicate snippet extension; resolution uses the preferred extension"
-                            .into(),
-                });
-            } else {
-                *diagnostics_omitted += 1;
-            }
-            continue;
-        }
-        let format = if path.extension().and_then(|extension| extension.to_str()) == Some("js") {
-            SnippetSourceFormat::JavaScript
-        } else {
-            SnippetSourceFormat::Markdown
-        };
-        let metadata =
-            read_snippet_body(&path).and_then(|body| cache::metadata(stem, &body, source, format));
-        let (description, tags, inputs, tools, content_digest) = match metadata {
-            Ok(metadata) => metadata,
-            Err(error) => {
-                if diagnostics.len() < 128 {
-                    diagnostics.push(SnippetDiagnostic {
-                        name: stem.to_string(),
-                        path,
-                        source,
-                        // List is public discovery: never expose source excerpts or raw I/O errors.
-                        message: format!(
-                            "snippet could not be loaded ({}); use admin validation for details",
-                            error.kind()
-                        ),
-                    });
-                } else {
-                    *diagnostics_omitted += 1;
-                }
-                continue;
-            }
-        };
-        out.push(SnippetInfo {
-            content_digest: Some(content_digest),
-            tools,
-            name: stem.to_string(),
-            description,
-            tags,
-            inputs,
-            source,
-            path,
-            shadowed: false,
-        });
-    }
-    Ok(names)
-}
-
 fn find_snippet_file(dir: &Path, name: &str) -> Option<PathBuf> {
     SNIPPET_EXTENSIONS
         .iter()
         .map(|ext| dir.join(format!("{name}.{ext}")))
-        .find(|path| path.is_file())
+        .find(|path| {
+            if dir == Path::new(BUILTIN_DIRECTORY) {
+                builtin_snippet_asset(path).is_some()
+            } else {
+                path.is_file()
+            }
+        })
 }
 
 fn has_snippet_extension(path: &Path) -> bool {
@@ -481,11 +377,19 @@ fn has_snippet_extension(path: &Path) -> bool {
 }
 
 fn read_snippet_body(path: &Path) -> Result<String, ToolError> {
-    let file = fs::File::open(path).map_err(|e| io_error("open snippet", path, e))?;
     let mut bytes = Vec::new();
-    file.take((MAX_SNIPPET_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|e| io_error("read snippet", path, e))?;
+    if path.parent() == Some(Path::new(BUILTIN_DIRECTORY)) {
+        bytes.extend_from_slice(
+            builtin_snippet_asset(path)
+                .ok_or_else(|| ToolError::internal_message("built-in snippet asset is missing"))?,
+        );
+    } else {
+        fs::File::open(path)
+            .map_err(|e| io_error("open snippet", path, e))?
+            .take((MAX_SNIPPET_FILE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(|e| io_error("read snippet", path, e))?;
+    }
     if bytes.len() > MAX_SNIPPET_FILE_BYTES {
         return Err(ToolError::InvalidParam {
             message: format!("snippet file exceeds {MAX_SNIPPET_FILE_BYTES} bytes"),
@@ -559,13 +463,6 @@ fn resolved_from_body(
         path,
         body,
     })
-}
-
-const fn source_rank(source: SnippetSource) -> u8 {
-    match source {
-        SnippetSource::User => 0,
-        SnippetSource::Builtin => 1,
-    }
 }
 
 fn io_error(action: &str, path: &Path, error: std::io::Error) -> ToolError {

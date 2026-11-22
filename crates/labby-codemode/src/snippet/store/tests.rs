@@ -285,6 +285,10 @@ fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
         .expect("repo-status-gh-pulse listed");
 
     assert_eq!(info.source, SnippetSource::Builtin);
+    assert!(!info.path.is_absolute());
+    let fixture = builtin_snippet_asset(&info.path.with_extension("test.json"))
+        .expect("packaged default fixture");
+    serde_json::from_slice::<Value>(fixture).expect("valid fixture JSON");
     assert!(info.inputs.contains_key("owner"));
     assert!(info.inputs.contains_key("repo"));
     assert!(info.inputs.contains_key("root"));
@@ -306,18 +310,17 @@ fn all_builtin_snippets_satisfy_the_size_and_format_contract() {
     // `collect_snippets` skips invalid snippets silently, so without this
     // test an oversized built-in only surfaces as a `docs generate` abort.
     let dir = builtin_snippet_dir();
-    let entries = fs::read_dir(&dir).expect("read builtin snippets directory");
+    let entries = BUILTIN_FILES.iter().map(|(name, _)| dir.join(name));
     let mut checked = 0usize;
-    for entry in entries {
-        let path = entry.expect("builtin snippet dir entry").path();
-        if !path.is_file() || !has_snippet_extension(&path) {
+    for path in entries {
+        if !has_snippet_extension(&path) {
             continue;
         }
         let stem = path
             .file_stem()
             .and_then(|s| s.to_str())
             .expect("builtin snippet file stem");
-        let body = fs::read_to_string(&path).expect("read builtin snippet");
+        let body = read_snippet_body(&path).expect("read builtin snippet");
         // Mirror `collect_snippets`' builtin discovery rule: a markdown file
         // with no frontmatter at all (e.g. the directory README) is not a
         // snippet, so it is not held to the snippet contract. A file that

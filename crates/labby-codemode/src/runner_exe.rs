@@ -4,12 +4,21 @@ use std::path::{Path, PathBuf};
 
 use crate::error::ToolError;
 
-pub(super) fn resolve_runner_exe() -> Result<PathBuf, ToolError> {
-    let current = std::env::current_exe().map_err(|err| ToolError::Sdk {
-        sdk_kind: "internal_error".to_string(),
-        message: format!("failed to locate current executable for Code Mode runner: {err}"),
-    })?;
-    let override_exe = std::env::var_os("LABBY_CODE_MODE_RUNNER_EXE").map(PathBuf::from);
+pub(super) fn resolve_runner_exe(
+    for_mount: bool,
+    override_exe: Option<PathBuf>,
+) -> Result<PathBuf, ToolError> {
+    // The child still runs the host executable when execve resolves this
+    // procfs link. A package upgrade can replace its pathname without changing
+    // the inode that the running host uses for the native protocol.
+    let current = if cfg!(target_os = "linux") && !for_mount {
+        PathBuf::from("/proc/self/exe")
+    } else {
+        std::env::current_exe().map_err(|err| ToolError::Sdk {
+            sdk_kind: "internal_error".to_string(),
+            message: format!("failed to locate current executable for Code Mode runner: {err}"),
+        })?
+    };
     resolve_runner_exe_from(current, override_exe)
 }
 
@@ -136,6 +145,19 @@ mod tests {
         let mut perms = std::fs::metadata(path).unwrap().permissions();
         perms.set_mode(0o755);
         std::fs::set_permissions(path, perms).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn native_reexec_uses_the_running_inode_and_mount_keeps_its_host_path() {
+        use std::os::unix::fs::MetadataExt;
+        let proc = resolve_runner_exe(false, None).unwrap();
+        let mounted = resolve_runner_exe(true, None).unwrap();
+        assert_eq!(proc, Path::new("/proc/self/exe"));
+        assert_eq!(mounted, std::env::current_exe().unwrap());
+        let native = std::fs::metadata(proc).unwrap();
+        let source = std::fs::metadata(mounted).unwrap();
+        assert_eq!((native.dev(), native.ino()), (source.dev(), source.ino()));
     }
 
     #[test]

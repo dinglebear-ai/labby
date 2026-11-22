@@ -32,21 +32,55 @@ pub(crate) async fn dispatch_git_method(
     if let Some(branch) = &spec.branch_preflight {
         ensure_branch_ref_allowed(&workdir, ceiling, branch).await?;
     }
-    if let Some(destination) = &spec.clone_destination {
+    let clone_dir = if let Some(destination) = &spec.clone_destination {
         ensure_clone_destination_allowed(&workdir, destination).await?;
-    }
+        let path = workdir.join(destination.as_str());
+        workspace.check_new_destination_quota(&path).await?;
+        let parent = path.parent().expect("validated relative destination");
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|err| ToolError::internal_message(err.to_string()))?;
+        // Git accepts an existing empty directory. Reserve exactly the requested
+        // name without clobbering another writer, and clean it up on cancellation.
+        Some(
+            tempfile::Builder::new()
+                .rand_bytes(0)
+                .prefix(path.file_name().expect("validated relative destination"))
+                .tempdir_in(parent)
+                .map_err(|err| ToolError::internal_message(err.to_string()))?,
+        )
+    } else {
+        None
+    };
     let mut stdout = run_git(&workdir, ceiling, &spec.args).await?;
     if matches!(method, "status" | "diff") {
         stdout = scrub_git_reserved_metadata(&stdout);
     }
-    if git_method_mutates_workspace(method) {
-        if let Err(err) = workspace.enforce_total_bytes().await {
-            if let Some(destination) = &spec.clone_destination {
-                cleanup_clone_destination(&workdir, destination, err).await?;
-            } else {
-                return Err(err);
-            }
+    if git_method_mutates_workspace(method)
+        && let Err(err) = workspace.enforce_total_bytes().await
+    {
+        if let Some(directory) = clone_dir {
+            directory.close().map_err(|cleanup| {
+                ToolError::internal_message(format!(
+                    "failed to clean incomplete git clone: {cleanup}"
+                ))
+            })?;
+            return Err(err);
         }
+        return Err(ToolError::contract(
+            err.kind(),
+            format!(
+                "git {method} completed before the workspace quota check failed: {}",
+                err.user_message()
+            ),
+            Default::default(),
+            None,
+            None,
+            Some(labby_runtime::agent_error::AgentSideEffectRisk::Possible),
+        ));
+    }
+    if let Some(directory) = clone_dir {
+        drop(directory.keep());
     }
     if method == "remoteList" {
         return Ok(json!({ "ok": true, "stdout": stdout, "remotes": parse_remote_list(&stdout) }));
@@ -190,31 +224,6 @@ async fn ensure_clone_destination_allowed(
     }
 }
 
-async fn cleanup_clone_destination(
-    workspace_root: &Path,
-    destination: &crate::state::path::VirtualPath,
-    original: ToolError,
-) -> Result<(), ToolError> {
-    let path = workspace_root.join(destination.as_str());
-    let cleanup = match tokio::fs::symlink_metadata(&path).await {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            tokio::fs::remove_dir_all(&path).await
-        }
-        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
-            tokio::fs::remove_file(&path).await
-        }
-        Ok(_) | Err(_) => return Err(original),
-    };
-    cleanup.map_err(|err| ToolError::Sdk {
-        sdk_kind: "quota_cleanup_failed".to_string(),
-        message: format!(
-            "git clone exceeded quota and cleanup of `{}` failed: {err}",
-            destination.as_str()
-        ),
-    })?;
-    Err(original)
-}
-
 fn scrub_git_reserved_metadata(stdout: &str) -> String {
     stdout
         .lines()
@@ -330,12 +339,12 @@ impl Drop for GitProcessTree {
 }
 
 async fn run_capped_command(command: Command) -> Result<CappedGitOutput, ToolError> {
-    run_capped_command_with_timeout(command, Duration::from_secs(10)).await
+    run_capped_command_with_deadline(command, tokio::time::sleep(Duration::from_secs(10))).await
 }
 
-async fn run_capped_command_with_timeout(
+async fn run_capped_command_with_deadline(
     mut command: Command,
-    timeout: Duration,
+    deadline: impl Future<Output = ()>,
 ) -> Result<CappedGitOutput, ToolError> {
     command.kill_on_drop(true);
     #[cfg(unix)]
@@ -374,7 +383,6 @@ async fn run_capped_command_with_timeout(
     let mut stdout_result = None;
     let mut stderr_result = None;
     let mut status_result = None;
-    let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
 
     while stdout_result.is_none() || stderr_result.is_none() || status_result.is_none() {
@@ -510,6 +518,70 @@ mod tests {
     use super::*;
     use crate::state::quota::StateWorkspaceLimits;
 
+    #[tokio::test]
+    async fn clone_rejects_exhausted_entry_budget_before_creating_destination() {
+        let root = tempfile::tempdir().unwrap();
+        let workspace = StateWorkspace::new(
+            root.path().to_owned(),
+            StateWorkspaceLimits {
+                max_entries: 1,
+                ..StateWorkspaceLimits::default()
+            },
+        )
+        .unwrap();
+        std::fs::write(root.path().join("existing"), b"used").unwrap();
+        let error = dispatch_git_method(
+            &workspace,
+            "clone",
+            json!({"url":"https://github.com/example/project.git","directory":"new/project"}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.kind(), "quota_exceeded");
+        assert!(!root.path().join("new").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn failed_clone_removes_its_partial_destination() {
+        use std::os::unix::fs::PermissionsExt;
+        const FIXTURE: &str = "LABBY_TEST_PARTIAL_CLONE_ROOT";
+        if let Some(path) = std::env::var_os(FIXTURE) {
+            let workspace =
+                StateWorkspace::new(path.into(), StateWorkspaceLimits::default()).unwrap();
+            let result = dispatch_git_method(
+                &workspace,
+                "clone",
+                json!({"url":"https://github.com/example/project.git","directory":"project"}),
+            )
+            .await;
+            assert!(result.is_err());
+            assert!(workspace.root_path().join("fixture-ran").is_file());
+            assert!(!workspace.root_path().join("project").exists());
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("git-fixture");
+        std::fs::write(
+            &executable,
+            "#!/bin/sh\nprintf started > fixture-ran\nprintf partial > project/file\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let root = dir.path().join("workspace");
+        let status = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::provider::tests::failed_clone_removes_its_partial_destination",
+            ])
+            .env(FIXTURE, root)
+            .env("LABBY_CODE_MODE_GIT_EXE", executable)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+    }
+
     #[cfg(unix)]
     fn descendant_command(marker: &Path, ready: &Path, noisy: bool) -> Command {
         let mut command = Command::new("/bin/sh");
@@ -540,30 +612,31 @@ wait"#,
             let temp = tempfile::tempdir().unwrap();
             let marker = temp.path().join("survived");
             let ready = temp.path().join("ready");
-            let mut running = Box::pin(run_capped_command_with_timeout(
+            let (expire, expired) = tokio::sync::oneshot::channel::<()>();
+            let mut running = Box::pin(run_capped_command_with_deadline(
                 descendant_command(&marker, &ready, false),
-                Duration::from_millis(100),
+                async {
+                    let _ = expired.await;
+                },
             ));
-            if cancel {
-                tokio::time::timeout(Duration::from_secs(1), async {
-                    loop {
-                        tokio::select! {
-                            _ = &mut running => panic!("fixture returned before cancellation"),
-                            () = tokio::time::sleep(Duration::from_millis(5)) => {
-                                if ready.exists() { break; }
-                            }
-                        }
+            tokio::time::timeout(Duration::from_secs(10), async {
+                while !ready.exists() {
+                    tokio::select! {
+                        _ = &mut running => panic!("fixture returned before readiness"),
+                        () = tokio::time::sleep(Duration::from_millis(5)) => {}
                     }
-                })
-                .await
-                .unwrap();
+                }
+            })
+            .await
+            .expect("fixture must become ready");
+            if cancel {
                 drop(running);
             } else {
-                let result = tokio::time::timeout(Duration::from_millis(400), running)
+                expire.send(()).unwrap();
+                let result = tokio::time::timeout(Duration::from_secs(2), running)
                     .await
                     .expect("cleanup must not wait for descendant pipe EOF");
                 assert_eq!(result.err().expect("deadline must fail").kind(), "timeout");
-                assert!(ready.exists());
             }
             tokio::time::sleep(Duration::from_millis(600)).await;
             assert!(!marker.exists(), "descendant continued after Git ended");
@@ -637,6 +710,28 @@ wait"#,
     }
 
     #[tokio::test]
+    async fn post_mutation_quota_error_reports_possible_side_effects() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = StateWorkspace::new(
+            temp.path().to_owned(),
+            StateWorkspaceLimits {
+                max_total_bytes: 1,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let error = dispatch_git_method(&workspace, "init", json!({}))
+            .await
+            .unwrap_err();
+        assert!(temp.path().join(".git").is_dir());
+        assert_eq!(error.kind(), "quota_exceeded");
+        assert_eq!(
+            serde_json::to_value(error).unwrap()["side_effects"],
+            "possible"
+        );
+    }
+
+    #[tokio::test]
     async fn git_v2_branch_checkout_and_remote_list_work_locally() {
         let temp = tempfile::tempdir().unwrap();
         let workspace =
@@ -677,6 +772,16 @@ wait"#,
         dispatch_git_method(&workspace, "checkout", json!({"ref": "feature/demo"}))
             .await
             .unwrap();
+        let readme = crate::state::path::VirtualPath::parse("README.md").unwrap();
+        workspace.write_file(&readme, "uncommitted").await.unwrap();
+        let error = dispatch_git_method(&workspace, "checkout", json!({"ref": "README.md"}))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), "git_failed");
+        assert_eq!(
+            workspace.read_file(&readme).await.unwrap().content,
+            "uncommitted"
+        );
         let remotes = dispatch_git_method(&workspace, "remoteList", json!({}))
             .await
             .unwrap();

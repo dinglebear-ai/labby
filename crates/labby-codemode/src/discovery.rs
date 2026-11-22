@@ -71,8 +71,9 @@ pub struct CodeModeDescribeResponse {
     pub output_schema_omitted: Option<&'static str>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 struct Candidate {
+    path: String,
     index: usize,
     score: u32,
 }
@@ -108,7 +109,7 @@ pub fn search_visible_catalog_with_kinds(
     // The response contract caps this collection at 50 entries. Reserve the
     // fixed contract maximum instead of propagating the caller-derived value
     // into an allocation, even after clamping.
-    let mut candidates = Vec::with_capacity(50);
+    let mut candidates = Vec::<Candidate>::with_capacity(50);
     let mut total = 0_usize;
     for (index, entry) in entries.iter().enumerate() {
         if (!kinds.is_empty() && !kinds.contains(&entry.kind))
@@ -145,9 +146,15 @@ pub fn search_visible_catalog_with_kinds(
         };
         if covered >= required {
             total += 1;
-            candidates.push(Candidate { index, score });
-            candidates.sort_unstable_by(|a, b| compare_candidate(*a, *b, entries));
-            candidates.truncate(limit);
+            let position = candidates.partition_point(|candidate| {
+                candidate.score > score || (candidate.score == score && candidate.path <= path)
+            });
+            if position < limit {
+                if candidates.len() == limit {
+                    candidates.pop();
+                }
+                candidates.insert(position, Candidate { path, index, score });
+            }
         }
     }
     let mut results = candidates
@@ -178,13 +185,20 @@ pub fn describe_visible_catalog(
     scope: &ToolScope,
     target: &str,
 ) -> Result<CodeModeDescribeResponse, ToolError> {
+    describe_entries(entries.iter(), scope, target)
+}
+
+fn describe_entries<'a>(
+    entries: impl Iterator<Item = &'a CatalogDescriptor>,
+    scope: &ToolScope,
+    target: &str,
+) -> Result<CodeModeDescribeResponse, ToolError> {
     validate_bytes("target", target, TARGET_MAX_BYTES)?;
     let target = target.trim();
     if target.is_empty() {
         return Err(invalid("target", "target must not be blank"));
     }
     let visible = entries
-        .iter()
         .filter(|entry| discovery_entry_visible(entry, scope))
         .collect::<Vec<_>>();
     let mut exact = visible
@@ -296,18 +310,6 @@ fn hit(entry: &CatalogDescriptor, score: u32) -> CodeModeSearchHit {
         safety: entry.safety,
     }
 }
-fn compare_candidate(
-    a: Candidate,
-    b: Candidate,
-    entries: &[CatalogDescriptor],
-) -> std::cmp::Ordering {
-    b.score.cmp(&a.score).then_with(|| {
-        entries[a.index]
-            .discovery_path()
-            .cmp(&entries[b.index].discovery_path())
-    })
-}
-
 /// Backward-compatible tool-only search wrapper. Existing callers keep the
 /// pre-catalog behavior while new callers use the source-neutral APIs above.
 pub fn search_visible_tools(
@@ -325,12 +327,13 @@ pub fn describe_visible_tool(
     scope: &ToolScope,
     target: &str,
 ) -> Result<CodeModeDescribeResponse, ToolError> {
-    let tools = entries
-        .iter()
-        .filter(|entry| entry.kind == CodeModeCatalogKind::Tool)
-        .cloned()
-        .collect::<Vec<_>>();
-    describe_visible_catalog(&tools, scope, target)
+    describe_entries(
+        entries
+            .iter()
+            .filter(|entry| entry.kind == CodeModeCatalogKind::Tool),
+        scope,
+        target,
+    )
 }
 fn normalize(value: &str) -> String {
     value

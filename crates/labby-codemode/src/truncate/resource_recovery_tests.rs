@@ -88,13 +88,9 @@ fn recovery_markers_fit_small_byte_and_token_envelopes() {
                 CodeModeResultShapePolicy::Off,
                 CodeModeResultShapePolicy::Truncate,
             ] {
-                let shaped = shape_final_result(
-                    Some(serde_json::json!("\"🦀".repeat(30000))),
-                    policy,
-                    budget,
-                    tokens,
-                    4,
-                );
+                let raw = serde_json::json!("\"🦀".repeat(30000));
+                let raw_size = serde_json::to_vec(&raw).unwrap().len();
+                let shaped = shape_final_result(Some(raw), policy, budget, tokens, 4, true);
                 let response = CodeModeExecutionResponse {
                     execution_id: None,
                     result: shaped.result,
@@ -111,6 +107,7 @@ fn recovery_markers_fit_small_byte_and_token_envelopes() {
                 );
                 let result = truncated.result.unwrap();
                 assert_eq!(result["truncated"], true);
+                assert_eq!(result["original_size"], raw_size);
                 assert!(
                     result["next_action"]
                         .as_str()

@@ -4,14 +4,14 @@ use super::*;
 use std::collections::HashMap;
 use std::ops::Deref;
 
-pub(super) const MAX_HOST_TRACE_ROWS: usize = 4096;
+pub(crate) const MAX_HOST_TRACE_ROWS: usize = 4096;
 pub(super) const MAX_HOST_TRACE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Default)]
 pub(super) struct HostTrace {
     calls: Vec<(u64, CodeModeExecutedCall)>,
     bytes: usize,
-    reservations: HashMap<u64, usize>,
+    reservations: HashMap<u64, (usize, CodeModeExecutedCall)>,
     reserved_bytes: usize,
 }
 
@@ -45,17 +45,29 @@ impl HostTrace {
             start_ms: None,
             params: None,
             params_digest: None,
-            error_kind: None,
+            error_kind: Some("outcome_unknown".into()),
             ui: None,
         };
         let bytes = encoded_bytes(&minimum, self.remaining_bytes())?;
-        self.reservations.insert(seq, bytes);
+        self.reservations.insert(seq, (bytes, minimum));
         self.reserved_bytes += bytes;
         Ok(())
     }
 
+    /// The script settled while these calls were outstanding. Their effects
+    /// may already have occurred, so retain each reserved row as unresolved.
+    pub(super) fn finish_outstanding(&mut self) {
+        self.calls
+            .extend(self.reservations.drain().map(|(seq, (_, row))| (seq, row)));
+        self.bytes += self.reserved_bytes;
+        self.reserved_bytes = 0;
+    }
+
     pub(super) fn try_push(&mut self, call: (u64, CodeModeExecutedCall)) -> Result<(), ToolError> {
-        let reserved = self.reservations.remove(&call.0).unwrap_or(0);
+        let reserved = self
+            .reservations
+            .remove(&call.0)
+            .map_or(0, |(bytes, _)| bytes);
         self.reserved_bytes -= reserved;
         if self.calls.len() + self.reservations.len() >= MAX_HOST_TRACE_ROWS {
             return Err(trace_budget_error());

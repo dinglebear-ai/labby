@@ -18,6 +18,8 @@ fn automatic_result_marker_points_to_complete_saved_json() {
     for compact in [false, true] {
         let marker = truncation_marker(&value, 4, std::slice::from_ref(&receipt), 512, compact);
         assert_eq!(marker["preserved_result_artifact_id"], "saved-id");
+        assert!(marker["artifacts"][0].get("absolute_path").is_none());
+        assert!(!marker.to_string().contains("hidden"));
         assert!(
             marker["next_action"]
                 .as_str()

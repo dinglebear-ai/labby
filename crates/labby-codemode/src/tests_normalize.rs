@@ -97,6 +97,36 @@ fn normalize_user_code_returns_trailing_expression() {
 }
 
 #[test]
+fn normalize_user_code_executes_loose_code_with_nested_semicolons() {
+    for (code, expected) in [
+        ("const x = 'prefix'; x + ';suffix'", "prefix;suffix"),
+        (
+            "(await Promise.resolve([1,2])).map(i => i + 1).join(',')",
+            "2,3",
+        ),
+        (
+            "globalThis.answer = ''; for(let i = 0; i < 2; i++) { answer += i; }",
+            "01",
+        ),
+    ] {
+        let runtime = javy::Runtime::new(javy::Config::default()).unwrap();
+        let entry = super::normalize_user_code(code);
+        let script =
+            format!("({entry})().then(value => globalThis.result = value ?? globalThis.answer)");
+        runtime
+            .context()
+            .with(|cx| cx.eval::<(), _>(script))
+            .unwrap();
+        runtime.resolve_pending_jobs().unwrap();
+        let result: String = runtime
+            .context()
+            .with(|cx| cx.globals().get("result"))
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+}
+
+#[test]
 fn normalize_user_code_handles_cloudflare_ast_cases() {
     let assigned_arrow = super::normalize_user_code("const f = () => 1; f()");
     assert!(
@@ -443,6 +473,7 @@ fn normalize_user_code_strips_trailing_line_comment_after_semicolon() {
 fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
     let is_admin = scopes.contains(&"lab:admin");
     super::CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: super::CodeModeCallerCapabilities {
             can_read: scopes
                 .iter()
@@ -460,16 +491,26 @@ fn scoped(scopes: &[&str]) -> super::CodeModeCaller {
 #[test]
 fn code_mode_caller_debug_redacts_private_credentials() {
     let capabilities = super::CodeModeCallerCapabilities::default();
-    let private = super::CodeModeCaller::ScopedPrivate {
+    let private = super::CodeModeCaller::Scoped {
+        host_context: crate::CodeModeHostContext {
+            upstream_private_token: Some("private-secret".to_string()),
+            ..Default::default()
+        },
+
         capabilities,
         sub: Some("actor".to_string()),
-        context_token: "private-secret".to_string(),
     };
-    let provider = super::CodeModeCaller::ScopedHostProvider {
+    let provider = super::CodeModeCaller::Scoped {
+        host_context: crate::CodeModeHostContext {
+            provider: Some(crate::CodeModeProviderContext {
+                token: "provider-secret".to_string(),
+                request_id: "request-1".to_string(),
+            }),
+            ..Default::default()
+        },
+
         capabilities,
         sub: Some("actor".to_string()),
-        provider_token: "provider-secret".to_string(),
-        provider_request_id: "request-1".to_string(),
     };
 
     let private_debug = format!("{private:?}");
@@ -519,6 +560,7 @@ fn destructive_denied_for_read_scope() {
 #[test]
 fn scoped_caller_can_execute_with_lab_scope() {
     let caller = super::CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: super::CodeModeCallerCapabilities {
             can_execute: true,
             ..super::CodeModeCallerCapabilities::default()
@@ -531,6 +573,7 @@ fn scoped_caller_can_execute_with_lab_scope() {
 #[test]
 fn scoped_caller_read_only_cannot_execute() {
     let caller = super::CodeModeCaller::Scoped {
+        host_context: Default::default(),
         capabilities: super::CodeModeCallerCapabilities::default(),
         sub: None,
     };

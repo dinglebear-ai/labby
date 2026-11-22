@@ -4,10 +4,41 @@ use std::future::Future;
 use std::path::Path;
 
 use tokio::io::AsyncWriteExt;
+use tokio::sync::Mutex;
+
+use super::budget::accounting_error;
 
 use crate::error::ToolError;
 
-pub(super) async fn publish(destination: &Path, bytes: &[u8]) -> Result<(), ToolError> {
+// Shared with retention so it cannot remove files during quota admission or
+// publication. Holding this guard reserves the admitted bytes until commit.
+static STORE_LOCKS: [Mutex<()>; 64] = [const { Mutex::const_new(()) }; 64];
+
+pub(super) async fn lock_store(
+    store: &Path,
+) -> Result<tokio::sync::MutexGuard<'static, ()>, ToolError> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    // Resolve aliases even before the first run has created the store directory.
+    let mut ancestor = store;
+    let key = loop {
+        match tokio::fs::canonicalize(ancestor).await {
+            Ok(base) => break base.join(store.strip_prefix(ancestor).expect("store ancestor")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                ancestor = ancestor.parent().ok_or_else(|| accounting_error(error))?;
+            }
+            Err(error) => return Err(accounting_error(error)),
+        }
+    };
+    let mut hash = DefaultHasher::new();
+    key.hash(&mut hash);
+    Ok(
+        STORE_LOCKS[(hash.finish() % STORE_LOCKS.len() as u64) as usize]
+            .lock()
+            .await,
+    )
+}
+
+pub(crate) async fn publish(destination: &Path, bytes: &[u8]) -> Result<(), ToolError> {
     publish_with(destination, |mut file| async move {
         file.write_all(bytes).await?;
         file.flush().await?;

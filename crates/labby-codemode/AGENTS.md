@@ -15,10 +15,10 @@ remain excluded. The host resolves the OAuth credential after the sandbox
 boundary; the kernel never interprets or persists it.
 
 `openapi` is the third local provider and the FIRST that does outbound HTTP.
-Unlike `state`/`git` (which touch the local workspace and share
-`LOCAL_PROVIDER_LOCK`), `openapi` dispatches through the isolated `labby-openapi`
+Unlike `state`/`git` (which serialize access to each workspace through
+`WORKSPACE_LOCKS`), `openapi` dispatches through the isolated `labby-openapi`
 crate's OWN hardened `reqwest` client (redirects off, `https_only`, peer-IP
-re-validated), does **not** share `LOCAL_PROVIDER_LOCK` (it has no shared mutable
+re-validated), does **not** share `WORKSPACE_LOCKS` (it has no shared mutable
 local state), and is wired via the registry/client host accessors plus the
 caller-credential resolver (`openapi_registry()`, `openapi_http_client()`, and
 `resolve_openapi_credential()`). Naming this cost explicitly:
@@ -31,13 +31,13 @@ lives in `labby-openapi`.
 `sandbox` is the optional disposable-workload provider. Its `microsandbox-sdk`
 feature and operator-owned `LABBY_CODE_MODE_SANDBOX_PROFILE_JSON` are separate
 from the Linux Microsandbox runner transport below. Workloads use their own
-admission/cleanup lifecycle outside `LOCAL_PROVIDER_LOCK`; they cannot acquire
+admission/cleanup lifecycle outside `WORKSPACE_LOCKS`; they cannot acquire
 caller-selected mounts, networking, or credentials. Without the feature,
 dispatch reports `not_available`. Tests using validation or fake transports do
 not establish that a real microVM works; see [crate reference](README.md).
 
 `codemode.search`/`codemode.describe` intentionally do **not** use the
-`local_provider.rs`/`LOCAL_PROVIDER_LOCK` admin-only gate. `search()`'s matching
+`local_provider.rs`/`WORKSPACE_LOCKS` admin-only gate. `search()`'s matching
 stays a pure in-sandbox JS closure over a catalog that is already
 filtered per-entry through `discovery_entry_visible()` (tool entries use
 `scope.allows()`, metadata authorization belongs to its source) before discovery/proxy JS is
@@ -213,7 +213,7 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 { "type": "snippet_resolved", "seq": <u64>, "code": "<js>", "input": <json> }
 
 // Reply to a tool_call/snippet_resolve with a structured error
-{ "type": "tool_error", "seq": <u64>, "kind": "<error kind>", "message": "<string>" }
+{ "type": "tool_error", "seq": <u64>, "contract_version": 1, "kind": "<error kind>", "message": "<string>", "origin": <origin>, "recovery": <advice>, "side_effects": <risk> }
 
 // Reply to a step_begin: execute fn; replay values are reserved for a future host.
 // replay=null (or absent) ⇒ execute; replay=<json> ⇒ return that value without running fn.
@@ -226,8 +226,8 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 **Runner → parent (`CodeModeRunnerOutput`):**
 
 ```jsonc
-// Runner wants to call an upstream tool
-{ "type": "tool_call", "seq": <u64>, "id": "<upstream::name>", "params": <json> }
+// full_result is optional and defaults to false. Set it to receive the full MCP result.
+{ "type": "tool_call", "seq": <u64>, "id": "<upstream::name>", "params": <json>, "full_result": true }
 
 // Runner wants to write an artifact
 { "type": "artifact_write", "seq": <u64>, "path": "<rel path>", "content": "<string>", "content_type": "<media type>" }
@@ -247,7 +247,7 @@ a `"kind"` field. `protocol.rs` is the source of truth; the shapes below mirror
 { "type": "done", "result": { "state": "json"|"undefined", "value": <json> }, "logs": ["..."], "reuse_ready": <bool> }
 
 // Execution error (JS exception or internal runner error)
-{ "type": "error", "kind": "<error kind>", "message": "<string>" }
+{ "type": "error", "contract_version": 1, "kind": "<error kind>", "message": "<string>", "origin": <origin>, "recovery": <advice>, "side_effects": <risk> }
 ```
 
 The child loops after `done`/`error`, but the parent reuses only native-qualified
@@ -317,7 +317,7 @@ env_clear lands" comment — that state is in the past.
 | `types.rs` | Shared Code Mode types: tool descriptors, callers, scopes, execution responses, traces, and UI links. |
 | `ts_signatures.rs` | **Live** TypeScript signature / `.d.ts` generator called by `types.rs::CatalogDescriptor::tool_with_safety`. NOT legacy shims. |
 | `sandbox.rs`, `sandbox/sdk.rs`, `sandbox/recovery.rs` | Reserved disposable workloads, optional SDK execution, and owned-guest cleanup/recovery. Separate from the runner transport. |
-| `util.rs` | Small utilities: JS source wrapping, ID generation. |
+| `util.rs` | Error constructors, catalog sizing, and environment and filesystem helpers. |
 | `artifacts.rs` | Artifact write handler: path containment check, size cap, atomic write. |
 | `snippet.rs`, `snippet/store.rs` | Snippet resolution types and filesystem-backed snippet store. |
 | `wrapper.rs` | Wraps caller snippets in the async IIFE harness expected by the runner. |

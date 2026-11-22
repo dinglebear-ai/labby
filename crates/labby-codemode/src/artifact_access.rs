@@ -6,7 +6,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 use ulid::Ulid;
 
 use crate::artifacts::CodeModeArtifactReceipt;
@@ -16,6 +16,7 @@ use labby_runtime::path_safety::reject_existing_symlink_ancestors;
 
 #[path = "artifact_access_cache.rs"]
 mod cache;
+pub(crate) use cache::FileIdentity;
 
 pub(crate) const METADATA_DIR: &str = ".labby-artifact-metadata";
 
@@ -62,6 +63,18 @@ pub(crate) fn owner(caller: &CodeModeCaller, scope: &ToolScope) -> Result<String
     Ok(hex::encode(Sha256::digest(identity.as_bytes())))
 }
 
+/// Keep restricted writes separate from retrievable runs of the same subject.
+/// An anonymous execution can reclaim only files from that execution.
+pub(crate) fn retention_owner(caller: &CodeModeCaller, scope: &ToolScope, root: &Path) -> String {
+    owner(caller, scope).unwrap_or_else(|_| {
+        let identity = caller.subject().filter(|s| !s.is_empty()).map_or_else(
+            || format!("anonymous:{}", root.display()),
+            |s| format!("restricted:{s}"),
+        );
+        hex::encode(Sha256::digest(identity.as_bytes()))
+    })
+}
+
 pub(crate) async fn enroll(
     root: &Path,
     receipt: &mut CodeModeArtifactReceipt,
@@ -88,14 +101,9 @@ pub(crate) async fn enroll(
         receipt: receipt.clone(),
     };
     let bytes = serde_json::to_vec(&record).map_err(|_| unavailable())?;
-    let mut file = tokio::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(metadata.join(format!("{id}.json")))
+    crate::artifacts::publication::publish(&metadata.join(format!("{id}.json")), &bytes)
         .await
         .map_err(|_| unavailable())?;
-    file.write_all(&bytes).await.map_err(|_| unavailable())?;
-    file.flush().await.map_err(|_| unavailable())?;
     if let Some(store) = root.parent() {
         cache::invalidate_listing(store);
     }
@@ -207,15 +215,21 @@ async fn dispatch_at(
     labby_runtime::path_safety::reject_path_traversal(&record.receipt.path)?;
     let file = root.join(&record.receipt.path);
     reject_existing_symlink_ancestors(store, &file)?;
-    let max = crate::artifacts::artifact_max_bytes();
+    let max = record.receipt.bytes;
+    if max > crate::artifacts::MAX_DOWNLOAD_BYTES {
+        return Err(ToolError::Sdk {
+            sdk_kind: "response_too_large".into(),
+            message: "Artifact exceeds the download limit".into(),
+        });
+    }
     let mut opened = tokio::fs::File::open(&file)
         .await
         .map_err(|_| unavailable())?;
     let before = opened.metadata().await.map_err(|_| unavailable())?;
-    if record.receipt.bytes > max || before.len() != record.receipt.bytes as u64 {
+    if before.len() != record.receipt.bytes as u64 {
         return Err(unavailable());
     }
-    let identity = cache::FileIdentity::from_metadata(&before);
+    let identity = FileIdentity::from_metadata(&before);
     let cached = identity
         .as_ref()
         .and_then(|identity| cache::content(&file, &record.receipt.sha256, identity));
@@ -236,7 +250,7 @@ async fn dispatch_at(
             return Err(unavailable());
         }
         let after = opened.metadata().await.map_err(|_| unavailable())?;
-        if identity != cache::FileIdentity::from_metadata(&after) || before.len() != after.len() {
+        if identity != FileIdentity::from_metadata(&after) || before.len() != after.len() {
             return Err(unavailable());
         }
         let content: Arc<str> = String::from_utf8(bytes).map_err(|_| unavailable())?.into();
@@ -256,7 +270,7 @@ async fn dispatch_at(
     let current = tokio::fs::metadata(&file)
         .await
         .map_err(|_| unavailable())?;
-    if current.len() != before.len() || identity != cache::FileIdentity::from_metadata(&current) {
+    if current.len() != before.len() || identity != FileIdentity::from_metadata(&current) {
         return Err(unavailable());
     }
     let offset = params.get("offset").and_then(Value::as_u64).unwrap_or(0) as usize;
@@ -288,61 +302,77 @@ async fn dispatch_at(
 }
 
 async fn scan_listing(store: &Path) -> Result<cache::Listing, ToolError> {
-    let mut ids = Vec::new();
-    let mut incomplete = false;
-    let mut dirs = match tokio::fs::read_dir(store).await {
-        Ok(dirs) => dirs,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(cache::Listing {
-                owners: Default::default(),
-                incomplete: false,
-            });
-        }
-        Err(_) => return Err(unavailable()),
-    };
-    let mut scanned = 0;
-    while let Some(dir) = dirs.next_entry().await.map_err(|_| unavailable())? {
-        scanned += 1;
-        if scanned > 1000 {
-            incomplete = true;
-            break;
-        }
-        let Some(run) = dir.file_name().to_str().map(str::to_owned) else {
-            continue;
-        };
-        if Ulid::from_string(&run).is_err() {
-            continue;
-        }
-        let path = dir.path().join(METADATA_DIR);
-        if reject_existing_symlink_ancestors(store, &path).is_err() {
-            continue;
-        }
-        let Ok(mut entries) = tokio::fs::read_dir(path).await else {
-            continue;
-        };
-        while let Some(entry) = entries.next_entry().await.map_err(|_| unavailable())? {
-            if ids.len() >= 1000 {
-                incomplete = true;
-                break;
+    let root = store.to_owned();
+    let (mut owners, legacy, incomplete) = tokio::task::spawn_blocking(move || {
+        let mut runs = std::collections::BTreeSet::new();
+        let mut owners = std::collections::BTreeMap::<String, Vec<String>>::new();
+        let mut legacy = Vec::new();
+        let mut incomplete = false;
+        let dirs = match std::fs::read_dir(&root) {
+            Ok(dirs) => dirs,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok((owners, legacy, false));
             }
-            if let Some(id) = entry
+            Err(_) => return Err(unavailable()),
+        };
+        for dir in dirs {
+            let dir = dir.map_err(|_| unavailable())?;
+            if let Some(run) = dir
                 .file_name()
                 .to_str()
-                .and_then(|s| s.strip_suffix(".json"))
+                .and_then(|s| Ulid::from_string(s).ok())
             {
-                ids.push(format!("{run}:{id}"));
+                runs.insert(run);
+                if runs.len() > 1000 {
+                    runs.pop_first();
+                    incomplete = true;
+                }
             }
         }
-        if incomplete {
-            break;
+        let mut remaining = 1000usize;
+        for run in runs.into_iter().rev() {
+            let path = root.join(run.to_string()).join(METADATA_DIR);
+            if reject_existing_symlink_ancestors(&root, &path).is_err() {
+                continue;
+            }
+            let Ok(entries) = std::fs::read_dir(path) else {
+                continue;
+            };
+            let mut ids = Vec::new();
+            let mut owner_marker = None;
+            for entry in entries {
+                let entry = entry.map_err(|_| unavailable())?;
+                let name = entry.file_name();
+                let Some(name) = name.to_str() else { continue };
+                if let Some(artifact) = name.strip_suffix(".json") {
+                    if remaining == 0 {
+                        incomplete = true;
+                        break;
+                    }
+                    remaining -= 1;
+                    ids.push(format!("{run}:{artifact}"));
+                } else if name.len() == 64 && name.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    owner_marker = Some(name.to_owned());
+                }
+            }
+            if let Some(owner) = owner_marker {
+                // The marker accelerates discovery only. list() verifies each returned receipt.
+                owners.entry(owner).or_default().extend(ids);
+            } else {
+                legacy.extend(ids);
+            }
         }
-    }
-    ids.sort();
-    let mut owners = std::collections::BTreeMap::<String, Vec<String>>::new();
-    for id in ids {
+        Ok((owners, legacy, incomplete))
+    })
+    .await
+    .map_err(|_| unavailable())??;
+    for id in legacy {
         if let Ok((_, record)) = read_record(store, &id).await {
             owners.entry(record.owner).or_default().push(id);
         }
+    }
+    for ids in owners.values_mut() {
+        ids.sort_unstable();
     }
     Ok(cache::Listing { owners, incomplete })
 }
@@ -354,13 +384,8 @@ async fn list(store: &Path, owner: &str, params: &Value) -> Result<Value, ToolEr
         .unwrap_or(25)
         .clamp(1, 100) as usize;
     let cursor = params.get("cursor").and_then(Value::as_str).unwrap_or("");
-    let listing = match cache::listing(store) {
-        Some(listing) => listing,
-        None => {
-            let generation = cache::listing_generation();
-            cache::remember_listing(store, scan_listing(store).await?, generation)
-        }
-    };
+    let cell = cache::listing(store);
+    let listing = cell.get_or_try_init(|| scan_listing(store)).await?;
     let ids = listing
         .owners
         .get(owner)

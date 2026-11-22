@@ -3,38 +3,12 @@
 //! snippet dir, size caps). These are pure stdlib so the crate stays free of a
 //! dependency on the host binary's helper module.
 
-use std::path::PathBuf;
+pub(crate) use labby_runtime::{env_non_empty, lab_home};
 
 use crate::error::ToolError;
 use crate::lab_action_unknown_tool_hint;
 
 use super::types::CatalogDescriptor;
-
-/// Resolve the Lab home directory (`$LABBY_HOME`, else `$HOME/.labby`, else a fixed
-/// temp-dir fallback). Self-contained copy of the host helper so the kernel can
-/// locate its artifact root and user snippet dir without depending on `lab`.
-///
-/// Fail-closed: never anchors artifact/snippet storage to the process CWD
-/// (CWE-426/377).
-#[must_use]
-pub(crate) fn lab_home() -> PathBuf {
-    if let Ok(home) = std::env::var("LABBY_HOME")
-        && !home.is_empty()
-    {
-        return PathBuf::from(home);
-    }
-    match std::env::var("HOME") {
-        Ok(home) if !home.is_empty() => PathBuf::from(home).join(".labby"),
-        _ => {
-            let fallback = std::env::temp_dir().join("labby");
-            tracing::warn!(
-                fallback = %fallback.display(),
-                "neither LABBY_HOME nor HOME is set; using a temp-dir fallback for lab home"
-            );
-            fallback
-        }
-    }
-}
 
 /// Replace the user's home-directory prefix with literal `~` so paths embedded
 /// in logs/responses don't leak the OS username. Self-contained copy of the
@@ -44,25 +18,14 @@ pub(crate) fn redact_home(path: &str) -> String {
     let Some(home) = std::env::var_os("HOME") else {
         return path.to_string();
     };
-    let home = home.to_string_lossy();
-    let home = home.trim_end_matches('/');
     if home.is_empty() {
         return path.to_string();
     }
-    if let Some(rest) = path.strip_prefix(home) {
-        let rest = rest.trim_start_matches('/');
-        if rest.is_empty() {
-            return "~".to_string();
-        }
-        return format!("~/{rest}");
+    match std::path::Path::new(path).strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_string(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => path.to_string(),
     }
-    path.to_string()
-}
-
-/// Read an environment variable, returning `None` if absent or empty.
-#[must_use]
-pub(crate) fn env_non_empty(name: &str) -> Option<String> {
-    std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
 pub(crate) fn invalid_code_mode_id(message: impl Into<String>) -> ToolError {

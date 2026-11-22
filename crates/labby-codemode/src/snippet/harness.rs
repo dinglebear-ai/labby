@@ -216,6 +216,7 @@ fn invalid(message: impl Into<String>) -> ToolError {
 impl SnippetFixture {
     /// Validate a fixture without executing JavaScript or contacting tools.
     pub fn validate(&self) -> Result<(), ToolError> {
+        let started = Instant::now();
         let size = serde_json::to_vec(self)
             .map_err(|e| invalid(e.to_string()))?
             .len();
@@ -241,6 +242,8 @@ impl SnippetFixture {
         if self.schemas.len() > 128 {
             return Err(invalid("fixture exceeds schema contract limit"));
         }
+        let deadline = started + std::time::Duration::from_millis(self.budgets.wall_clock_ms);
+        let mut structure_budget = crate::schema::SchemaValidationBudget::new(4096).until(deadline);
         for (tool, contract) in &self.schemas {
             if contract
                 .fingerprint
@@ -256,10 +259,10 @@ impl SnippetFixture {
                 .into_iter()
                 .flatten()
             {
-                super::schemas::check_schema(schema)?;
+                super::schemas::check_schema_with_budget(schema, &mut structure_budget)?;
             }
         }
-        let mut schema_budget = super::schemas::validation_budget();
+        let mut schema_budget = super::schemas::validation_budget().until(deadline);
         for rule in &self.calls {
             if rule.error.is_none()
                 && let Some(schema) = self
@@ -293,7 +296,8 @@ impl SnippetFixture {
                 || namespace.len() > 128
                 || tool.len() > 128
                 || namespace.starts_with("__")
-                || ["lab", "snippet", "state", "git", "openapi"].contains(&namespace)
+                || matches!(namespace, "lab" | "snippet")
+                || crate::local_provider::is_reserved_provider_namespace(namespace)
                 || rule
                     .tool
                     .chars()
@@ -420,6 +424,17 @@ pub async fn run_fixture_with_source_limit(
     fixture: &SnippetFixture,
     max_source_bytes: usize,
 ) -> Result<SnippetFixtureReport, ToolError> {
+    run_fixture_in_pool(snippet, input, fixture, max_source_bytes, None).await
+}
+
+/// Run with the application-owned pool while retaining offline dispatch semantics.
+pub async fn run_fixture_in_pool(
+    snippet: &ResolvedSnippet,
+    input: Value,
+    fixture: &SnippetFixture,
+    max_source_bytes: usize,
+    pool: Option<&crate::RunnerPool>,
+) -> Result<SnippetFixtureReport, ToolError> {
     let started = Instant::now();
     fixture.validate()?;
     if let Some(declared) = &snippet.tools {
@@ -464,7 +479,14 @@ pub async fn run_fixture_with_source_limit(
         trace_params: false,
         ..CodeModeConfig::default()
     };
-    let host = offline::OfflineHost::new(config.clone())?;
+    let owned_pool = pool
+        .is_none()
+        .then(crate::RunnerPool::from_env)
+        .transpose()?;
+    let pool = pool
+        .or(owned_pool.as_ref())
+        .expect("shared or standalone fixture pool");
+    let host = offline::OfflineHost::new(config.clone(), pool)?;
     let execution = CodeModeBroker::new(Some(&host))
         .execute_fixture_with_raw_response(
             &wrapped,
@@ -474,7 +496,9 @@ pub async fn run_fixture_with_source_limit(
             ToolScope::scoped_namespaces(Vec::new(), Vec::new()).read_only(),
         )
         .await;
-    host.shutdown().await;
+    if let Some(pool) = &owned_pool {
+        pool.shutdown().await;
+    }
     let response = execution
         .map_err(crate::CodeModeExecutionError::into_contract_tool_error)?
         .raw_response;

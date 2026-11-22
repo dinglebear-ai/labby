@@ -80,6 +80,10 @@ async fn configured_live_source_limit_is_applied_before_fixture_wrapping() {
 
 #[test]
 fn rejects_bad_rules_and_budgets() {
+    for namespace in crate::LOCAL_PROVIDER_NAMESPACES {
+        let rule = json!({"calls":[{"tool":format!("{namespace}::test"),"result":true}]});
+        assert!(fixture(rule).validate().is_err());
+    }
     for value in [
         json!({"calls": [{"tool": "not-qualified"}]}),
         json!({"calls": [{"tool": "state::readFile"}]}),

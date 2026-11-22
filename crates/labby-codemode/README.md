@@ -98,7 +98,10 @@ Unix validation rejects group/world-writable files and owners other than the
 current user or root. A separate executable can instead be supplied through
 `RunnerSpawn { program, args }` and `RunnerPool::with_spawn`; that explicit seam
 uses the direct-process transport. The selected program must implement the same
-protocol. Shut down the host-owned pool with `RunnerPool::shutdown().await`.
+protocol. A new runner first receives `{"type":"protocol_version"}` and must reply
+with `{"type":"protocol_version","version":1}` before receiving user source,
+including when an operator selects a separate executable. Missing, malformed or
+incompatible replies produce `runner_version_mismatch`. Shut down the host-owned pool with `RunnerPool::shutdown().await`.
 
 ## Runner lifecycle and broker protocol
 
@@ -114,7 +117,10 @@ process that exits before any valid protocol activity gets one attempt on a
 fresh runner; activity followed by a crash does not trigger automatic replay.
 
 Pool defaults are two slots, recycle after 100 executions, and eight overflow
-runners. `LABBY_CODE_MODE_POOL_SIZE` (maximum 16),
+runners. Terminal eviction and recycling return the response while the existing
+lease retires the process and refills its slot. A checkout waiting for refill
+uses its own admission deadline. Shutdown drains these leases.
+`LABBY_CODE_MODE_POOL_SIZE` (maximum 16),
 `LABBY_CODE_MODE_POOL_RECYCLE_AFTER`, and
 `LABBY_CODE_MODE_POOL_MAX_OVERFLOW` (effective range 1–64) control them. Size zero disables
 pooling while preserving bounded ephemeral execution. A broker without a host
@@ -235,14 +241,16 @@ product enables this crate feature through `codemode-microsandbox` in its
 | --- | --- |
 | Source / JS heap / native stack | 1 MiB source ceiling; 64 MiB heap and 256 KiB stack per fresh runtime. |
 | Wall time | `CodeModeConfig.timeout_ms` defaults to 30 seconds; validated range is 1–300,000 ms. Response/settlement reserves share that deadline. |
-| Calls / one tool result | 512 ordinary calls, configurable up to 2,048; excess calls reject as `call_budget_exceeded`. One tool result defaults to 8 MiB before truncation. |
+| Calls / one tool result | 512 ordinary calls, configurable up to 2,048; excess calls reject as `call_budget_exceeded`. A tool result over the default 8 MiB limit is rejected with `result_too_large` after the upstream call returns. |
 | `callTool` params | 8 MiB serialized per call (checked by the bridge and again by the host) and 64 MiB held by queued or in-flight calls per run; both reject as `budget_exceeded` without echoing the payload. |
 | Internal bridges / snippet resolution | 32 internal requests; 32 snippet resolutions and 1 MiB total resolved source per run, plus recursion/depth checks. |
+| Generated catalog preamble | 16 MiB (one quarter of the runner heap), separate from the caller’s source allowance. An oversized catalog returns `budget_exceeded` before starting the runner. |
+| Runner reply transport | A dedicated writer drains up to 4,128 queued replies in order. Queued and in-flight reply bytes share a 64 MiB limit. Saturation fails the run with `budget_exceeded` and evicts the runner. |
 | Step records | 256 steps, step names of at most 1,024 UTF-8 bytes, 256 KiB per serialized value, and 8 MiB of values per run. |
 | Response / logs | 24 KiB and approximately 6,000 response tokens; 1,000 log entries and 64 KiB logs. |
 | Artifact content / retention | 8 MiB per artifact; retention targets 200 run directories and 4,096 MiB total store. Pruning is best-effort and excludes active runs. |
 
-The host installs process-level fallbacks with
+Each gateway reload refreshes the process-level fallbacks with
 `install_call_budget_config_defaults` and `install_artifact_config_defaults`;
 environment overrides take precedence. `effective_storage_limits()` reports
 resolved values. See [configuration](../../docs/runtime/CONFIG.md) for settings.
@@ -253,6 +261,8 @@ Javy/QuickJS linked into the binary, cleared environment, an isolated cwd,
 kill-on-drop, Unix process groups, and Windows Job Object containment. QuickJS
 has no ambient fetch, Node modules, or direct host filesystem API. Linux also attempts
 to disable process dumps. Tool authority and credentials stay in the parent.
+
+On Linux, the default process runner re-executes `/proc/self/exe` to retain the running host binary across pathname replacements. An explicit runner override and the Microsandbox mount use validated filesystem paths. Other platforms resolve the current executable by path.
 
 The separate Linux-only runner transport is enabled with
 `LABBY_CODE_MODE_RUNNER_BACKEND=microsandbox`. It requires validated absolute

@@ -97,64 +97,12 @@ fn native_host_budget_kinds_keep_their_contract_through_dispatch_conversion() {
     }
 }
 
-fn string_list<'a>(schema: &'a Value, pointer: &str) -> Vec<&'a str> {
-    schema
-        .pointer(pointer)
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("schema array at `{pointer}`"))
-        .iter()
-        .map(|value| value.as_str().expect("schema list entries are strings"))
-        .collect()
-}
-
 fn assert_conforms(error: &CodeModeCallError, schema: &Value, label: &str) {
     let value = serde_json::to_value(error).expect("serializable");
-    let object = value.as_object().expect("call error is an object");
-
-    for field in string_list(schema, "/required") {
-        assert!(
-            object.contains_key(field),
-            "{label}: missing required field `{field}`"
-        );
+    let validator = jsonschema::validator_for(schema).expect("valid published error schema");
+    if let Err(error) = validator.validate(&value) {
+        panic!("{label}: {error}");
     }
-    for field in string_list(schema, "/$defs/recovery/required") {
-        assert!(
-            value["recovery"].get(field).is_some(),
-            "{label}: missing required recovery field `{field}`"
-        );
-    }
-
-    let origin = value["origin"].as_str().expect("origin is a string");
-    assert!(
-        string_list(schema, "/properties/origin/enum").contains(&origin),
-        "{label}: origin `{origin}` not in schema enum"
-    );
-    let side_effects = value["side_effects"]
-        .as_str()
-        .expect("side_effects is a string");
-    assert!(
-        string_list(schema, "/properties/side_effects/enum").contains(&side_effects),
-        "{label}: side_effects `{side_effects}` not in schema enum"
-    );
-    let action = value["recovery"]["action"]
-        .as_str()
-        .expect("recovery.action is a string");
-    assert!(
-        string_list(schema, "/$defs/recovery/properties/action/enum").contains(&action),
-        "{label}: recovery.action `{action}` not in schema enum"
-    );
-    let same_arguments = value["recovery"]["same_arguments"]
-        .as_str()
-        .expect("recovery.same_arguments is a string");
-    assert!(
-        string_list(schema, "/$defs/recovery/properties/same_arguments/enum")
-            .contains(&same_arguments),
-        "{label}: recovery.same_arguments `{same_arguments}` not in schema enum"
-    );
-    assert_eq!(
-        value["contract_version"], schema["properties"]["contract_version"]["const"],
-        "{label}: contract_version drifted from the published const"
-    );
 }
 
 #[test]
@@ -186,4 +134,29 @@ fn constructor_variants_satisfy_published_schema() {
 
     let transport = CodeModeCallError::upstream_transport("alpha::demo", "connection reset");
     assert_conforms(&transport, &schema, "upstream_transport");
+}
+
+#[test]
+fn reloading_host_defaults_replaces_and_clears_budget_values() {
+    use labby_codemode::{
+        effective_storage_limits, install_artifact_config_defaults,
+        install_call_budget_config_defaults,
+    };
+    for value in [3, 7] {
+        install_call_budget_config_defaults(Some(value), Some(value as usize));
+        install_artifact_config_defaults(Some(value as usize), Some(value as usize), Some(value));
+        assert_eq!(
+            effective_storage_limits(),
+            serde_json::json!({
+                "max_calls_per_run": value,
+                "calltool_result_max_bytes": value * 1024 * 1024,
+                "artifact_retention_runs": value,
+                "artifact_max_bytes": value * 1024 * 1024,
+                "artifact_max_store_bytes": value * 1024 * 1024,
+            })
+        );
+    }
+    install_call_budget_config_defaults(None, None);
+    install_artifact_config_defaults(None, None, None);
+    assert_eq!(effective_storage_limits()["max_calls_per_run"], 512);
 }
