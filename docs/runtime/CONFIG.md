@@ -480,6 +480,10 @@ request path and `Host` authority; a custom `Authorization` header is rejected s
 credentials stay in `bearer_token_env` or `[upstream.oauth]`. For separate HTTP
 service credentials, `[upstream.headers_env]` maps header names to environment
 variable names; see [environment-backed headers](../services/UPSTREAM.md#environment-backed-http-headers).
+Stdio secrets such as API keys use `[upstream.secret_env]`, which maps child
+variable names to credential-file keys. `labby server add|set --env NAME` reads
+each value from standard input and stores it in `$LABBY_HOME/.env`; see
+[secret stdio environment values](../services/UPSTREAM.md#secret-stdio-environment-values).
 
 Use `labby server add`, `labby server set`, `labby server remove`, and
 `labby gateway reload` rather than editing active gateway state concurrently

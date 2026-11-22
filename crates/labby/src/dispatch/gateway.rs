@@ -9,6 +9,7 @@
 
 pub use labby_gateway::gateway::*;
 
+pub(crate) mod adapter_registration;
 pub mod config_store;
 
 /// Team-scoped gateway policy actions (`gateway.loadout.*`,

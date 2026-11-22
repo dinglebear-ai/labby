@@ -213,7 +213,13 @@ export type GatewayProtectedRouteChange =
   | { operation: 'upsert'; name?: string; route: ProtectedMcpRouteInput }
   | { operation: 'remove'; name: string }
 
+export type GatewayRegistrationAdapter =
+  | { kind: 'cli'; manifest_path: string }
+  | { kind: 'openapi'; spec_path: string; base_url: string; allowed_operations: string[]; allow_write?: boolean }
+
 export interface CreateGatewayInput {
+  /** Add-only convenience input; the backend resolves a standard MCP upstream. */
+  adapter?: GatewayRegistrationAdapter
   name: string
   /** Optional free-form label; `name` stays the stable identifier. */
   display_name?: string | null

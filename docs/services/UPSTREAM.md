@@ -188,6 +188,7 @@ command changes.
 | `command` | string | stdio | Command to run for stdio transport. |
 | `args` | string[] | no | Arguments to pass to a stdio command. |
 | `env` | table | no | Environment variables injected into a stdio child process. |
+| `secret_env` | table | no | Stdio only. Child environment variable names mapped to the credential-file variable that holds each value. Values are write-only; see [secret stdio environment values](#secret-stdio-environment-values). |
 | `bearer_token_env` | string | no | Required credential reference when configured: bearer auth for HTTP/WebSocket/Unix socket, or injection into a stdio child. Not the token itself. |
 | `proxy_resources` | bool | no | Whether to proxy resources from this upstream. Default: `true`. Also gates direct `lab://upstream/<name>/...` reads; a tools-only upstream's resources read as unknown. |
 | `proxy_prompts` | bool | no | Whether to proxy prompts from this upstream. Default: `true`. |
@@ -998,3 +999,64 @@ labby server set account --clear-headers-env
 `labby server add` also accepts `--headers-env`. These commands carry only
 variable names; configure secret values through the selected installation's
 normal environment workflow.
+
+### Secret stdio environment values
+
+A stdio server that takes an API key or token in its environment uses
+`secret_env` instead of a plain `env` value. The upstream stores names only:
+
+```toml
+[[upstream]]
+name = "figma"
+command = "npx"
+args = ["-y", "figma-developer-mcp", "--stdio"]
+
+[upstream.secret_env]
+FIGMA_API_KEY = "LABBY_GW_FIGMA_ENV_FIGMA_API_KEY"
+```
+
+Set the values with `--env NAME`, which reads each value from standard input:
+
+```bash
+printf '%s\n' "$FIGMA_TOKEN" | labby server add figma --command npx --arg=-y --arg figma-developer-mcp --arg=--stdio --env FIGMA_API_KEY
+printf '%s\n%s\n' "$KEY_A" "$KEY_B" | labby server set figma --env FIGMA_API_KEY --env OTHER_TOKEN
+```
+
+- **Framing.** One value per line, in `--env` flag order. Lines end in LF or
+  CRLF, and the final newline is optional. The number of lines must equal the
+  number of flags. A value is taken verbatim apart from the line ending, so it
+  cannot contain a line break. Values never come from argv, and the command
+  refuses a terminal on standard input rather than echo a secret.
+- **Validation.** Names match `^[A-Z][A-Z0-9_]*$`. Labby refuses names the stdio
+  launcher forwards or sets (`PATH`, `HOME`, `TMPDIR`, TLS and locale variables,
+  and the rest of the parent allowlist), the sandbox grants
+  `UPSTREAM_STATE_DIR` and `UPSTREAM_READ_ONLY_PATHS`, loader and interpreter
+  injection names (`LD_*`, `DYLD_*`, `NODE_OPTIONS`, `PYTHONPATH`, and similar),
+  `LABBY_*`, and the upstream's own `bearer_token_env`. A `secret_env`
+  credential name must be `LABBY_GW_<UPSTREAM>_ENV_<NAME>`, so a configuration
+  cannot hand a child an unrelated installation secret. A value must be
+  non-empty and at most 16384 bytes; an upstream holds at most 32. Standard
+  input is capped at the sum of those limits. Invalid input fails before any
+  write, and errors name the variable, never the value.
+- **Storage.** The gateway writes each value to its credential file
+  (`$LABBY_HOME/.env`) through the same backed-up, transactional path as
+  `bearer_token_value`, under `LABBY_GW_<UPSTREAM>_ENV_<NAME>`. A later `set`
+  rotates the same key, also after a rename. `set` adds or replaces only the
+  named values and keeps every other `env` and `secret_env` entry; a plain
+  `env` entry with the same name becomes secret. A failed reconcile restores the
+  previous values. `server remove` leaves the credential-file entries in place,
+  as it does for bearer tokens.
+- **Spawn.** Values are read again from the credential file on every spawn (a
+  genuine external process override keeps precedence) and are layered over the
+  cleared, allowlisted child environment. A missing or empty value refuses the
+  spawn with `upstream_credential_missing`. A credential write reconnects every
+  upstream that references the key and revokes its retained tasks.
+- **Redaction.** Reads return names only: `gateway.get`/`gateway.list` and
+  `labby server show|list` report `secret_env` as a list of child variable
+  names. The spawn log records variable names only. Dry-run previews show
+  `[redacted]`, and Code Mode parameter traces redact `secret_env_values` and
+  `bearer_token_value`.
+
+API and MCP callers pass the values as the write-only `secret_env_values`
+object (child name to value) on `gateway.add` or `gateway.update`, with the
+same validation. No action returns a value.

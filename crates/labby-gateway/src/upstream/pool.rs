@@ -44,6 +44,7 @@ mod checked_call;
 mod completion;
 mod connect;
 mod connect_stdio;
+pub(crate) use connect_stdio::STDIO_ENV_ALLOWLIST;
 #[cfg(all(test, unix))]
 mod connect_stdio_tests;
 #[cfg(test)]
@@ -89,6 +90,9 @@ mod prompts_get;
 mod prompts_list;
 mod prompts_snapshot;
 mod recovery;
+mod stdio_secret_env;
+#[cfg(all(test, unix))]
+mod stdio_secret_env_tests;
 pub use recovery::UpstreamRestart;
 mod registration;
 mod relay;

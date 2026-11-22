@@ -39,6 +39,287 @@ async fn read_capped(mut input: impl AsyncRead + Unpin, limit: usize) -> Result<
     }
 }
 
+// Use the browser shard's built adapter and owned fixture paths, but test the
+// real REST boundary without launching a browser or dispatching to an API.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_openapi_rest_denies_non_admin_and_unapproved_spawn() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+
+    let fixture = GuidedAdapterFixtures::new();
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("isolated loopback REST client");
+    let env = [
+        (
+            "LABBY_OPENAPI_SPEC_ROOT",
+            fixture.root.path().to_str().expect("UTF-8 fixture root"),
+        ),
+        (
+            "LABBY_OPENAPI_MCP_BIN",
+            fixture.openapi.to_str().expect("UTF-8 adapter path"),
+        ),
+    ];
+    let request = json!({
+        "action": "gateway.add",
+        "params": {
+            "spec": {"name": "denied-openapi"},
+            "adapter": {
+                "kind": "openapi",
+                "spec_path": fixture.spec,
+                "base_url": "https://catalog.example.invalid",
+                "allowed_operations": ["getFixtureItem"],
+            },
+            "confirm": true,
+        },
+    });
+
+    // Omit only host provisioning in the first case. In the second case
+    // provisioning is valid but the guard is disabled in the disposable daemon.
+    for guard_disabled in [false, true] {
+        let scopes = live_identity::AUTHORITY_SCOPES;
+        let config = format!(
+            "{}\n[gateway]\ndisable_spawn_guard = {guard_disabled}\n",
+            policy(scopes),
+        );
+        let identity = LiveIdentity::bootstrap_with_policy_scopes_and_env(
+            "adapter-denial-owner@labby.invalid",
+            &config,
+            scopes,
+            if guard_disabled { &env } else { &env[..1] },
+        )
+        .await
+        .expect("boot an isolated installation and grant its owner");
+        let persisted = identity.root().join("labby-home/config.toml");
+        let before = fs::read(&persisted).expect("read original gateway configuration");
+        let add = |token: &str| {
+            client
+                .post(format!("{}/v1/gateway", identity.base()))
+                .bearer_auth(token)
+                .json(&request)
+        };
+
+        if !guard_disabled {
+            identity
+                .provision_stranger_behind_static_bearer(
+                    "adapter-denial-stranger",
+                    "Adapter Denial Stranger",
+                )
+                .await
+                .expect("bind the bearer to a non-admin principal");
+            let stranger_token = identity.static_token_for_request();
+            let read = client
+                .get(format!("{}/v1/stash/stats", identity.base()))
+                .bearer_auth(stranger_token)
+                .send()
+                .await
+                .expect("authenticate the non-admin on a personal capability");
+            assert_eq!(read.status(), reqwest::StatusCode::OK);
+            let response = add(stranger_token).send().await.expect("non-admin add");
+            let status = response.status();
+            let error: serde_json::Value = response.json().await.expect("authorization error");
+            assert_eq!(status, reqwest::StatusCode::FORBIDDEN, "{error}");
+            assert_eq!(error["kind"], "forbidden", "{error}");
+            assert_eq!(
+                error["message"], "Gateway operation is not authorized",
+                "{error}"
+            );
+            assert!(
+                fs::read(&persisted).expect("read gateway configuration") == before,
+                "a non-admin must not persist the adapter"
+            );
+
+            let response = client
+                .post(format!("{}/v1/gateway", identity.base()))
+                .bearer_auth(identity.credential_for_request())
+                .json(&json!({
+                    "action": "gateway.add",
+                    "params": {"spec": {"name": "raw-openapi", "command": fixture.openapi}},
+                }))
+                .send()
+                .await
+                .expect("attempt raw stdio without a broad approval");
+            let status = response.status();
+            let error: serde_json::Value = response.json().await.expect("raw spawn denial");
+            assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+            assert_eq!(error["kind"], "invalid_param", "{error}");
+            assert_eq!(error["param"], "command", "{error}");
+            assert!(
+                error["message"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("not in the allowed list"),
+                "{error}"
+            );
+            assert!(
+                fs::read(&persisted).expect("read gateway configuration") == before,
+                "a refused raw command must not persist"
+            );
+        }
+
+        let response = add(identity.credential_for_request())
+            .send()
+            .await
+            .expect("owner add with an unapproved spawn policy");
+        let status = response.status();
+        let error: serde_json::Value = response.json().await.expect("adapter guard error");
+        assert_eq!(status, reqwest::StatusCode::UNPROCESSABLE_ENTITY, "{error}");
+        assert_eq!(error["kind"], "invalid_param", "{error}");
+        assert_eq!(error["param"], "adapter", "{error}");
+        assert_eq!(
+            error["message"],
+            if guard_disabled {
+                "guided adapters require the stdio spawn guard to be enabled"
+            } else {
+                "OpenAPI Add Server requires LABBY_OPENAPI_MCP_BIN"
+            },
+            "guard_disabled={guard_disabled}: {error}"
+        );
+        assert!(
+            fs::read(&persisted).expect("read gateway configuration") == before,
+            "a refused spawn policy must not persist the adapter"
+        );
+
+        let cleanup = identity
+            .cleanup()
+            .await
+            .expect("clean up the isolated daemon");
+        assert!(cleanup.is_clean(), "{cleanup:?}");
+    }
+}
+
+// An operator must be able to recover a persisted adapter after separately
+// provisioning or removing host files. A broken spec is not a broken gateway.
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_openapi_missing_spec_degrades_only_that_upstream_after_restart() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+    let fixture = GuidedAdapterFixtures::new();
+    let root = fixture.root.path().to_str().expect("UTF-8 fixture root");
+    let env = [
+        ("LABBY_OPENAPI_SPEC_ROOT", root),
+        ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
+        (
+            "LABBY_OPENAPI_MCP_BIN",
+            fixture.openapi.to_str().expect("UTF-8 adapter path"),
+        ),
+    ];
+    let mut identity = LiveIdentity::bootstrap_with_policy_scopes_and_env(
+        "adapter-recovery-owner@labby.invalid",
+        &policy(live_identity::AUTHORITY_SCOPES),
+        live_identity::AUTHORITY_SCOPES,
+        &env,
+    )
+    .await
+    .expect("boot the isolated installation");
+    drop(rustls::crypto::ring::default_provider().install_default());
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .expect("loopback REST client");
+    let action = |identity: &LiveIdentity, action: &str, params: serde_json::Value| {
+        client
+            .post(format!("{}/v1/gateway", identity.base()))
+            .bearer_auth(identity.credential_for_request())
+            .json(&json!({"action":action,"params":params}))
+    };
+    let assert_ok = |response: reqwest::Response| async move {
+        let status = response.status();
+        let json: serde_json::Value = response.json().await.expect("gateway response");
+        assert_eq!(status, reqwest::StatusCode::OK, "{json}");
+        json
+    };
+
+    let created = action(
+        &identity,
+        "gateway.add",
+        json!({
+            "spec":{"name":"openapi-recovery"},
+            "confirm":true,
+            "adapter":{
+                "kind":"openapi","spec_path":fixture.spec,
+                "base_url":"https://catalog.example.invalid",
+                "allowed_operations":["getFixtureItem"],
+            },
+        }),
+    )
+    .send()
+    .await
+    .expect("add the provisioned adapter");
+    assert_ok(created).await;
+    let openapi_status = |identity: &LiveIdentity| {
+        action(identity, "gateway.test", json!({"name":"openapi-recovery"}))
+    };
+    let tested = openapi_status(&identity)
+        .send()
+        .await
+        .expect("initial test");
+    assert_eq!(assert_ok(tested).await["connected"], true);
+
+    fs::remove_file(&fixture.spec).expect("remove only the owned spec fixture");
+    identity
+        .restart()
+        .await
+        .expect("gateway restarts without the spec");
+    let tested = openapi_status(&identity)
+        .send()
+        .await
+        .expect("test broken adapter");
+    let unavailable = assert_ok(tested).await;
+    assert_eq!(unavailable["connected"], false, "{unavailable}");
+    assert!(
+        unavailable["last_error"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("OpenAPI spec file does not exist"),
+        "{unavailable}"
+    );
+
+    let added = action(
+        &identity,
+        "gateway.add",
+        json!({
+            "spec":{"name":"independent-cli"},
+            "confirm":true,
+            "adapter":{"kind":"cli","manifest_path":fixture.manifest},
+        }),
+    )
+    .send()
+    .await
+    .expect("add an unrelated guided server with the broken adapter still saved");
+    assert_ok(added).await;
+    let tested = action(&identity, "gateway.test", json!({"name":"independent-cli"}))
+        .send()
+        .await
+        .expect("test unrelated server");
+    assert_eq!(assert_ok(tested).await["connected"], true);
+
+    let removed = action(
+        &identity,
+        "gateway.remove",
+        json!({"name":"openapi-recovery","confirm":true}),
+    )
+    .send()
+    .await
+    .expect("remove the broken adapter");
+    assert_ok(removed).await;
+    let saved = fs::read_to_string(identity.root().join("labby-home/config.toml"))
+        .expect("read resulting fixture configuration");
+    assert!(!saved.contains("openapi-recovery"));
+    assert!(saved.contains("independent-cli"));
+    let cleanup = identity.cleanup().await.expect("clean up recovery fixture");
+    assert!(cleanup.is_clean(), "{cleanup:?}");
+}
+
 fn write_private_json(path: &Path, value: &serde_json::Value) {
     let mut file = OpenOptions::new()
         .create_new(true)
@@ -60,6 +341,135 @@ fn app_dir() -> PathBuf {
 
 #[tokio::test]
 async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
+    supervise_live_browser(None).await;
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn guided_add_server_adapters_complete_real_browser_canaries() {
+    if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
+        return;
+    }
+    let fixtures = GuidedAdapterFixtures::new();
+    fixtures.verify_openapi_identity();
+    supervise_live_browser(Some(&fixtures)).await;
+    fixtures.verify_openapi_identity();
+}
+
+struct GuidedAdapterFixtures {
+    // The fixture root must outlive the daemon and its stdio children.
+    root: tempfile::TempDir,
+    manifest: PathBuf,
+    spec: PathBuf,
+    openapi: PathBuf,
+}
+
+#[cfg(target_os = "linux")]
+impl GuidedAdapterFixtures {
+    fn verify_openapi_identity(&self) {
+        use sha2::{Digest as _, Sha256};
+        use std::io::Read as _;
+
+        // Direct developer runs can select a local executable without a proof
+        // receipt. The shell qualification always supplies the expected digest.
+        let Some(expected) = std::env::var_os("LABBY_E2E_OPENAPI_MCP_SHA256") else {
+            return;
+        };
+        let expected = expected.to_str().expect("ASCII expected adapter SHA-256");
+        let mut binary = fs::File::open(&self.openapi).expect("resolved OpenAPI executable");
+        let mut digest = Sha256::new();
+        let mut bytes = [0_u8; 16 * 1024];
+        loop {
+            let read = binary.read(&mut bytes).expect("read OpenAPI executable");
+            if read == 0 {
+                break;
+            }
+            digest.update(&bytes[..read]);
+        }
+        assert_eq!(
+            hex::encode(digest.finalize()),
+            expected,
+            "browser canaries must use the fingerprinted OpenAPI executable",
+        );
+    }
+
+    fn new() -> Self {
+        // The CLI manifest guard rejects group/other-writable ancestors. Use
+        // the owned checkout, not /tmp, for these non-secret source fixtures.
+        let root = tempfile::Builder::new()
+            .prefix(".guided-adapter-fixture-")
+            .tempdir_in(env!("CARGO_MANIFEST_DIR"))
+            .expect("private adapter fixture directory in the checkout");
+        let manifest = root.path().join("cli.toml");
+        fs::write(
+            &manifest,
+            r#"
+[[tools]]
+name = "fixture_greeting"
+description = "Return a deterministic fixture greeting."
+executable = "/usr/bin/printf"
+args = ["%s"]
+read_only = true
+
+[tools.choices]
+world = ["Labby CLI browser canary"]
+"#,
+        )
+        .expect("write owned CLI manifest");
+        let spec = root.path().join("openapi.json");
+        fs::write(
+            &spec,
+            serde_json::to_vec(&json!({
+                "openapi": "3.1.0",
+                "info": { "title": "Labby Browser Canary", "version": "1.0.0" },
+                "paths": {
+                    "/items/{itemId}": {
+                        "get": {
+                            "operationId": "getFixtureItem",
+                            "parameters": [{
+                                "name": "itemId", "in": "path", "required": true,
+                                "schema": { "type": "string" }
+                            }],
+                            "responses": { "200": { "description": "OK" } }
+                        }
+                    },
+                    "/pet/findByStatus": {
+                        "get": {
+                            "operationId": "findPetsByStatus",
+                            "parameters": [{
+                                "name": "status", "in": "query", "required": true,
+                                "schema": { "type": "string" }
+                            }],
+                            "responses": { "200": { "description": "JSON results" } }
+                        }
+                    },
+                    "/unselected": {
+                        "get": {
+                            "operationId": "notSelected",
+                            "responses": { "200": { "description": "OK" } }
+                        }
+                    }
+                }
+            }))
+            .expect("serialize OpenAPI fixture"),
+        )
+        .expect("write owned OpenAPI spec");
+        let cargo_labby = PathBuf::from(env!("CARGO_BIN_EXE_labby"));
+        let openapi = std::env::var_os("LABBY_E2E_OPENAPI_MCP_BINARY")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| cargo_labby.with_file_name("labby-openapi-mcp"))
+            .canonicalize()
+            .expect("build the standalone adapter: cargo build -p labby --no-default-features --features openapi-mcp --bin labby-openapi-mcp --locked");
+        Self {
+            root,
+            manifest,
+            spec,
+            openapi,
+        }
+    }
+}
+
+async fn supervise_live_browser(adapters: Option<&GuidedAdapterFixtures>) {
     if std::env::var_os("LABBY_LIVE_BROWSER_RUN").is_none() {
         return;
     }
@@ -87,19 +497,44 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     // Credential verification fences the Loadout policy fingerprint. Install
     // Snippets before issuing the browser credential, rather than expanding
     // its bound policy after bootstrap and invalidating the credential.
-    let mut identity = LiveIdentity::bootstrap_with_policy_and_scopes(
-        "live-browser@labby.invalid",
-        &config,
-        &["lab:read", "lab", "lab:admin"],
-    )
-    .await
+    let scopes = &["lab:read", "lab", "lab:admin"];
+    let mut identity = if let Some(adapters) = adapters {
+        let root = adapters.root.path().to_str().expect("UTF-8 fixture root");
+        let mut daemon_env = vec![
+            ("LABBY_CLI_MCP_MANIFEST_ROOT", root),
+            ("LABBY_OPENAPI_SPEC_ROOT", root),
+            (
+                "LABBY_OPENAPI_MCP_BIN",
+                adapters.openapi.to_str().expect("UTF-8 adapter path"),
+            ),
+        ];
+        if std::env::var_os("LABBY_LIVE_BROWSER_REQUIRE_STDIO_SANDBOX").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            daemon_env.push(("LABBY_STDIO_SANDBOX_REQUIRED", "1"));
+        }
+        LiveIdentity::bootstrap_with_policy_scopes_and_env(
+            "guided-adapters-browser@labby.invalid",
+            &config,
+            scopes,
+            &daemon_env,
+        )
+        .await
+    } else {
+        LiveIdentity::bootstrap_with_policy_and_scopes(
+            "live-browser@labby.invalid",
+            &config,
+            scopes,
+        )
+        .await
+    }
     .expect("public identity bootstrap with final browser policy");
     identity
         .create_session()
         .await
         .expect("real browser session");
     #[cfg(target_os = "linux")]
-    {
+    if adapters.is_none() {
         identity
             .provision_stash_recipient("browser-stash-recipient", "Browser Stash Recipient")
             .await
@@ -188,7 +623,11 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
             "--test",
             "--test-concurrency=1",
             "--experimental-strip-types",
-            "lib/browser/live-backend.browser.test.ts",
+            if adapters.is_some() {
+                "lib/browser/live-adapters.browser.test.ts"
+            } else {
+                "lib/browser/live-backend.browser.test.ts"
+            },
         ])
         .current_dir(&app_dir)
         .env_clear()
@@ -206,6 +645,16 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true);
+    if let Some(adapters) = adapters {
+        command
+            .env("LABBY_LIVE_BROWSER_ADAPTER_MANIFEST", &adapters.manifest)
+            .env("LABBY_LIVE_BROWSER_ADAPTER_SPEC", &adapters.spec);
+        if std::env::var_os("LABBY_LIVE_BROWSER_OPENAPI_PETSTORE").as_deref()
+            == Some(std::ffi::OsStr::new("1"))
+        {
+            command.env("LABBY_LIVE_BROWSER_OPENAPI_PETSTORE", "1");
+        }
+    }
     for key in ["LABBY_E2E_HELPER_REGISTRY", "LABBY_E2E_GROUP_TOKEN"] {
         if let Some(value) = std::env::var_os(key) {
             command.env(key, value);
@@ -239,13 +688,22 @@ async fn rust_supervisor_owns_live_backend_session_browser_and_cleanup() {
     let stdout = stdout_task.await.expect("stdout reader");
     let stderr = stderr_task.await.expect("stderr reader");
     let progress = fs::read(&browser_progress).unwrap_or_default();
+    let progress_text = String::from_utf8_lossy(&progress);
+    let canaries_ran = adapters.is_none()
+        || ["guided-cli-completed", "guided-openapi-completed"]
+            .iter()
+            .all(|marker| progress_text.lines().filter(|line| line == marker).count() == 1);
     let browser_failure = match (status, stdout, stderr, progress.len() <= OUTPUT_LIMIT) {
-        (Ok(status), Ok(_), Ok(_), true) if status.success() => None,
+        (Ok(status), Ok(_), Ok(_), true) if status.success() && canaries_ran => {
+            if adapters.is_some() {
+                eprint!("{progress_text}");
+            }
+            None
+        }
         (status, stdout, stderr, progress_ok) => Some(format!(
-            "Playwright failed: status={status:?}; stdout={}; stderr={}; progress={}; progress_ok={progress_ok}",
+            "Playwright failed: status={status:?}; stdout={}; stderr={}; progress={progress_text}; progress_ok={progress_ok}; canaries_ran={canaries_ran}",
             String::from_utf8_lossy(&stdout.unwrap_or_default()),
             String::from_utf8_lossy(&stderr.unwrap_or_default()),
-            String::from_utf8_lossy(&progress),
         )),
     };
     fs::write(&browser_stdout, browser_failure.as_deref().unwrap_or(""))

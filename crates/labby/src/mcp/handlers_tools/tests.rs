@@ -532,6 +532,7 @@ async fn code_mode_manager_with_pool_and_upstreams(
 
 fn fixture_upstream_config(name: &str) -> crate::config::UpstreamConfig {
     crate::config::UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         enabled: true,

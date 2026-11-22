@@ -384,6 +384,7 @@ mod tests {
     fn gateway_config(expose_resources: bool) -> GatewayConfig {
         GatewayConfig {
             upstream: vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

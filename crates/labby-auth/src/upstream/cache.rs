@@ -554,8 +554,9 @@ impl OauthClientCache {
     }
 
     /// Record a real upstream scope challenge for this exact OAuth authority.
-    /// A replaced configuration uses a different manager registry; a credential
-    /// change invalidates the retained epoch before another consent can start.
+    /// A changed authority (see [`UpstreamOauthManager::serves_oauth_authority`])
+    /// uses a different manager registry; a credential change invalidates the
+    /// retained epoch before another consent can start.
     pub fn scope_challenge_handler(
         &self,
         config: &UpstreamConfig,
@@ -571,13 +572,10 @@ impl OauthClientCache {
                     config.name
                 ))
             })?;
-        let current_config = serde_json::to_value(manager.upstream_config()).map_err(|error| {
-            OauthError::Internal(format!("scope authority configuration: {error}"))
-        })?;
-        let requested_config = serde_json::to_value(config).map_err(|error| {
-            OauthError::Internal(format!("scope authority configuration: {error}"))
-        })?;
-        if current_config != requested_config {
+        // Compare the OAuth authority, not the whole config: reload keeps a
+        // manager across non-OAuth edits, so a full comparison would refuse
+        // every connection after an unrelated edit until daemon restart.
+        if !manager.serves_oauth_authority(config) {
             return Err(OauthError::NeedsReauth(
                 "upstream configuration changed before scope challenge observation".into(),
             ));
@@ -853,6 +851,7 @@ mod tests {
 
     fn cfg(name: &str, client_id: &str) -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,
@@ -1320,6 +1319,71 @@ mod tests {
             !events[0].is_current(),
             "replacement shared authority must supersede old cleanup"
         );
+    }
+
+    async fn scope_handler_cache_for(
+        config: &UpstreamConfig,
+    ) -> (tempfile::TempDir, OauthClientCache) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open(dir.path().join("auth.db"))
+            .await
+            .expect("sqlite store");
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0u8; 32],
+        ))
+        .expect("encryption key");
+        let managers = Arc::new(DashMap::new());
+        managers.insert(
+            config.name.clone(),
+            UpstreamOauthManager::new(
+                sqlite,
+                key,
+                config.clone(),
+                "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+            ),
+        );
+        (dir, OauthClientCache::new(managers))
+    }
+
+    #[tokio::test]
+    async fn scope_handler_accepts_edits_outside_oauth_authority() {
+        let registered = cfg("acme", "id-1");
+        let (_dir, cache) = scope_handler_cache_for(&registered).await;
+        // Fields a re-add or an operator edit can change without touching the
+        // credential's authority (name, url, oauth).
+        let mut edited = registered.clone();
+        edited.enabled = false;
+        edited.display_name = Some("Acme".into());
+        edited.proxy_resources = true;
+        edited.proxy_prompts = true;
+        edited.expose_tools = Some(vec!["search".into()]);
+        edited.bearer_token_env = Some("ACME_TOKEN".into());
+        edited.headers.insert("x-team".into(), "ops".into());
+        cache
+            .scope_challenge_handler(&edited, "alice")
+            .expect("a non-OAuth edit must not require reauthorization");
+    }
+
+    #[tokio::test]
+    async fn scope_handler_rejects_changed_oauth_authority() {
+        let registered = cfg("acme", "id-1");
+        let (_dir, cache) = scope_handler_cache_for(&registered).await;
+
+        let mut moved = registered.clone();
+        moved.url = Some("https://elsewhere.example/mcp".into());
+        let mut rescoped = registered.clone();
+        rescoped.oauth.as_mut().unwrap().scopes = Some(vec!["admin".into()]);
+        let reregistered = cfg("acme", "id-2");
+        for changed in [moved, rescoped, reregistered] {
+            assert!(
+                matches!(
+                    cache.scope_challenge_handler(&changed, "alice"),
+                    Err(OauthError::NeedsReauth(_))
+                ),
+                "an OAuth authority change must not reuse the registered manager"
+            );
+        }
     }
 
     // Cache lifecycle behavior is covered here; matching a capacity victim to

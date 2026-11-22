@@ -305,7 +305,7 @@ jobs when their changed-path category is enabled:
 | Browser extension | `browser_extension` | frozen npm install, Node tests, and TypeScript type-check for extension and shared Browser Bridge protocol changes; explicitly aggregated by `ci-gate` |
 | Compile | `rust_compile` | `cargo check --workspace --all-features` |
 | MSRV | `rust_features`, or `extended` with `rust_compile` | `cargo +1.99.1 check --workspace --all-features --all-targets --locked`; the pin is the MSRV, so on ordinary pull requests Clippy's all-target passes compile the same code with the same compiler |
-| Feature slices | `rust_features`, or `extended` with `rust_compile` | required by `ci-gate` when routed; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, and `skills` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
+| Feature slices | `rust_features`, or `extended` with `rust_compile` | required by `ci-gate` when routed; warm `labby` lib/bins at normal concurrency, then run `cargo check -p labby --no-default-features --features <slice> --all-targets --locked` for `gateway`, `gateway-host`, `integrated-gateway`, `fs`, `skills`, and `openapi-mcp` at the same concurrency so the heavy normal library is reused; fs and skills retain focused runtime tests |
 | Gateway-only compile | `rust_compile` | required by `ci-gate`; `cargo check -p labby --no-default-features --features gateway,proxy-testkit --all-targets --locked` after a product-only warm-up |
 | Gateway-only runtime suite | `extended` with `rust_compile` | required by `ci-gate` when routed; four unit partitions and five integration-target shards cover the `gateway,proxy-testkit` suite in parallel; shared embedded harness tests run once in their dedicated target |
 | Extracted crate slices | `rust_features`, or `extended` with `rust_compile` | crate-specific `cargo check` commands for extracted runtime crates |
@@ -370,8 +370,11 @@ The required lifecycle-analysis job parses every shipped POSIX/Bash lifecycle
 script with its declared shell and runs ShellCheck at warning severity. Analyzer
 setup, parse failures, warnings, and errors all fail the stable `ci-gate`.
 
-Live E2E precompiles the all-feature CLI and every shard/coverage test target
-under a separate 20-minute build cap. Qualification uses those artifacts with
+Live E2E precompiles the all-feature CLI, the separate OpenAPI MCP executable,
+and every shard/coverage test target
+under a separate 20-minute build cap. Local non-prebuilt runs warm the same
+all-feature browser test targets before recording executable digests.
+Qualification uses those artifacts with
 an explicit 1,800-second harness deadline and unchanged 900-second shard caps.
 The qualification step allows 31 minutes, including cleanup and coverage
 report generation; the 60-minute job cap leaves setup and evidence-upload
@@ -545,6 +548,10 @@ core changes or that tag has already been reserved.
 
 Merge the dev PR to approve that source snapshot. After the merged request passes
 main CI, the coordinator invokes the same immutable preparation described below.
+Before it mints the tag, the coordinator checks the merge commit against its first
+parent and requires that only `.release-please-dev.json` reached main. It does not
+trust the pull request file list, which GitHub derives from the base recorded when a
+long-lived request PR opened.
 The approved source remains frozen even if main advances while CI runs. The tag
 triggers the existing **Release** workflow and all normal qualification gates.
 Merging the request alone does not produce another dev PR; a subsequent product

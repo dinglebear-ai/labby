@@ -744,6 +744,7 @@ mod tests {
 
     fn test_upstream_config() -> UpstreamConfig {
         UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

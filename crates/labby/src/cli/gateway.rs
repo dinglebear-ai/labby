@@ -8,6 +8,7 @@ mod code;
 mod dispatch;
 mod list;
 mod oauth;
+mod secret_env_input;
 
 pub use args::*;
 
@@ -739,6 +740,7 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let config = LabConfig {
             upstream: vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 name: "axon".to_string(),

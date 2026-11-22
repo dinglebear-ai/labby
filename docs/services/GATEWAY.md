@@ -383,6 +383,7 @@ result_shape_policy = "off"
 timeout_ms = 30000
 max_response_bytes = 24576
 max_response_tokens = 6000
+max_programmatic_response_bytes = 1048576
 token_estimate_divisor = 4
 max_log_entries = 1000
 max_log_bytes = 65536
@@ -611,6 +612,9 @@ Rules:
 - `code_mode.timeout_ms` is validated in the range `1..=300000`
 - `code_mode.result_shape_policy` accepts `"off"` or `"truncate"`
 - `code_mode.max_response_bytes` is validated in the range `1024..=1048576`
+- `code_mode.max_programmatic_response_bytes` is `0` (programmatic budget
+  requests off) or in the range `1024..=4194304`; see
+  [Programmatic response budgets](../dev/CODE_MODE.md#programmatic-response-budgets)
 - `code_mode.max_response_tokens` is validated in the range `256..=256000`
 - `code_mode.token_estimate_divisor` is validated in the range `1..=64`
 - `code_mode.max_log_entries` is validated in the range `1..=100000`

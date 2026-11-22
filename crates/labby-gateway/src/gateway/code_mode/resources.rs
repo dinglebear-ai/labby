@@ -78,6 +78,7 @@ pub(super) async fn read_local_resource(
             let config = manager.code_mode_config().await;
             json!({"timeout_ms":config.timeout_ms,"max_source_bytes":config.max_source_bytes,
                 "max_response_bytes":config.max_response_bytes,"max_response_tokens":config.max_response_tokens,
+                "max_programmatic_response_bytes":config.max_programmatic_response_bytes,
                 "token_estimate_divisor":config.token_estimate_divisor,
                 "storage":labby_codemode::effective_storage_limits()})
         }

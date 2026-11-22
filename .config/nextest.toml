@@ -45,6 +45,7 @@ threads-required = 'num-test-threads'
 filter = '''package(labby) & (
     binary(=agent_session_messaging)
     | binary(=browser_runtime_e2e)
+    | binary(=cli_mcp)
     | binary(=codemode_qualification)
     | binary(=e2e_coverage_report)
     | binary(=gateway_auto_reconnect)
@@ -70,6 +71,8 @@ filter = '''package(labby) & (
     | binary(=oauth_qualification)
     | binary(=proxy_qualification)
     | binary(=skills_mcp_e2e)
+    | binary(=standalone_mcp)
+    | binary(=standalone_mcp_https)
     | binary(=webmcp_browser_qualification)
 )'''
 threads-required = 'num-test-threads'

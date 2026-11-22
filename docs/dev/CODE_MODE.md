@@ -775,6 +775,8 @@ Defaults:
 - `max_source_bytes = 1048576`
 - `max_response_bytes = 24576`
 - `max_response_tokens = 6000`
+- `max_programmatic_response_bytes = 1048576` (`0` disables; otherwise
+  1024 through 4194304); see [Programmatic response budgets](#programmatic-response-budgets)
 - `timeout_ms = 30000` (configurable from 1 through 300000 ms)
 - `max_calls_per_run = 512` (hard ceiling 2048); excess calls reject with
   `call_budget_exceeded` before dispatch
@@ -802,6 +804,65 @@ limit is separate from best-effort final envelope shaping.
 After the internal-call ceiling, search and describe retain their documented
 fallbacks. Resource, Artifact, Prompt and Skill operations return typed budget
 errors instead of a successful search-shaped value.
+
+### Programmatic response budgets
+
+`max_response_bytes` protects an agent's context window. A program that
+consumes the result itself, such as a dashboard running fixed read-only
+scripts over a persistent `labby mcp` session, can request a larger envelope
+for one `codemode` or `codemode_read` call. It sends the request in the
+`tools/call` request metadata, not in tool arguments:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "method": "tools/call",
+  "params": {
+    "name": "codemode_read",
+    "arguments": { "code": "async () => ..." },
+    "_meta": {
+      "ai.dinglebear.labby/responseBudget": { "maxResponseBytes": 1048576 }
+    }
+  }
+}
+```
+
+Rules:
+
+- **Agents stay on the default.** A model chooses tool `arguments`; the MCP
+  client program owns `_meta`. A caller that sends no request keeps
+  `max_response_bytes` and `max_response_tokens` unchanged, and the tool
+  schema is not changed.
+- **The operator sets the hard maximum.**
+  `code_mode.max_programmatic_response_bytes` (default 1 MiB) bounds every
+  request. `0` turns requests off. The configured value must be `0` or
+  1024 through 4194304 bytes. The 4 MiB ceiling keeps the complete MCP result
+  (escaped text plus structured trace) under the 16 MiB JSON body limit of
+  streamable HTTP clients, including the stdio bridge.
+- **A granted request replaces the byte budget and lifts the token estimate to
+  the same number**, so the agent-oriented token cap cannot truncate a program's
+  result. Per-call `calltool_result_max_mib`, artifact, log, and trace budgets
+  are unchanged.
+- **Clear errors, no silent fallback.** A malformed value, a request below 1024
+  bytes, a request above the maximum, or any request while requests are off
+  returns an `invalid_param` error before execution. The envelope names
+  `param` (`_meta.ai.dinglebear.labby/responseBudget.maxResponseBytes`),
+  `max_allowed` (the operator maximum, `0` when off) and `default_bytes`.
+- **Confirmation.** A successful result granted a budget carries
+  `_meta["ai.dinglebear.labby/responseBudget"] = { "maxResponseBytes": N }`.
+  An older gateway ignores the request and omits this key, so a program can
+  detect support and fall back.
+- A result larger than the granted budget is still truncated to a marker with
+  an automatic artifact receipt, exactly as for agents.
+- Identical concurrent runs are shared only when they request the same budget.
+- The stdio bridge forwards request `_meta` unchanged, so the daemon's
+  configuration decides the maximum when `labby mcp` bridges to it.
+
+This is a context-size control, not an authorization boundary. It grants no
+new data or scope: the same caller could already read the full output through
+artifacts or paginated reads. Unscoped admin callers can read the effective
+maximum from `lab://gateway/limits` (`max_programmatic_response_bytes`).
 
 ### Final Result Shaping
 

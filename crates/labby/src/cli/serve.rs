@@ -3975,6 +3975,7 @@ mod tests {
         assert!(!stdio_guard_degrades_gateway(&config, true));
 
         config.upstream.push(crate::config::UpstreamConfig {
+            secret_env: Default::default(),
             name: "fixture".into(),
             display_name: None,
             lifecycle: None,

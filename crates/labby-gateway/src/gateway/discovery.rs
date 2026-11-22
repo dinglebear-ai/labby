@@ -399,6 +399,7 @@ pub(crate) fn entry_to_upstream(
     let normalized_name = normalize_discovered_name(name);
     let transport_fingerprint = transport_fingerprint(url.as_deref(), command.as_deref(), &args);
     Some(UpstreamConfig {
+        secret_env: Default::default(),
         display_name: None,
         lifecycle: None,
         name: normalized_name.clone(),

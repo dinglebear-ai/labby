@@ -1068,8 +1068,10 @@ fn ci_workflow_uses_changed_path_classifier_and_stable_gate() {
         "the fs slice must execute its no-gateway regression in CI"
     );
     assert!(
-        feature_slices.contains("slice: [gateway, gateway-host, integrated-gateway, fs, skills]"),
-        "CI must compile every distributable gateway profile and the standalone Skills slice"
+        feature_slices.contains(
+            "slice: [gateway, gateway-host, integrated-gateway, fs, skills, openapi-mcp]"
+        ),
+        "CI must compile every distributable gateway profile and the standalone Skills and OpenAPI MCP slices"
     );
     assert!(
         feature_slices.contains("if: matrix.slice == 'skills'")

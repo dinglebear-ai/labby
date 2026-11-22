@@ -1009,6 +1009,7 @@ mod tests {
             .expect("listener");
         let address = listener.local_addr().expect("address");
         let upstream = crate::config::UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

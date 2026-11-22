@@ -75,6 +75,10 @@ pub struct GatewayConfigView {
     pub args: Vec<String>,
     #[serde(default)]
     pub bearer_token_env: Option<String>,
+    /// Stdio child environment variable names whose values are write-only
+    /// secrets in the credential file. Values are never returned.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub secret_env: Vec<String>,
     #[serde(default)]
     pub oauth_enabled: bool,
     #[serde(default)]

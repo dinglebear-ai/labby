@@ -688,6 +688,7 @@ mod tests {
     #[test]
     fn fingerprint_is_stable_and_config_sensitive() {
         let config = UpstreamConfig {
+            secret_env: Default::default(),
             display_name: None,
             lifecycle: None,
             enabled: true,

@@ -482,10 +482,14 @@ async fn handle(
                     team_id.as_deref(),
                     params,
                 )?;
-                let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
                 if let Some(authority) = gateway_authority.as_ref() {
                     authority.validate_before_external_effect().await?;
                 }
+                let params = crate::dispatch::gateway::adapter_registration::normalize(
+                    &manager, &action, params,
+                )
+                .await?;
+                let params = inject_gateway_owner(&action, params, subject.as_deref(), request_id);
                 // Unlike trusted stdio MCP, an unauthenticated HTTP request
                 // must never inherit the shared gateway OAuth credential.
                 let oauth_subject =
@@ -1761,6 +1765,7 @@ mod tests {
         let manager = test_manager();
         manager
             .replace_config_for_tests(vec![UpstreamConfig {
+                secret_env: Default::default(),
                 display_name: None,
                 lifecycle: None,
                 enabled: true,

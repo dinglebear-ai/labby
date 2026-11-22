@@ -88,6 +88,18 @@ Source: [inbound policy](../../crates/labby/src/mcp/trace_context.rs),
 [shared outbound injection](../../crates/labby-gateway/src/trace_context.rs),
 and [bounded vocabulary](../../crates/labby-primitives/src/trace.rs).
 
+## Programmatic response budget metadata
+
+`codemode` and `codemode_read` accept
+`_meta["ai.dinglebear.labby/responseBudget"] = { "maxResponseBytes": N }` on
+`tools/call`. It lets an MCP client program, not the model, request a larger
+final envelope than `code_mode.max_response_bytes`, bounded by the operator's
+`code_mode.max_programmatic_response_bytes`. Tool arguments and descriptors are
+unchanged. Rejected requests return `invalid_param` before execution; granted
+requests are echoed in result `_meta` under the same key. The value is a
+context-size preference and grants no identity, scope, or permission. See
+[Programmatic response budgets](../dev/CODE_MODE.md#programmatic-response-budgets).
+
 ## Tool Results And `outputSchema`
 
 Every builtin service tool returns the dispatch envelope as

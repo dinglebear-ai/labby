@@ -4070,6 +4070,7 @@ Object.assign(globalThis, {{ document, window, requestAnimationFrame, confirm }}
                         ..crate::config::CodeModeConfig::default()
                     },
                     upstream: vec![crate::config::UpstreamConfig {
+                        secret_env: Default::default(),
                         display_name: None,
                         lifecycle: None,
                         enabled: true,
