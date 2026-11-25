@@ -298,11 +298,19 @@ async fn mcp_events_through_http_auth_and_signed_delivery() {
     use tower::ServiceExt as _;
 
     let directory = tempfile::tempdir().unwrap();
+    // Production (`cli::serve`) gives the worker the same store handle the
+    // HTTP publish path uses: each publish wakes the worker directly and both
+    // write through one connection. A second handle misses that wake-up and
+    // contends as another SQLite connection, so on a slow CI disk delivery
+    // waited out one-second ticks past the 5 s receive deadline.
     let publishing = NoticeStore::open_at(directory.path()).unwrap();
-    let working = NoticeStore::open_at(directory.path()).unwrap();
     let (sender, callback, secret, mut received, https) = webhook::tests::receiver(3).await;
     let encryption = load_key(&STANDARD.encode([b't'; 32])).unwrap();
-    let events = Arc::new(AgentEvents::new(working, encryption, Arc::new(sender)));
+    let events = Arc::new(AgentEvents::new(
+        publishing.clone(),
+        encryption,
+        Arc::new(sender),
+    ));
     let manager = Arc::new(
         crate::dispatch::gateway::config_store::test_gateway_manager(
             directory.path().join("gateway.toml"),
