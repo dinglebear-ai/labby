@@ -530,6 +530,12 @@ impl UpstreamOauthManager {
                 e
             })?;
 
+        if let Some(store) = &google_store {
+            store
+                .observe_authorization_fence_epoch()
+                .await
+                .map_err(map_auth_error)?;
+        }
         if let Some(fence) = fence {
             match google_store {
                 Some(inner) => auth_manager.set_credential_store(inner.with_callback_fence(fence)),
