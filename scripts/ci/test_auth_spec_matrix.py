@@ -59,9 +59,9 @@ class AuthSpecificationMatrixTests(unittest.TestCase):
             f"OAI-CLAUSE-{number:03}" for number in range(1, 37)
         ])
         rows = {row["id"]: row for row in data["requirements"]}
-        self.assertEqual(data["captured_at"], "2026-11-20")
+        self.assertEqual(data["captured_at"], "2026-11-25")
         self.assertEqual(data["source_sha256"],
-                         "feba34ce471b1d7e5eda8d960deca016dacd4a332560d7254bb7b8451f2d5142")
+                         "8e7c8c39416eb5a6bc11a82cef2a893c1c6b66050495129a3990a7a8076c8f0d")
         self.assertEqual(rows["OAI-CLAUSE-020"]["verification_ids"],
                          ["OAI-AUTH-002", "OAI-AUTH-003"])
         self.assertEqual(rows["OAI-CLAUSE-035"]["verification_ids"], ["OAI-AUTH-009"])

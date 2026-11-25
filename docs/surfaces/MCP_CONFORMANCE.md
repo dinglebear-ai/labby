@@ -350,7 +350,7 @@ inventoried route, registered service, or action therefore fails CI until its
 authentication exposure is explicitly classified.
 
 [`openai-auth-normative.json`](../../tools/verification/conformance/openai-auth-normative.json)
-records the reviewed 2026-11-20 guide digest and 36 stable clause dispositions.
+records the reviewed 2026-11-25 guide digest and 36 stable clause dispositions.
 The original 21 clause IDs retain their evidence. Thirteen additional
 multi-account/profile clauses are explicitly conditional: Labby does not
 designate a built-in tool with `_meta["openai/profile"]: true`, so their profile
