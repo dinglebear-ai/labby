@@ -82,7 +82,15 @@ fn callback_credentials(subject: &str, verified: bool) -> StoredCredentials {
     )
 }
 
+/// Mirrors the OAuth callback: the manager observes the revocation epoch on a
+/// fresh store and never calls `load()` before rmcp saves the exchanged token.
 async fn adapter(store: SqliteStore) -> (GoogleProviderCredentialStore, MockServer) {
+    let (adapter, server) = unobserved_adapter(store).await;
+    adapter.observe_authorization_fence_epoch().await.unwrap();
+    (adapter, server)
+}
+
+async fn unobserved_adapter(store: SqliteStore) -> (GoogleProviderCredentialStore, MockServer) {
     drop(rustls::crypto::ring::default_provider().install_default());
     let server = MockServer::start().await;
     let public = key().to_public_key();
@@ -102,7 +110,6 @@ async fn adapter(store: SqliteStore) -> (GoogleProviderCredentialStore, MockServ
         "google-client".into(),
         vec!["openid".into()],
     );
-    adapter.load().await.unwrap();
     (adapter, server)
 }
 
@@ -184,6 +191,39 @@ async fn rejected_callback_identity_preserves_credentials_and_never_revokes() {
         assert_eq!(row.generation, original.generation, "{rejection}");
         assert_eq!(row.refresh_token, original.refresh_token, "{rejection}");
     }
+}
+
+#[tokio::test]
+async fn first_time_callback_save_requires_an_observed_revocation_epoch() {
+    let (_root, store) = database().await;
+    let (adapter, _server) = unobserved_adapter(store.clone()).await;
+    assert!(
+        adapter
+            .save(callback_credentials("google-subject", true))
+            .await
+            .is_err(),
+        "a store that never observed the revocation epoch must fail closed"
+    );
+    assert!(
+        store
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    adapter.observe_authorization_fence_epoch().await.unwrap();
+    adapter
+        .save(callback_credentials("google-subject", true))
+        .await
+        .unwrap();
+    let row = store
+        .find_google_provider_credential("google-subject")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(row.refresh_token, "callback-refresh");
+    assert_eq!(row.email.as_deref(), Some("admin@example.com"));
 }
 
 #[tokio::test]

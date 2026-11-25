@@ -73,6 +73,20 @@ impl GoogleProviderCredentialStore {
         }
     }
 
+    /// Record the revocation epoch a callback save must still match. A
+    /// revocation after this call rejects the save; an earlier one is
+    /// superseded by the sign-in that is completing.
+    pub(super) async fn observe_authorization_fence_epoch(&self) -> Result<i64, AuthError> {
+        let epoch = self
+            .store
+            .google_provider_fence_epoch()
+            .await
+            .map_err(|error| AuthError::InternalError(error.to_string()))?;
+        self.authorization_fence_epoch
+            .store(epoch, Ordering::Release);
+        Ok(epoch)
+    }
+
     pub(super) fn with_callback_fence(mut self, fence: CredentialSaveFence) -> Self {
         self.callback_save_fence = Some(fence);
         self
@@ -172,7 +186,14 @@ impl GoogleProviderCredentialStore {
 
     async fn load_row_for_rmcp(&self) -> Result<Option<GoogleProviderCredentialRow>, AuthError> {
         let row = self.credential_row().await.map_err(|error| match error {
-            OauthError::AccountAmbiguous(_) => AuthError::AuthorizationRequired,
+            OauthError::AccountAmbiguous(_) => {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "account_ambiguous",
+                    "shared Google credential load rejected"
+                );
+                AuthError::AuthorizationRequired
+            }
             other => AuthError::InternalError(other.to_string()),
         })?;
         let Some(row) = row else {
@@ -184,6 +205,11 @@ impl GoogleProviderCredentialStore {
             return Ok(None);
         }
         if row.client_id != self.expected_client_id {
+            warn!(
+                kind = "oauth_needs_reauth",
+                reason = "stored_client_mismatch",
+                "shared Google credential load rejected"
+            );
             return Err(AuthError::AuthorizationRequired);
         }
         // Missing scopes must not block begin_authorization. Normal authenticated
@@ -208,9 +234,10 @@ impl GoogleProviderCredentialStore {
                 .await
                 .map_err(|error| AuthError::InternalError(error.to_string()))?;
             if identity.email_verified != Some(true) {
-                tracing::warn!(
+                warn!(
                     subject_id = %fingerprint(&identity.subject),
                     kind = "oauth_needs_reauth",
+                    reason = "email_not_verified",
                     "shared Google credential callback did not include a verified email claim"
                 );
                 return Err(AuthError::AuthorizationRequired);
@@ -218,10 +245,11 @@ impl GoogleProviderCredentialStore {
             if let Some(existing) = existing
                 && existing.subject != identity.subject
             {
-                tracing::warn!(
+                warn!(
                     expected_subject_id = %fingerprint(&existing.subject),
                     returned_subject_id = %fingerprint(&identity.subject),
                     kind = "oauth_needs_reauth",
+                    reason = "callback_account_mismatch",
                     "shared Google credential callback returned a different account"
                 );
                 return Err(AuthError::AuthorizationRequired);
@@ -233,6 +261,11 @@ impl GoogleProviderCredentialStore {
                         .as_deref()
                         .is_some_and(|email| email.eq_ignore_ascii_case(selector));
                 if !selector_matches {
+                    warn!(
+                        kind = "oauth_needs_reauth",
+                        reason = "account_selector_mismatch",
+                        "shared Google credential save rejected"
+                    );
                     return Err(AuthError::AuthorizationRequired);
                 }
             }
@@ -241,7 +274,14 @@ impl GoogleProviderCredentialStore {
 
         existing
             .map(|row| (row.subject.clone(), row.email.clone()))
-            .ok_or(AuthError::AuthorizationRequired)
+            .ok_or_else(|| {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "no_id_token_and_no_existing_credential",
+                    "shared Google credential save rejected"
+                );
+                AuthError::AuthorizationRequired
+            })
     }
 }
 
@@ -262,13 +302,7 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .refresh_attempt
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-            let fence_epoch = self
-                .store
-                .google_provider_fence_epoch()
-                .await
-                .map_err(|error| AuthError::InternalError(error.to_string()))?;
-            self.authorization_fence_epoch
-                .store(fence_epoch, Ordering::Release);
+            let fence_epoch = self.observe_authorization_fence_epoch().await?;
             let Some(row) = self.load_row_for_rmcp().await? else {
                 return Ok(None);
             };
@@ -323,12 +357,21 @@ impl CredentialStore for GoogleProviderCredentialStore {
             // must never advance either CAS precondition past this attempt.
             let attempted = self.take_refresh_attempt();
             if credentials.client_id != self.expected_client_id {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "client_id_mismatch",
+                    "shared Google credential save rejected"
+                );
                 return Err(AuthError::AuthorizationRequired);
             }
-            let token = credentials
-                .token_response
-                .as_ref()
-                .ok_or(AuthError::AuthorizationRequired)?;
+            let token = credentials.token_response.as_ref().ok_or_else(|| {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "missing_token_response",
+                    "shared Google credential save rejected"
+                );
+                AuthError::AuthorizationRequired
+            })?;
             // Refresh responses may omit ID tokens; a fresh callback must prove
             // the returned account before any destructive replacement fence.
             if self.callback_save_fence.is_some()
@@ -336,6 +379,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
                     value.as_str().is_some_and(|id_token| !id_token.is_empty())
                 })
             {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "callback_missing_id_token",
+                    "shared Google credential save rejected"
+                );
                 return Err(AuthError::AuthorizationRequired);
             }
             let existing = self
@@ -345,6 +393,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
             if existing.as_ref().is_some_and(|row| {
                 !row.client_id.is_empty() && row.client_id != self.expected_client_id
             }) {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "existing_credential_client_mismatch",
+                    "shared Google credential save rejected"
+                );
                 return Err(AuthError::AuthorizationRequired);
             }
             let (subject, email) = self.identity_for_save(token, existing.as_ref()).await?;
@@ -352,6 +405,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .as_ref()
                 .is_some_and(|(attempted_subject, _, _)| attempted_subject != &subject)
             {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "attempted_subject_mismatch",
+                    "shared Google credential save rejected"
+                );
                 return Err(AuthError::AuthorizationRequired);
             }
             let observed_revocation_epoch = attempted.as_ref().map_or_else(
@@ -359,6 +417,11 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 |(_, _, epoch)| *epoch,
             );
             if observed_revocation_epoch < 0 {
+                warn!(
+                    kind = "oauth_needs_reauth",
+                    reason = "revocation_epoch_not_observed",
+                    "shared Google credential save rejected"
+                );
                 return Err(AuthError::AuthorizationRequired);
             }
             let observed_generation = attempted
@@ -374,7 +437,14 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 .refresh_token()
                 .map(|value| value.secret().to_string())
                 .or_else(|| existing.as_ref().map(|row| row.refresh_token.clone()))
-                .ok_or(AuthError::AuthorizationRequired)?;
+                .ok_or_else(|| {
+                    warn!(
+                        kind = "oauth_needs_reauth",
+                        reason = "no_refresh_token",
+                        "shared Google credential save rejected"
+                    );
+                    AuthError::AuthorizationRequired
+                })?;
             let token_received_at = credentials
                 .token_received_at
                 .map(|value| value as i64)
@@ -422,16 +492,29 @@ impl CredentialStore for GoogleProviderCredentialStore {
                     .find_google_provider_credential(&subject)
                     .await
                     .map_err(|error| AuthError::InternalError(error.to_string()))?;
-                if current.as_ref().map(|row| row.generation) != observed_generation
-                    || current
-                        .as_ref()
-                        .is_some_and(|row| !row.client_id.is_empty() && row.client_id != client_id)
-                    || database
-                        .google_provider_fence_epoch()
-                        .await
-                        .map_err(|error| AuthError::InternalError(error.to_string()))?
-                        != observed_revocation_epoch
+                let rejection = if current.as_ref().map(|row| row.generation) != observed_generation
                 {
+                    Some("generation_changed")
+                } else if current
+                    .as_ref()
+                    .is_some_and(|row| !row.client_id.is_empty() && row.client_id != client_id)
+                {
+                    Some("stored_client_mismatch")
+                } else if database
+                    .google_provider_fence_epoch()
+                    .await
+                    .map_err(|error| AuthError::InternalError(error.to_string()))?
+                    != observed_revocation_epoch
+                {
+                    Some("revocation_epoch_changed")
+                } else {
+                    None
+                };
+                if let Some(reason) = rejection {
+                    warn!(
+                        kind = "oauth_needs_reauth",
+                        reason, "shared Google credential save rejected"
+                    );
                     return Err(AuthError::AuthorizationRequired);
                 }
                 let held: Box<dyn Send> = Box::new(guard);
@@ -474,6 +557,8 @@ impl CredentialStore for GoogleProviderCredentialStore {
                 subject_id = %fingerprint(&update_subject),
                 observed_provider_generation = ?observed_generation,
                 replacement_provider_credential_present = replacement_present,
+                kind = "oauth_needs_reauth",
+                reason = "stale_bundle_discarded",
                 "upstream google credential save discarded stale token bundle after generation or revocation epoch changed"
             );
             Err(AuthError::AuthorizationRequired)

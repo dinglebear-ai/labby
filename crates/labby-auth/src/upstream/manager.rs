@@ -530,6 +530,22 @@ impl UpstreamOauthManager {
                 e
             })?;
 
+        if let Some(store) = &google_store {
+            store
+                .observe_authorization_fence_epoch()
+                .await
+                .map_err(|e| {
+                    let mapped = map_auth_error(e);
+                    tracing::error!(
+                        upstream = %self.upstream.name,
+                        subject_id = %crate::util::fingerprint(subject),
+                        kind = mapped.kind(),
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "upstream oauth: failed to read Google revocation epoch before token exchange"
+                    );
+                    mapped
+                })?;
+        }
         if let Some(fence) = fence {
             match google_store {
                 Some(inner) => auth_manager.set_credential_store(inner.with_callback_fence(fence)),
@@ -2212,6 +2228,102 @@ mod url_tests {
                 .kind(),
             "oauth_needs_reauth"
         );
+    }
+
+    #[tokio::test]
+    async fn google_callback_saves_without_a_prior_credential_load() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sqlite = crate::sqlite::SqliteStore::open_with_key(
+            dir.path().join("auth.db"),
+            Some(crate::at_rest::TokenEncryptionKey::from_passphrase(
+                "manager-google-callback-test-key",
+            )),
+        )
+        .await
+        .expect("sqlite store");
+        let now = crate::util::now_unix();
+        sqlite
+            .upsert_google_provider_token_bundle(crate::types::GoogleProviderCredentialUpdate {
+                subject: "google-subject".to_string(),
+                email: Some("admin@example.com".to_string()),
+                client_id: "google-client".to_string(),
+                granted_scopes: vec!["openid".to_string()],
+                access_token: "access-token".to_string(),
+                refresh_token: "refresh-token".to_string(),
+                token_received_at: now,
+                access_token_expires_at: now + 3600,
+                issuer: Some("https://accounts.google.com".to_string()),
+                refreshed: false,
+                scope_upgraded: true,
+            })
+            .await
+            .expect("insert credential");
+        let original = sqlite
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        let key = crate::upstream::encryption::load_key(&base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            [0_u8; 32],
+        ))
+        .expect("encryption key");
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "access_token": "callback-access",
+                "refresh_token": "callback-refresh",
+                "token_type": "Bearer",
+                "expires_in": 3600
+            })))
+            .mount(&server)
+            .await;
+        let config: UpstreamConfig = serde_json::from_value(serde_json::json!({
+            "name": "sheets",
+            "url": format!("{}/mcp", server.uri()),
+            "oauth": {
+                "mode": "authorization_code_pkce",
+                "registration": {"strategy": "preregistered", "client_id": "google-client"},
+                "scopes": ["openid"],
+                "credential": {"source": "google_provider", "account": "google-subject"}
+            }
+        }))
+        .expect("upstream config");
+        let manager = UpstreamOauthManager::new(
+            sqlite.clone(),
+            key,
+            config,
+            "http://127.0.0.1:12345/auth/upstream/callback".to_string(),
+        );
+        let metadata: AuthorizationMetadata = serde_json::from_value(serde_json::json!({
+            "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+            "token_endpoint": format!("{}/token", server.uri()),
+            "issuer": "https://accounts.google.com",
+            "code_challenge_methods_supported": ["S256"]
+        }))
+        .expect("metadata");
+        *manager.metadata_cache.write().await = Some(metadata);
+
+        let begin = manager.begin_authorization("alice").await.unwrap();
+        let state = url::Url::parse(&begin.authorization_url)
+            .unwrap()
+            .query_pairs()
+            .find(|(name, _)| name == "state")
+            .map(|(_, value)| value.into_owned())
+            .expect("state parameter");
+        manager
+            .complete_authorization_callback("alice", "code", &state)
+            .await
+            .expect("callback must observe the revocation epoch before saving");
+
+        let row = sqlite
+            .find_google_provider_credential("google-subject")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(row.refresh_token, "callback-refresh");
+        assert_eq!(row.generation, original.generation + 1);
     }
 
     #[tokio::test]
