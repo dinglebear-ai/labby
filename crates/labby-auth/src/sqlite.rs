@@ -1372,6 +1372,7 @@ fn open_connection(path: &Path) -> Result<Connection, AuthError> {
             expected_issuer TEXT,
             require_issuer INTEGER NOT NULL DEFAULT 0,
             requested_scopes_json TEXT NOT NULL DEFAULT '[]',
+            return_to       TEXT,
             created_at      INTEGER NOT NULL,
             expires_at      INTEGER NOT NULL,
             PRIMARY KEY (upstream_name, subject, csrf_token)
@@ -3392,6 +3393,118 @@ mod tests {
         assert_eq!(fetched.token_received_at, row.token_received_at);
         assert_eq!(fetched.access_token_expires_at, row.access_token_expires_at);
         assert_eq!(fetched.refresh_token_present, row.refresh_token_present);
+    }
+
+    #[tokio::test]
+    async fn upstream_oauth_state_return_to_binds_to_one_pending_state() {
+        let store = temp_store().await;
+        store
+            .save_upstream_oauth_state(sample_upstream_state())
+            .await
+            .unwrap();
+        let now = now_unix();
+        let target = "https://vml.tootie.tv/settings";
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_return_to("csrf-1", now)
+                .await
+                .unwrap(),
+            None
+        );
+        for (upstream, subject, csrf) in [
+            ("acme", "mallory", "csrf-1"),
+            ("other", "alice", "csrf-1"),
+            ("acme", "alice", "csrf-2"),
+        ] {
+            assert!(
+                !store
+                    .set_upstream_oauth_state_return_to(upstream, subject, csrf, target, now)
+                    .await
+                    .unwrap(),
+                "{upstream}/{subject}/{csrf} must not match"
+            );
+        }
+        assert!(
+            store
+                .set_upstream_oauth_state_return_to("acme", "alice", "csrf-1", target, now)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_return_to("csrf-1", now)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(target)
+        );
+        assert!(
+            store
+                .find_upstream_oauth_state_return_to("csrf-1", now + 301)
+                .await
+                .unwrap()
+                .is_none(),
+            "an expired state carries no destination"
+        );
+        assert!(
+            store
+                .take_upstream_oauth_state("acme", "alice", "csrf-1", now)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_return_to("csrf-1", now)
+                .await
+                .unwrap(),
+            None,
+            "a consumed state carries no destination"
+        );
+    }
+
+    #[tokio::test]
+    async fn schema_migration_v20_adds_upstream_oauth_return_to() {
+        let path = temp_db_path();
+        let key = TokenEncryptionKey::from_passphrase("sqlite-v20-migration-key");
+        drop(
+            SqliteStore::open_with_key(path.clone(), Some(key.clone()))
+                .await
+                .unwrap(),
+        );
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "ALTER TABLE upstream_oauth_state DROP COLUMN return_to;
+                 PRAGMA user_version = 19;",
+            )
+            .unwrap();
+        }
+        let store = SqliteStore::open_with_key(path.clone(), Some(key))
+            .await
+            .unwrap();
+        store
+            .save_upstream_oauth_state(sample_upstream_state())
+            .await
+            .unwrap();
+        assert!(
+            store
+                .set_upstream_oauth_state_return_to(
+                    "acme",
+                    "alice",
+                    "csrf-1",
+                    "https://vml.tootie.tv/",
+                    now_unix()
+                )
+                .await
+                .unwrap()
+        );
+        let conn = Connection::open(&path).unwrap();
+        let version: i64 = conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, migrations::SCHEMA_VERSION);
+        assert_eq!(version, 20);
     }
 
     #[tokio::test]

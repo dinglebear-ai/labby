@@ -279,6 +279,57 @@ impl SqliteStore {
         .await
     }
 
+    /// Attach a validated browser return URL to one pending personal OAuth
+    /// state. Returns `false` when no unexpired state matches all three keys.
+    pub async fn set_upstream_oauth_state_return_to(
+        &self,
+        upstream_name: &str,
+        subject: &str,
+        csrf_token: &str,
+        return_to: &str,
+        now: i64,
+    ) -> Result<bool, AuthError> {
+        let (upstream_name, subject, csrf_token, return_to) = (
+            upstream_name.to_string(),
+            subject.to_string(),
+            csrf_token.to_string(),
+            return_to.to_string(),
+        );
+        self.with_conn(move |conn| {
+            conn.execute(
+                "UPDATE upstream_oauth_state SET return_to = ?4
+                 WHERE upstream_name = ?1 AND subject = ?2 AND csrf_token = ?3
+                   AND expires_at > ?5",
+                params![upstream_name, subject, csrf_token, return_to, now],
+            )
+            .map(|updated| updated == 1)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
+    /// Read the browser return URL stored with a pending OAuth state, if any.
+    /// The callback reads it before the code exchange consumes the state.
+    pub async fn find_upstream_oauth_state_return_to(
+        &self,
+        csrf_token: &str,
+        now: i64,
+    ) -> Result<Option<String>, AuthError> {
+        let csrf_token = csrf_token.to_string();
+        self.with_conn(move |conn| {
+            conn.query_row(
+                "SELECT return_to FROM upstream_oauth_state
+                 WHERE csrf_token = ?1 AND expires_at > ?2",
+                params![csrf_token, now],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()
+            .map(Option::flatten)
+            .map_err(sqlite_error)
+        })
+        .await
+    }
+
     /// Delete a pending OAuth state token by CSRF token to foreclose replay attacks after exchange failure.
     pub async fn delete_upstream_oauth_state_by_csrf(
         &self,
