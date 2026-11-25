@@ -700,11 +700,23 @@ fn canonical_https_origin(value: &str) -> Option<String> {
     bare.then(|| url.origin().ascii_serialization())
 }
 
+/// Longest accepted personal OAuth return URL, so a stored destination cannot
+/// produce a `Location` header a reverse proxy refuses.
+const MAX_PERSONAL_OAUTH_RETURN_BYTES: usize = 2048;
+
+/// Query keys the callback appends to report the outcome. A destination that
+/// already carries one could pre-set a misleading result, so it is refused.
+const PERSONAL_OAUTH_RESULT_KEYS: [&str; 3] = ["upstream", "status", "error_kind"];
+
 /// Whether a browser may be returned to `candidate` after personal upstream
-/// OAuth: an https URL without userinfo or fragment whose origin exactly
-/// matches one configured origin. Loopback and custom schemes are not implied.
+/// OAuth: an https URL of at most 2 KiB, without userinfo, fragment or the
+/// callback's own result keys, whose origin exactly matches one configured
+/// origin. Loopback and custom schemes are not implied.
 #[must_use]
 pub fn personal_oauth_return_allowed(origins: &[String], candidate: &str) -> bool {
+    if candidate.len() > MAX_PERSONAL_OAUTH_RETURN_BYTES {
+        return false;
+    }
     let Ok(url) = Url::parse(candidate) else {
         return false;
     };
@@ -712,6 +724,9 @@ pub fn personal_oauth_return_allowed(origins: &[String], candidate: &str) -> boo
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
+        || url
+            .query_pairs()
+            .any(|(key, _)| PERSONAL_OAUTH_RESULT_KEYS.contains(&key.as_ref()))
     {
         return false;
     }
@@ -1264,9 +1279,14 @@ mod tests {
             "http://127.0.0.1:8080/",
             "vml://callback",
             "not a url",
+            "https://vml.tootie.tv/settings?status=ok",
+            "https://vml.tootie.tv/settings?x=1&upstream=linear",
+            "https://vml.tootie.tv/settings?error_kind=none",
         ] {
             assert!(!allowed(rejected), "{rejected}");
         }
+        let long = format!("https://vml.tootie.tv/{}", "a".repeat(2048));
+        assert!(!allowed(&long), "return URLs over 2 KiB are refused");
         assert!(!super::personal_oauth_return_allowed(
             &[],
             "https://vml.tootie.tv/"

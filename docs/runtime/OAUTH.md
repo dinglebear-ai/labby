@@ -1456,8 +1456,11 @@ personal_oauth_return_origins = ["https://app.example", "https://dev.example:588
 
 Entries are bare `https` origins: scheme, host and optional port, with no path,
 query, fragment, userinfo or wildcard. Loopback and custom schemes are never
-implied. An off-list `return_to` is refused with `invalid_param` before the
-authorization server is contacted. The accepted URL is stored with the pending
+implied. `return_to` is limited to 2 KiB and must not already carry the
+`upstream`, `status` or `error_kind` query keys the callback appends. An
+off-list or malformed `return_to` is refused with `invalid_param` before the
+authorization server is contacted. Every path on a listed origin is accepted,
+so list only origins whose applications do not themselves redirect onward. The accepted URL is stored with the pending
 OAuth state (`upstream_oauth_state.return_to`). After the callback completes, the
 browser is redirected to it with `upstream`, `status` (`ok` or `fail`) and, on
 failure, `error_kind` appended. If the origin was removed from the list
