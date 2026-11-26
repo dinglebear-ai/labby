@@ -17,14 +17,14 @@ use super::params::{
     CodeModeSetParams, GatewayAddParams, GatewayClientConfigParams, GatewayDiscoverParams,
     GatewayEnrichApplyParams, GatewayEnrichPreviewParams, GatewayEnrichmentScope,
     GatewayImportParams, GatewayImportTombstoneParams, GatewayMcpCleanupParams,
-    GatewayMcpRestartParams, GatewayMcpToggleParams, GatewayNameParams, GatewayOauthNameParams,
-    GatewayReloadParams, GatewayStatusParams, GatewayTestParams, GatewayUpdateParams,
-    GatewayUpdatePatch, GatewayUsageCallsParams, GatewayUsageMetricsParams, LoadoutNameParams,
-    LoadoutPatchParams, LoadoutSpecParams, LoadoutUpdateParams, ProtectedRouteNameParams,
-    ProtectedRouteSpecParams, ProtectedRouteUpdateParams, ResourceLeaseCreateParams,
-    ResourceLeaseReleaseParams, ResourceLeaseRenewParams, ServiceConfigGetParams,
-    ServiceConfigSetParams, VirtualServerMcpPolicyParams, VirtualServerNameParams,
-    VirtualServerSurfaceParams,
+    GatewayMcpRestartParams, GatewayMcpToggleParams, GatewayNameParams,
+    GatewayOauthAuthorizeParams, GatewayOauthNameParams, GatewayReloadParams, GatewayStatusParams,
+    GatewayTestParams, GatewayUpdateParams, GatewayUpdatePatch, GatewayUsageCallsParams,
+    GatewayUsageMetricsParams, LoadoutNameParams, LoadoutPatchParams, LoadoutSpecParams,
+    LoadoutUpdateParams, ProtectedRouteNameParams, ProtectedRouteSpecParams,
+    ProtectedRouteUpdateParams, ResourceLeaseCreateParams, ResourceLeaseReleaseParams,
+    ResourceLeaseRenewParams, ServiceConfigGetParams, ServiceConfigSetParams,
+    VirtualServerMcpPolicyParams, VirtualServerNameParams, VirtualServerSurfaceParams,
 };
 use super::types::{
     DiscoveredServerView, DiscoveryExplanationView, ExplainedDiscoveryView, ImportErrorView,
@@ -36,6 +36,38 @@ fn parse_params<T: DeserializeOwned>(params_value: Value) -> Result<T, ToolError
         message: format!("invalid gateway params: {e}"),
         param: "params".to_string(),
     })
+}
+
+/// Store a validated browser return URL on the pending OAuth state that
+/// `begin` created, keyed by the `state` parameter of its authorization URL.
+async fn attach_personal_oauth_return(
+    manager: &GatewayManager,
+    upstream: &str,
+    subject: &str,
+    begin: &labby_auth::upstream::types::BeginAuthorization,
+    return_to: &str,
+) -> Result<(), ToolError> {
+    let unavailable = || ToolError::internal_message("personal OAuth state is unavailable");
+    let csrf = url::Url::parse(&begin.authorization_url)
+        .ok()
+        .and_then(|url| {
+            url.query_pairs()
+                .find(|(name, _)| name == "state")
+                .map(|(_, value)| value.into_owned())
+        })
+        .ok_or_else(unavailable)?;
+    let sqlite = manager.oauth_sqlite().ok_or_else(unavailable)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    match sqlite
+        .set_upstream_oauth_state_return_to(upstream, subject, &csrf, return_to, now)
+        .await
+    {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(_) => Err(unavailable()),
+    }
 }
 
 fn reject_shared_oauth_subject_override(params: &Value) -> Result<(), ToolError> {
@@ -1150,7 +1182,15 @@ async fn handle_oauth_actions(
         }
         "gateway.oauth.authorize" => {
             reject_shared_oauth_subject_override(&params_value)?;
-            let params: GatewayOauthNameParams = parse_params(params_value)?;
+            let params: GatewayOauthAuthorizeParams = parse_params(params_value)?;
+            if let Some(return_to) = params.return_to.as_deref()
+                && !manager.personal_oauth_return_allowed(return_to)
+            {
+                return Err(ToolError::InvalidParam {
+                    message: "return_to must be an https URL on a configured personal OAuth return origin".to_string(),
+                    param: "return_to".to_string(),
+                });
+            }
             enrichment_scope.ensure_visible(&params.upstream)?;
             let subject = enrichment_scope.oauth_subject.as_deref()
                 .filter(|subject| !subject.is_empty() && *subject != SHARED_GATEWAY_OAUTH_SUBJECT)
@@ -1172,9 +1212,13 @@ async fn handle_oauth_actions(
                     sdk_kind: "unknown_upstream".into(),
                     message: "OAuth upstream is unavailable".into(),
                 })?;
-            to_json(
-                crate::gateway::oauth::begin_authorization(manager, &config.name, subject).await?,
-            )
+            let begin =
+                crate::gateway::oauth::begin_authorization(manager, &config.name, subject).await?;
+            if let Some(return_to) = params.return_to.as_deref() {
+                attach_personal_oauth_return(manager, &config.name, subject, &begin, return_to)
+                    .await?;
+            }
+            to_json(begin)
         }
         "gateway.oauth.start" => {
             reject_shared_oauth_subject_override(&params_value)?;

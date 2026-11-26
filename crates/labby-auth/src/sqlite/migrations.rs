@@ -6,7 +6,7 @@ use tracing::{info, warn};
 use super::{add_column_if_missing, hash_token, sqlite_error};
 use crate::error::AuthError;
 
-pub(crate) const SCHEMA_VERSION: i64 = 19;
+pub(crate) const SCHEMA_VERSION: i64 = 20;
 
 pub(super) fn run_migrations(conn: &Connection) -> Result<(), AuthError> {
     run_migrations_inner(conn, None)
@@ -428,6 +428,16 @@ fn run_migrations_inner(conn: &Connection, fault: Option<&str>) -> Result<(), Au
                                      identity_issuer, provider_generation, expires_at, grant_family);
                  PRAGMA user_version = 19;",
             )
+            .map_err(sqlite_error)?;
+        transaction.commit().map_err(sqlite_error)?;
+    }
+    if current < 20 {
+        // v20: personal upstream OAuth may carry a validated browser return
+        // URL from authorization start to its callback.
+        let transaction = conn.unchecked_transaction().map_err(sqlite_error)?;
+        add_column_if_missing(&transaction, "upstream_oauth_state", "return_to", "TEXT")?;
+        transaction
+            .execute_batch("PRAGMA user_version = 20;")
             .map_err(sqlite_error)?;
         transaction.commit().map_err(sqlite_error)?;
     }

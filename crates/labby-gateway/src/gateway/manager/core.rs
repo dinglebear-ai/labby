@@ -265,6 +265,7 @@ impl GatewayManager {
             code_mode_skill_provider: None,
             code_mode_artifact_search_provider: None,
             code_mode_personal_oauth_provider: None,
+            personal_oauth_return_origins: Arc::new(Vec::new()),
             agent_executions: Arc::new(agent_executions),
             agent_execution_cancellations: Arc::new(dashmap::DashMap::new()),
             code_mode_app_state: CodeModeAppState::default(),
@@ -386,6 +387,22 @@ impl GatewayManager {
     ) -> Self {
         self.code_mode_personal_oauth_provider = Some(provider);
         self
+    }
+
+    /// Allow personal upstream OAuth to return the browser to these exact
+    /// https origins (`[auth] personal_oauth_return_origins`).
+    #[must_use]
+    pub fn with_personal_oauth_return_origins(mut self, origins: Vec<String>) -> Self {
+        self.personal_oauth_return_origins = Arc::new(origins);
+        self
+    }
+
+    /// Whether `candidate` is an allowed personal OAuth return destination.
+    pub fn personal_oauth_return_allowed(&self, candidate: &str) -> bool {
+        labby_auth::config::personal_oauth_return_allowed(
+            &self.personal_oauth_return_origins,
+            candidate,
+        )
     }
 
     pub(crate) fn has_code_mode_personal_oauth_provider(&self) -> bool {

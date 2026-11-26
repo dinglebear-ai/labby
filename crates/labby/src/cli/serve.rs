@@ -2662,6 +2662,8 @@ async fn build_gateway_runtime(
     let gateway_manager = gateway_manager.with_code_mode_personal_oauth_provider(Arc::new(
         crate::dispatch::code_mode_authority::CanonicalPersonalOauthProvider,
     ));
+    let gateway_manager = gateway_manager
+        .with_personal_oauth_return_origins(auth_config.personal_oauth_return_origins.clone());
 
     // Code Mode `openapi` provider: config-parse errors DO fail boot (bad TOML),
     // but spec-LOAD failures never do — `OpenApiRegistry::load` degrades + WARNs

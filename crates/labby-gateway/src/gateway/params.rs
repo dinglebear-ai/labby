@@ -483,6 +483,14 @@ pub(crate) struct GatewayOauthNameParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct GatewayOauthAuthorizeParams {
+    pub upstream: String,
+    /// Browser destination after the callback; must match a configured origin.
+    #[serde(default)]
+    pub return_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct ResourceLeaseCreateParams {
     pub resource: String,
     pub scopes: Vec<String>,

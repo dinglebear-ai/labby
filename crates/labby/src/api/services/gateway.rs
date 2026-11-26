@@ -874,7 +874,8 @@ mod tests {
                 key,
                 "https://lab.example/auth/upstream/callback".into(),
             )
-            .with_upstream_oauth_managers(managers),
+            .with_upstream_oauth_managers(managers)
+            .with_personal_oauth_return_origins(vec!["https://vml.example".into()]),
         );
         manager.replace_config_for_tests(vec![config]).await;
         let request = || {
@@ -959,6 +960,79 @@ mod tests {
                 .await
                 .expect("platform state owner"),
             Some(("personal".into(), "platform-user".into()))
+        );
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_return_to(&state, now)
+                .await
+                .expect("return lookup"),
+            None,
+            "authorize without return_to stores no destination"
+        );
+
+        // A browser return destination must sit on a configured origin; it is
+        // refused before the authorization server is contacted.
+        let requests_before = provider.received_requests().await.unwrap().len();
+        for rejected in [
+            "https://evil.example/",
+            "http://vml.example/",
+            "https://vml.example.evil.example/",
+        ] {
+            let routes = gateway_routes_with_auth_context_and_platform_role(
+                Arc::clone(&manager),
+                manage_auth_context("personal-user"),
+                false,
+            )
+            .await;
+            let response = post_gateway_routes(
+                routes,
+                json!({
+                    "action": "gateway.oauth.authorize",
+                    "params": {"upstream": "personal", "return_to": rejected}
+                }),
+            )
+            .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "{rejected}"
+            );
+        }
+        assert_eq!(
+            provider.received_requests().await.unwrap().len(),
+            requests_before
+        );
+
+        let routes = gateway_routes_with_auth_context_and_platform_role(
+            Arc::clone(&manager),
+            manage_auth_context("personal-user"),
+            false,
+        )
+        .await;
+        let returning = post_gateway_routes(
+            routes,
+            json!({
+                "action": "gateway.oauth.authorize",
+                "params": {"upstream": "personal", "return_to": "https://vml.example/after?x=1"}
+            }),
+        )
+        .await;
+        assert_eq!(returning.status(), StatusCode::OK);
+        let returning_state = authorization_state(returning).await;
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_return_to(&returning_state, now)
+                .await
+                .expect("return lookup")
+                .as_deref(),
+            Some("https://vml.example/after?x=1")
+        );
+        assert_eq!(
+            store
+                .find_upstream_oauth_state_owner(&returning_state, now)
+                .await
+                .expect("state owner"),
+            Some(("personal".into(), "personal-user".into()))
         );
     }
 

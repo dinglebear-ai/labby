@@ -1443,6 +1443,30 @@ rejects subject overrides and route-hidden upstreams, and cannot replace central
 Google-provider or shared operator credentials. The callback requires the matching
 browser account and consumes the expiring PKCE state once. No admin scope is added.
 
+To send the browser back to another application after the callback, pass
+`return_to` with an `https` URL:
+`{ "upstream": "<name>", "return_to": "https://app.example/after" }`.
+Its origin must exactly match an entry in `[auth] personal_oauth_return_origins`
+(environment: `LABBY_AUTH_PERSONAL_OAUTH_RETURN_ORIGINS`, comma-separated):
+
+```toml
+[auth]
+personal_oauth_return_origins = ["https://app.example", "https://dev.example:5880"]
+```
+
+Entries are bare `https` origins: scheme, host and optional port, with no path,
+query, fragment, userinfo or wildcard. Loopback and custom schemes are never
+implied. `return_to` is limited to 2 KiB and must not already carry the
+`upstream`, `status` or `error_kind` query keys the callback appends. An
+off-list or malformed `return_to` is refused with `invalid_param` before the
+authorization server is contacted. Every path on a listed origin is accepted,
+so list only origins whose applications do not themselves redirect onward. The accepted URL is stored with the pending
+OAuth state (`upstream_oauth_state.return_to`). After the callback completes, the
+browser is redirected to it with `upstream`, `status` (`ok` or `fail`) and, on
+failure, `error_kind` appended. If the origin was removed from the list
+in the meantime, the built-in `/gateway/oauth/result` page is used instead. Shared
+operator authorization (`gateway.oauth.start`) does not accept `return_to`.
+
 Check the connector's account and granted scopes. For an operator connector intended to have admin
 access, explicitly request and approve `lab:admin` through the connector's login
 flow. Do not automatically elevate restricted connectors or copy shared credentials
