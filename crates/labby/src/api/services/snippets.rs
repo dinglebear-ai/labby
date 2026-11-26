@@ -206,7 +206,11 @@ mod tests {
                     .unwrap();
                 let listing: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
                 let items = listing["snippets"].as_array().expect("snippet list");
-                assert!(items.iter().any(|item| item["name"] == "homelab-readonly-pulse"));
+                assert!(
+                    items
+                        .iter()
+                        .any(|item| item["name"] == "homelab-readonly-pulse")
+                );
                 for item in items {
                     assert_eq!(item["source"], "builtin");
                     let path = item["path"].as_str().unwrap();
