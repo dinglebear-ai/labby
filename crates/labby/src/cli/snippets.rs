@@ -318,6 +318,12 @@ async fn run_on_remote_store(
     live: crate::live_gateway::LiveGateway,
     format: OutputFormat,
 ) -> Result<ExitCode> {
+    let command = match command {
+        SnippetsCommand::Test(args) if args.all => {
+            return test_all_on_remote_store(args, live, format).await;
+        }
+        other => other,
+    };
     let (action, params, yes, dry_run) = snippet_action(command)?;
     if dry_run {
         print_dry_run("snippets", &action, &params, format)?;
@@ -364,6 +370,57 @@ async fn run_on_remote_store(
     })
 }
 
+/// "test --all" against a remote store: one request per snippet, each with
+/// its own execution budget, so the whole run is not squeezed into a single
+/// clamped request.
+async fn test_all_on_remote_store(
+    args: SnippetTestArgs,
+    live: crate::live_gateway::LiveGateway,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    anyhow::ensure!(
+        args.name.is_none() && args.fixture.is_none(),
+        "test --all cannot be combined with a snippet name or --fixture"
+    );
+    let params = crate::cli::params::parse_kv_params(args.params)?;
+    let names = remote_store_snippet_names(
+        &live
+            .dispatch_snippets_action("snippets.list", json!({}))
+            .await?,
+    )?;
+    let live = live.with_dispatch_timeout(REMOTE_EXECUTION_TIMEOUT);
+    let mut results = Vec::with_capacity(names.len());
+    for name in names {
+        let request = json!({"name": name, "live": args.live, "params": params});
+        let mut report = match live
+            .dispatch_snippets_action("snippets.test", request)
+            .await
+        {
+            Ok(report) => report,
+            Err(error) => json!({"name": name, "passed": false, "error": error.to_string()}),
+        };
+        compact_bulk_report(&mut report);
+        results.push(report);
+    }
+    let passed = !results.is_empty() && results.iter().all(|value| value["passed"] == true);
+    crate::output::print(&json!({"passed": passed, "results": results}), format)?;
+    Ok(remote_test_exit_code(passed))
+}
+
+fn remote_store_snippet_names(list: &Value) -> Result<std::collections::BTreeSet<String>> {
+    let names: std::collections::BTreeSet<String> = list["snippets"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("the configured server returned no snippet list"))?
+        .iter()
+        .filter_map(|snippet| snippet["name"].as_str().map(str::to_owned))
+        .collect();
+    anyhow::ensure!(
+        names.len() <= 100,
+        "test --all is bounded to 100 snippets; test named subsets instead"
+    );
+    Ok(names)
+}
+
 async fn generate_fixture(
     args: SnippetFixtureArgs,
     format: OutputFormat,
@@ -376,7 +433,16 @@ async fn generate_fixture(
     let params = json!({"name":args.name,"params":crate::cli::params::parse_kv_params(args.params)?,
         "schemas":schemas,"results":results,"variant":args.variant,
         "tools":if args.tools.is_empty() {None} else {Some(args.tools)}, "check":read_fixture(args.check)?});
-    let report = if !saved {
+    // A configured remote owns the snippet store, so it resolves the snippet
+    // and builds the fixture; only the output file is written here.
+    let report = if remote_target_configured(config)
+        && let Some(live) = crate::live_gateway::detect(config, "cli").await?
+        && !live.allows_local_fallback()
+    {
+        validate_remote_team_selection(team_id)?;
+        live.dispatch_snippets_action("snippets.fixture", params)
+            .await?
+    } else if !saved {
         if let Some(live) = crate::live_gateway::detect(config, "cli").await? {
             validate_remote_team_selection(team_id)?;
             crate::dispatch::snippets::generate_remote_fixture(&live, params).await?
@@ -541,6 +607,19 @@ fn validate_remote_team_selection(team_id: Option<&str>) -> Result<()> {
 #[cfg(test)]
 mod remote_snippet_tests {
     use super::*;
+
+    #[test]
+    fn remote_store_names_come_from_the_server_list_and_stay_bounded() {
+        let list = json!({"snippets": [{"name": "b"}, {"name": "a"}, {"name": "a"}]});
+        let names: Vec<_> = remote_store_snippet_names(&list)
+            .unwrap()
+            .into_iter()
+            .collect();
+        assert_eq!(names, ["a", "b"]);
+        let many: Vec<_> = (0..101).map(|i| json!({"name": format!("s{i}")})).collect();
+        assert!(remote_store_snippet_names(&json!({"snippets": many})).is_err());
+        assert!(remote_store_snippet_names(&json!({})).is_err());
+    }
 
     #[test]
     fn bulk_tests_deduplicate_shadowed_names_and_bound_unique_names() {
