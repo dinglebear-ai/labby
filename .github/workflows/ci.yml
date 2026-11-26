@@ -1254,12 +1254,14 @@ jobs:
       - name: Verify requirement-specific MCP authorization contracts
         if: ${{ !cancelled() && matrix.lane == 'auth' && steps.mcp_auth_digests.outcome == 'success' }}
         run: python3 scripts/ci/mcp_auth_normative_conformance.py
+      # Fetches OpenAI's live guide. Upstream edits are not caused by a pull
+      # request, so this runs in the nightly and manual CI runs only.
       - name: Verify current OpenAI authentication source denominator
         id: openai_denominator
-        if: ${{ !cancelled() && matrix.lane == 'auth' }}
+        if: ${{ !cancelled() && matrix.lane == 'auth' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: python3 scripts/ci/refresh_openai_auth_denominator.py --check
       - name: Verify requirement-specific OpenAI authentication contracts
-        if: ${{ !cancelled() && matrix.lane == 'auth' && steps.openai_denominator.outcome == 'success' }}
+        if: ${{ !cancelled() && matrix.lane == 'auth' && steps.openai_denominator.outcome != 'failure' }}
         run: scripts/ci/openai-auth-conformance.sh
       - name: Checkout immutable MCP specification source
         if: matrix.lane == 'protocol'

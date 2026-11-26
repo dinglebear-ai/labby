@@ -426,7 +426,7 @@ Labby. This removes the former fleet-wide ARM64 token rejection while keeping
 the shared workflows' default x86_64-only for callers that do not opt in. The
 release matrix builds Linux ARM64 natively on `ubuntu-24.04-arm`.
 The `arm64-package-smoke.yml` workflow checks out the exact pull-request head
-(or the pushed main commit) on the same native runner, builds the frontend and release
+(or the current main commit) on the same native runner, builds the frontend and release
 binary, verifies the archive checksum and contents, and executes the extracted
 binary's Code Mode and Skill CLI smoke. It retains the archive, checksum, and a
 source-head/digest receipt for seven days. This qualification has read-only
@@ -434,7 +434,8 @@ repository permissions and never publishes a tag, release, or package.
 Pull requests trigger it only for packaging, toolchain, dependency, and native
 build inputs: the workflow itself, `release.yml`, the native build actions,
 Cargo manifests and the lockfile, `.cargo/`, crate build scripts, and the
-installers. Every push to main and every manual dispatch runs it.
+installers. Main is smoked nightly at 08:17 UTC and on manual dispatch, not on
+every merge; every release also builds ARM64 natively.
 
 ## GitHub-hosted runners
 
@@ -733,7 +734,7 @@ replacement tag or bump the version merely to hide partial publication.
 
 ### Independent Incus image
 
-`incus-image.yml` builds and smokes the image nightly (07:41 UTC) on `main`,
+`incus-image.yml` builds and smokes the image nightly (07:11 UTC) on `main`,
 and on manual dispatch, for example when an external supply source needs
 requalification. It no longer runs per pull request or push: the build takes
 about 45 minutes, and pull requests that change the image definition, pinned

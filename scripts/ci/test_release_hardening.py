@@ -70,9 +70,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
         workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
         # Pull requests smoke ARM64 only for packaging, toolchain, dependency,
-        # and native-build inputs; every merge to main smokes it regardless.
-        self.assertEqual(['pull_request', 'push', 'workflow_dispatch'], list(workflow['on']))
-        self.assertEqual(['main'], workflow['on']['push']['branches'])
+        # and native-build inputs; main is smoked nightly, not on every merge.
+        self.assertEqual(['pull_request', 'schedule', 'workflow_dispatch'], list(workflow['on']))
+        self.assertTrue(workflow['on']['schedule'][0]['cron'])
         paths = set(workflow['on']['pull_request']['paths'])
         for build_input in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'crates/*/Cargo.toml', 'crates/*/build.rs', '.github/actions/build-gateway-admin/**', '.github/actions/setup-rust-kache/**', '.github/workflows/release.yml'):
             self.assertIn(build_input, paths)
