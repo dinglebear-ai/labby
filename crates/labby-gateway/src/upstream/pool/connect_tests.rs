@@ -856,6 +856,157 @@ async fn http_header_mismatch_refreshes_rmcp_schema_cache_and_mcp_param_header()
     );
 }
 
+#[derive(Clone, Default)]
+struct RejectingToolResponder {
+    tool_calls: Arc<AtomicUsize>,
+}
+
+impl Respond for RejectingToolResponder {
+    fn respond(&self, request: &Request) -> ResponseTemplate {
+        let body: Value = serde_json::from_slice(&request.body).expect("valid JSON-RPC request");
+        let method = body
+            .get("method")
+            .and_then(Value::as_str)
+            .expect("JSON-RPC method");
+        let id = body.get("id").cloned().unwrap_or(Value::Null);
+
+        match method {
+            "server/discover" => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "resultType": "complete",
+                    "supportedVersions": ["2026-07-28"],
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "rejecting-tool", "version": "1.0.0"},
+                    "ttlMs": 0,
+                    "cacheScope": "private"
+                }
+            })),
+            "tools/list" => ResponseTemplate::new(200).set_body_json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "tools": [{
+                        "name": "list_events",
+                        "description": "rejects unknown arguments",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"startTime": {"type": "string"}}
+                        }
+                    }]
+                }
+            })),
+            "tools/call" => {
+                self.tool_calls.fetch_add(1, Ordering::SeqCst);
+                if body.pointer("/params/arguments/timeMin").is_some() {
+                    // The shape Google's MCP servers answer unknown arguments
+                    // with: an HTTP 400 that is not a JSON-RPC message.
+                    return ResponseTemplate::new(400).set_body_json(json!({
+                        "error": {
+                            "code": 400,
+                            "message": "Unknown name \"timeMin\"",
+                            "status": "INVALID_ARGUMENT"
+                        }
+                    }));
+                }
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": "events"}],
+                        "isError": false
+                    }
+                }))
+            }
+            other => ResponseTemplate::new(500)
+                .set_body_string(format!("unexpected MCP method: {other}")),
+        }
+    }
+}
+
+#[tokio::test]
+async fn http_400_tool_call_is_an_invalid_params_rejection_on_a_healthy_connection() {
+    let server = MockServer::start().await;
+    let responder = RejectingToolResponder::default();
+    Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path("/mcp"))
+        .respond_with(responder.clone())
+        .mount(&server)
+        .await;
+
+    let mut config = test_upstream_config();
+    config.name = "rejecting-http".to_string();
+    config.url = Some(format!("{}/mcp", server.uri()));
+
+    let (connection, _tools) = connect_http_upstream(
+        config.url.as_deref().expect("url"),
+        &config,
+        None,
+        None,
+        None,
+        (),
+    )
+    .await
+    .expect("rejecting upstream connects");
+
+    let pool = UpstreamPool::new();
+    let mut wrong = rmcp::model::CallToolRequestParams::new("list_events");
+    wrong.arguments = Some(serde_json::Map::from_iter([(
+        "timeMin".to_string(),
+        Value::String("2026-11-26T00:00:00Z".to_string()),
+    )]));
+    let error = super::tools_call::call_tool_once_with_header_recovery(
+        &pool,
+        &connection.peer,
+        &config.name,
+        wrong,
+    )
+    .await
+    .expect_err("unknown arguments are rejected");
+
+    assert!(
+        !super::capability_call::service_error_affects_connection_health(&error),
+        "a rejected request must not count against upstream health: {error}"
+    );
+    assert!(
+        matches!(error, rmcp::ServiceError::McpError(_)),
+        "expected an MCP rejection, got {error}"
+    );
+    let rmcp::ServiceError::McpError(data) = &error else {
+        return;
+    };
+    assert_eq!(
+        crate::upstream::tool_error::mcp_error_data_kind(data),
+        "invalid_param"
+    );
+    assert!(
+        data.message.contains("HTTP 400 Bad Request"),
+        "{}",
+        data.message
+    );
+    assert!(data.message.contains("Unknown name"), "{}", data.message);
+
+    let mut right = rmcp::model::CallToolRequestParams::new("list_events");
+    right.arguments = Some(serde_json::Map::from_iter([(
+        "startTime".to_string(),
+        Value::String("2026-11-26T00:00:00".to_string()),
+    )]));
+    let response = super::tools_call::call_tool_once_with_header_recovery(
+        &pool,
+        &connection.peer,
+        &config.name,
+        right,
+    )
+    .await
+    .expect("the same connection serves the corrected call");
+    assert!(matches!(
+        response,
+        rmcp::model::CallToolResponse::Complete(_)
+    ));
+    assert_eq!(responder.tool_calls.load(Ordering::SeqCst), 2);
+}
+
 #[tokio::test]
 async fn http_upstream_does_not_downgrade_generic_server_failures() {
     let server = MockServer::start().await;

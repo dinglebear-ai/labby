@@ -1,7 +1,7 @@
 ---
 title: "Error Contract"
 created: "2026-07-30"
-updated: "2026-09-29"
+updated: "2026-11-26"
 ---
 
 # Error Contract
@@ -247,6 +247,21 @@ the matching request ID. Existing authentication and session-expiry handling
 remains ahead of this fallback. Non-protocol error bodies are reduced to
 sanitized transport diagnostics rather than echoed. See
 `crates/labby-gateway/src/upstream/http_client.rs` and `pool/lifecycle_compat.rs`.
+
+### Upstream HTTP 400/422 on ordinary requests
+
+An HTTP 400 or 422 answering an ordinary request (anything but `initialize`,
+`server/discover`, and notifications) means the upstream refused that request,
+typically because the arguments do not match the tool's input schema. The HTTP
+adapter turns it into a JSON-RPC `invalid_params` error for the pending request
+instead of a transport failure, so it surfaces as `invalid_param` with
+`revise_and_retry`, records a breaker success, and does not evict a
+subject-scoped connection. A JSON-RPC error body with a null or absent `id` is
+re-correlated with its own code and message; any other JSON body contributes
+only a sanitized, bounded `error.message`/`message`/`detail` string, and
+non-JSON bodies are never echoed. Bodies carrying a session or lifecycle hint
+(for example `no valid session id`) keep the transport-failure shape so session
+recovery and compatibility negotiation still see them.
 
 ## Logging And Redaction
 

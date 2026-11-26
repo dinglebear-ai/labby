@@ -138,12 +138,24 @@ pub(super) fn same_origin_redirect_policy() -> reqwest::redirect::Policy {
 const COMPATIBILITY_MARKER_SCAN_BYTES: usize = 8 * 1024;
 
 fn sanitized_transport_error(status: reqwest::StatusCode, body: &[u8]) -> String {
+    compatibility_marker(body).map_or_else(
+        || format!("HTTP {status}"),
+        |marker| format!("HTTP {status}: {marker}"),
+    )
+}
+
+/// Return the session or lifecycle hint an upstream error body carries, if any.
+///
+/// These hints mean reconnecting or renegotiating, not revising the request,
+/// is the fix, so they stay transport failures for the lifecycle and
+/// session-recovery classifiers downstream.
+fn compatibility_marker(body: &[u8]) -> Option<&'static str> {
     // Compatibility hints are short protocol errors. Inspect only a bounded
     // prefix so a large upstream error cannot force a second body-sized
     // allocation merely to produce stable transport metadata.
     let prefix = &body[..body.len().min(COMPATIBILITY_MARKER_SCAN_BYTES)];
     let normalized = String::from_utf8_lossy(prefix).to_ascii_lowercase();
-    let compatibility_marker = [
+    [
         "unsupported mcp-protocol-version",
         "unsupported protocol version",
         "method not found",
@@ -156,12 +168,96 @@ fn sanitized_transport_error(status: reqwest::StatusCode, body: &[u8]) -> String
         "invalid request parameters",
     ]
     .into_iter()
-    .find(|marker| normalized.contains(marker));
+    .find(|marker| normalized.contains(marker))
+}
 
-    compatibility_marker.map_or_else(
-        || format!("HTTP {status}"),
-        |marker| format!("HTTP {status}: {marker}"),
+/// Char cap for the upstream's own explanation carried on a synthesized
+/// request rejection. Downstream sanitization bounds it again.
+const REQUEST_REJECTION_DETAIL_CAP_CHARS: usize = 512;
+
+/// HTTP statuses with which an upstream refuses one request as malformed
+/// while the connection itself stays usable.
+fn is_request_rejection_status(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST | reqwest::StatusCode::UNPROCESSABLE_ENTITY
     )
+}
+
+/// Turn an upstream's HTTP 400/422 answer to an ordinary request into a
+/// JSON-RPC error for that request.
+///
+/// Without this, a rejection the caller can fix (for example tool arguments
+/// that do not match the tool's input schema) surfaces as a transport failure:
+/// agents see `network_error` and are told to retry unchanged, the circuit
+/// breaker counts a caller mistake against the upstream, and subject-scoped
+/// connections are evicted. Returning `invalid_params` instead classifies it
+/// as `invalid_param`, keeps the connection healthy, and preserves the
+/// upstream's own JSON-RPC error when it sent one without a usable `id`.
+///
+/// Lifecycle requests (`initialize`, `server/discover`), notifications, and
+/// bodies carrying a session or lifecycle hint keep the transport-failure shape
+/// that compatibility negotiation and session recovery depend on.
+fn request_rejection_response(
+    status: reqwest::StatusCode,
+    content_type: Option<&str>,
+    body: &[u8],
+    expected_id: Option<&serde_json::Value>,
+    is_ordinary_request: bool,
+) -> Option<ServerJsonRpcMessage> {
+    if !is_ordinary_request
+        || !is_request_rejection_status(status)
+        || compatibility_marker(body).is_some()
+    {
+        return None;
+    }
+    let id = expected_id
+        .cloned()
+        .and_then(|id| serde_json::from_value::<rmcp::model::RequestId>(id).ok())?;
+    let json = content_type
+        .is_some_and(|ct| ct.as_bytes().starts_with(JSON_MIME_TYPE.as_bytes()))
+        .then(|| serde_json::from_slice::<serde_json::Value>(body).ok())
+        .flatten();
+
+    // A JSON-RPC error with a null or absent id answers the one request this
+    // POST carried; keep the upstream's own code, message, and data.
+    if let Some(value) = json.as_ref()
+        && value.get("id").is_none_or(serde_json::Value::is_null)
+        && let Ok(JsonRpcMessage::Error(error)) =
+            serde_json::from_value::<ServerJsonRpcMessage>(value.clone())
+    {
+        return Some(JsonRpcMessage::error(error.error, Some(id)));
+    }
+
+    let mut message = format!("upstream rejected the request with HTTP {status}");
+    if let Some(detail) = json.as_ref().and_then(upstream_rejection_detail) {
+        message.push_str(": ");
+        message.push_str(&detail);
+    }
+    message.push_str("; check the arguments against the input schema before retrying");
+    Some(JsonRpcMessage::error(
+        rmcp::model::ErrorData::invalid_params(
+            message,
+            Some(serde_json::json!({ "http_status": status.as_u16() })),
+        ),
+        Some(id),
+    ))
+}
+
+/// Pull a short, sanitized explanation out of a structured (JSON) error body.
+///
+/// Only well-known message fields are read; raw or non-JSON bodies are never
+/// echoed, because they may reflect credentials, signed URLs, or markup.
+fn upstream_rejection_detail(value: &serde_json::Value) -> Option<String> {
+    let text = value
+        .pointer("/error/message")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| value.get("error").and_then(serde_json::Value::as_str))
+        .or_else(|| value.get("message").and_then(serde_json::Value::as_str))
+        .or_else(|| value.get("detail").and_then(serde_json::Value::as_str))?;
+    let detail =
+        labby_runtime::redact::sanitize_error_text(text.trim(), REQUEST_REJECTION_DETAIL_CAP_CHARS);
+    (!detail.trim().is_empty()).then_some(detail)
 }
 
 const RESPONSE_BUDGET_QUANTUM: usize = 1024;
@@ -777,6 +873,10 @@ impl StreamableHttpClient for BodyCappedHttpClient {
         let is_discover_request = method_header
             .as_ref()
             .is_some_and(|method| method.as_bytes() == b"server/discover");
+        let is_ordinary_request = request_expects_response
+            && !method_header.as_ref().is_some_and(|method| {
+                matches!(method.as_bytes(), b"server/discover" | b"initialize")
+            });
         let mut request = self
             .inner
             .post(uri.as_ref())
@@ -894,10 +994,23 @@ impl StreamableHttpClient for BodyCappedHttpClient {
                     response_session_id,
                 ));
             }
+            if let Some(message) = request_rejection_response(
+                status,
+                content_type.as_deref(),
+                &body_bytes,
+                expected_response_id.as_ref(),
+                is_ordinary_request,
+            ) {
+                return Ok(StreamableHttpPostResponse::Json(
+                    message,
+                    response_session_id,
+                ));
+            }
             // The response body is upstream-controlled and may reflect bearer
             // credentials, signed URLs, personal data, or terminal controls.
-            // It is parsed above only for a valid JSON-RPC error; every other
-            // transport failure exposes stable metadata, never raw body text.
+            // It is parsed above only for a JSON-RPC error or a sanitized
+            // structured rejection message; every other transport failure
+            // exposes stable metadata, never raw body text.
             return Err(StreamableHttpError::UnexpectedServerResponse(Cow::Owned(
                 sanitized_transport_error(status, &body_bytes),
             )));
@@ -2319,5 +2432,144 @@ mod tests {
         assert!(!chunk_contains_event_boundary(b"rest", true));
         // No prev '\n', chunk starts with '\n' but no in-chunk "\n\n": OK.
         assert!(!chunk_contains_event_boundary(b"\nrest", false));
+    }
+
+    async fn post_to_rejecting_upstream(
+        body: ResponseTemplate,
+        message: ClientJsonRpcMessage,
+    ) -> Result<StreamableHttpPostResponse, StreamableHttpError<reqwest::Error>> {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/mcp"))
+            .respond_with(body)
+            .mount(&server)
+            .await;
+        build(1024)
+            .post_message(
+                format!("{}/mcp", server.uri()).into(),
+                message,
+                None,
+                None,
+                HashMap::new(),
+            )
+            .await
+    }
+
+    fn rejection_json(response: StreamableHttpPostResponse) -> Value {
+        let StreamableHttpPostResponse::Json(message, _) = response else {
+            panic!("request rejection must become a JSON-RPC error: {response:?}");
+        };
+        serde_json::to_value(message).expect("serialize response")
+    }
+
+    #[tokio::test]
+    async fn plain_400_on_tool_call_becomes_invalid_params_without_echoing_body() {
+        let response = post_to_rejecting_upstream(
+            ResponseTemplate::new(400)
+                .set_body_raw(b"Bearer top-secret <html>bad</html>".to_vec(), "text/html"),
+            jsonrpc_request_with_method("tools/call"),
+        )
+        .await
+        .expect("a 400 tool call rejection is a JSON-RPC error, not a transport failure");
+
+        let value = rejection_json(response);
+        assert_eq!(value.get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_i64),
+            Some(i64::from(rmcp::model::ErrorCode::INVALID_PARAMS.0))
+        );
+        assert_eq!(
+            value
+                .pointer("/error/data/http_status")
+                .and_then(Value::as_u64),
+            Some(400)
+        );
+        let message = value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .expect("error message");
+        assert!(message.contains("HTTP 400 Bad Request"), "{message}");
+        assert!(!message.contains("top-secret"), "{message}");
+        assert!(!message.contains("<html>"), "{message}");
+    }
+
+    #[tokio::test]
+    async fn structured_400_keeps_the_upstream_explanation() {
+        let response = post_to_rejecting_upstream(
+            ResponseTemplate::new(400).set_body_json(serde_json::json!({
+                "error": {
+                    "code": 400,
+                    "message": "Invalid JSON payload received. Unknown name \"timeMin\"",
+                    "status": "INVALID_ARGUMENT"
+                }
+            })),
+            jsonrpc_request_with_method("tools/call"),
+        )
+        .await
+        .expect("structured 400 is a JSON-RPC error");
+
+        let value = rejection_json(response);
+        let message = value
+            .pointer("/error/message")
+            .and_then(Value::as_str)
+            .expect("error message");
+        assert!(message.contains("Unknown name \"timeMin\""), "{message}");
+        assert_eq!(
+            value.pointer("/error/code").and_then(Value::as_i64),
+            Some(i64::from(rmcp::model::ErrorCode::INVALID_PARAMS.0))
+        );
+    }
+
+    #[tokio::test]
+    async fn id_less_jsonrpc_400_is_recorrelated_with_its_own_code() {
+        let response = post_to_rejecting_upstream(
+            ResponseTemplate::new(422).set_body_json(serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": null,
+                "error": {"code": -32602, "message": "timeMin is not a known argument"}
+            })),
+            jsonrpc_request_with_method("tools/call"),
+        )
+        .await
+        .expect("id-less JSON-RPC rejection is a JSON-RPC error");
+
+        let value = rejection_json(response);
+        assert_eq!(value.get("id"), Some(&serde_json::json!(1)));
+        assert_eq!(
+            value.pointer("/error/message").and_then(Value::as_str),
+            Some("timeMin is not a known argument")
+        );
+    }
+
+    #[tokio::test]
+    async fn session_and_lifecycle_400s_stay_transport_failures() {
+        let session_hint = post_to_rejecting_upstream(
+            ResponseTemplate::new(400).set_body_string("Bad Request: No valid session ID provided"),
+            jsonrpc_request_with_method("tools/call"),
+        )
+        .await
+        .expect_err("a session hint must stay a transport failure for session recovery");
+        assert!(session_hint.to_string().contains("no valid session id"));
+
+        for lifecycle in ["initialize", "server/discover"] {
+            let error = post_to_rejecting_upstream(
+                ResponseTemplate::new(400).set_body_string("Bad Request"),
+                jsonrpc_request_with_method(lifecycle),
+            )
+            .await
+            .expect_err("lifecycle rejections must stay transport failures");
+            assert!(
+                error.to_string().contains("HTTP 400"),
+                "{lifecycle}: {error}"
+            );
+        }
+
+        let server_error = post_to_rejecting_upstream(
+            ResponseTemplate::new(503).set_body_string("unavailable"),
+            jsonrpc_request_with_method("tools/call"),
+        )
+        .await
+        .expect_err("server errors are not request rejections");
+        assert!(server_error.to_string().contains("503"));
     }
 }
