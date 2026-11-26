@@ -157,7 +157,9 @@ pub async fn run(
         && let Some(live) = crate::live_gateway::detect(config, "cli").await?
         && !live.allows_local_fallback()
     {
-        let live = live.with_team_id(team_id.map(ToOwned::to_owned));
+        // The server's snippet API does not scope work to a Team yet, so a
+        // Team selection is refused rather than silently run with root authority.
+        validate_remote_team_selection(team_id)?;
         return run_on_remote_store(args.command, live, format).await;
     }
     let needs_upstreams = matches!(&args.command, SnippetsCommand::Exec(_))
@@ -531,7 +533,7 @@ fn compact_bulk_report(report: &mut Value) {
 fn validate_remote_team_selection(team_id: Option<&str>) -> Result<()> {
     anyhow::ensure!(
         team_id.is_none(),
-        "remote snippet execution cannot apply --team-id to the daemon's MCP Code Mode route; use a Team-bound gateway endpoint"
+        "remote snippet commands cannot apply --team-id: the configured server does not scope snippets to a Team yet; run them without a Team selection or use a Team-bound gateway endpoint"
     );
     Ok(())
 }
