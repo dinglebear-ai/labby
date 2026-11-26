@@ -8891,17 +8891,22 @@ Options:
           [default: auto]
           [possible values: auto, plain, color]
 
-      --services <SERVICES>
-          Comma- or space-separated list of services to enable. Empty = all
+      --no-bundled-skills
+          Leave Labby's bundled skills out of `skills/list` because this client already has them installed locally (for example from the Labby plugin). They stay readable by URI. Plugins set the environment variable, which older binaries ignore
+
+          [env: LABBY_MCP_NO_BUNDLED_SKILLS=]
 
   -v, --verbose...
           Include diagnostic events on stderr. Repeat for trace-level detail
 
-      --log-level <LOG_LEVEL>
-          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
-
   -q, --quiet
           Suppress console logs, but always report command errors
+
+      --services <SERVICES>
+          Comma- or space-separated list of services to enable. Empty = all
+
+      --log-level <LOG_LEVEL>
+          Override the log filter level for this process. Sets `LABBY_LOG=labby=<level>,warn` before tracing init. Example: `--log-level debug`
 
       --no-input
           Never prompt for missing input or confirmation

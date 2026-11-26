@@ -117,6 +117,7 @@ pub struct BridgeServerHandler {
     tool_security_schemes: Option<serde_json::Value>,
     local_messages: Option<std::sync::Arc<super::session_messages::LocalMessageSession>>,
     stdio_channel: Option<(std::sync::Arc<super::claude_channel::ChannelSession>, usize)>,
+    hide_bundled_skills: bool,
 }
 
 impl BridgeServerHandler {
@@ -129,6 +130,7 @@ impl BridgeServerHandler {
             tool_security_schemes: None,
             stdio_channel: None,
             local_messages: None,
+            hide_bundled_skills: false,
         }
     }
 
@@ -146,6 +148,12 @@ impl BridgeServerHandler {
         max_bytes: usize,
     ) -> Self {
         self.stdio_channel = channel.map(|channel| (channel, max_bytes));
+        self
+    }
+
+    /// Leave Labby's bundled skills out of `skills/list` (`labby mcp --no-bundled-skills`).
+    pub(crate) fn with_hidden_bundled_skills(mut self, hide: bool) -> Self {
+        self.hide_bundled_skills = hide;
         self
     }
 
@@ -167,6 +175,7 @@ impl BridgeServerHandler {
             tool_security_schemes: None,
             stdio_channel: None,
             local_messages: None,
+            hide_bundled_skills: false,
         }
     }
 }
@@ -785,7 +794,14 @@ impl ServerHandler for BridgeServerHandler {
                 )
                 .await?
             {
-                ServerResult::ListSkillsResult(result) => Ok(result),
+                ServerResult::ListSkillsResult(mut result) => {
+                    if self.hide_bundled_skills {
+                        result
+                            .skills
+                            .retain(|skill| !crate::skills::is_bundled_skill_uri(&skill.uri));
+                    }
+                    Ok(result)
+                }
                 _ => Err(unexpected_response("list_skills")),
             }
         })

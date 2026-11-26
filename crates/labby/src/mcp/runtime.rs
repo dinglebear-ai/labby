@@ -219,6 +219,9 @@ pub(crate) struct McpRouteRuntime {
     pub(crate) event_credential_adapter: Option<Arc<crate::access::AccessCredentialAdapter>>,
     #[cfg(feature = "gateway")]
     pub(crate) claude_channel: Option<Arc<super::claude_channel::ChannelSession>>,
+    /// Leave Labby's bundled skills out of `skills/list` for a client that
+    /// already installed them locally (`labby mcp --no-bundled-skills`).
+    pub(crate) hide_bundled_skills: bool,
     tools: RwLock<CatalogSnapshotStore<rmcp::model::Tool, ToolSnapshotMetadata>>,
     resources: RwLock<CatalogSnapshotStore<Resource>>,
     resource_templates: RwLock<CatalogSnapshotStore<ResourceTemplate>>,

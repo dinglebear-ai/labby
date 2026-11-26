@@ -263,6 +263,12 @@ pub struct McpServeArgs {
     /// Push this connection's Labby notices through Claude Code Channels.
     #[arg(long)]
     pub claude_channel: bool,
+    /// Leave Labby's bundled skills out of `skills/list` because this client
+    /// already has them installed locally (for example from the Labby plugin).
+    /// They stay readable by URI. Plugins set the environment variable, which
+    /// older binaries ignore.
+    #[arg(long, env = "LABBY_MCP_NO_BUNDLED_SKILLS", value_parser = clap::builder::BoolishValueParser::new())]
+    pub no_bundled_skills: bool,
     /// Comma- or space-separated list of services to enable. Empty = all.
     #[arg(long, value_delimiter = ',')]
     pub services: Vec<String>,
@@ -284,6 +290,8 @@ pub struct ServeArgs {
     pub mcp_events: bool,
     #[arg(skip)]
     pub(crate) claude_channel: bool,
+    #[arg(skip)]
+    pub(crate) no_bundled_skills: bool,
     /// Check daily for verified updates and exit after installation so a supervisor can restart Labby (macOS Apple Silicon).
     #[arg(long)]
     pub auto_update: bool,
@@ -319,6 +327,7 @@ pub async fn run_mcp(
             mcp_events: false,
             agent_messages: args.agent_messages,
             claude_channel: args.claude_channel,
+            no_bundled_skills: args.no_bundled_skills,
             auto_update: false,
             services: args.services,
             transport: Some(Transport::Stdio),
@@ -659,6 +668,7 @@ async fn run_server(
             live,
             args.claude_channel,
             args.agent_messages,
+            args.no_bundled_skills,
             &config.code_mode,
         )
         .await;
@@ -899,6 +909,7 @@ async fn run_server(
                 spawn_depth,
                 suppress_upstream_runtime,
                 recursion_guard_degrades_upstreams,
+                args.no_bundled_skills,
                 StdioAgentOptions {
                     claude_channel: args.claude_channel,
                     messages: args.agent_messages,
@@ -917,6 +928,7 @@ async fn run_server(
                 spawn_depth,
                 suppress_upstream_runtime,
                 recursion_guard_degrades_upstreams,
+                args.no_bundled_skills,
             )
             .await;
         }
@@ -2855,6 +2867,7 @@ async fn run_stdio_bridge(
     live: crate::live_gateway::LiveGateway,
     claude_channel: bool,
     agent_messages: bool,
+    no_bundled_skills: bool,
     code_mode: &labby_runtime::gateway_config::CodeModeConfig,
 ) -> Result<ExitCode> {
     use crate::mcp::bridge::{BridgeClientHandler, BridgeServerHandler};
@@ -2921,7 +2934,8 @@ async fn run_stdio_bridge(
     };
     let handler = BridgeServerHandler::new(service)
         .with_local_messages(messages.clone())
-        .with_stdio_channel(channel.clone(), code_mode.response_envelope_max_bytes());
+        .with_stdio_channel(channel.clone(), code_mode.response_envelope_max_bytes())
+        .with_hidden_bundled_skills(no_bundled_skills);
     let running = handler.serve(rmcp::transport::stdio_pipes()).await?;
     tracing::info!(
         subsystem = "startup",
@@ -2979,6 +2993,7 @@ fn run_stdio(
     spawn_depth: Option<u32>,
     suppress_upstream_runtime: bool,
     recursion_guard_degrades_upstreams: bool,
+    no_bundled_skills: bool,
     #[cfg(feature = "gateway")] agent_options: StdioAgentOptions,
 ) -> impl Future<Output = Result<ExitCode>> {
     // The server bootstrap stays on the stack throughout this session. Keep
@@ -3080,10 +3095,14 @@ fn run_stdio(
                     .context("initialize local message session")?,
                 );
             }
+            runtime.hide_bundled_skills = no_bundled_skills;
             Arc::new(runtime)
         };
         #[cfg(not(feature = "gateway"))]
-        let route_runtime = Default::default();
+        let route_runtime = Arc::new(crate::mcp::runtime::McpRouteRuntime {
+            hide_bundled_skills: no_bundled_skills,
+            ..Default::default()
+        });
         let server = LabMcpServer {
             installation_id: stdio_installation_id,
             registry,
