@@ -270,6 +270,30 @@ async fn dispatch_inner_owned(
         }
         "snippets.create" => {
             let params: CreateParams = parse_params(params)?;
+            // Any caller that may execute Code Mode may add a snippet;
+            // replacing an existing one or shadowing a built-in stays with
+            // owners and admins.
+            if dispatch_context
+                .as_ref()
+                .is_some_and(|ctx| !ctx.execution_caller.can_execute())
+            {
+                return Err(ToolError::Forbidden {
+                    message: "creating a snippet requires Code Mode execute authority (`lab`)"
+                        .into(),
+                    required_scopes: vec!["lab".into()],
+                });
+            }
+            if (params.force || params.shadow_builtin)
+                && dispatch_context
+                    .as_ref()
+                    .is_some_and(|ctx| !ctx.is_admin || !ctx.execution_caller.is_admin())
+            {
+                return Err(ToolError::Forbidden {
+                    message: "replacing a snippet or shadowing a built-in requires lab:admin"
+                        .into(),
+                    required_scopes: vec!["lab:admin".into()],
+                });
+            }
             let builtins = builtin_snippet_dir();
             to_json(
                 store_operation(move |home| {

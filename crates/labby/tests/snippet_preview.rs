@@ -339,3 +339,164 @@ fn contended_snippet_publication_does_not_block_async_worker() {
         String::from_utf8_lossy(&output.stderr)
     );
 }
+
+/// A non-admin caller may create and run snippets, but every tool call the
+/// snippet makes is checked against that caller's own scope: a snippet grants
+/// nothing the caller does not already have.
+#[test]
+fn non_admin_snippet_runs_only_with_the_callers_own_tool_authority() {
+    if let Ok(home) = std::env::var("LABBY_NONADMIN_SNIPPET_CHILD") {
+        non_admin_snippet_contract(Path::new(&home));
+        return;
+    }
+    let home = tempfile::tempdir().unwrap();
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--exact",
+            "non_admin_snippet_runs_only_with_the_callers_own_tool_authority",
+            "--nocapture",
+        ])
+        .env("LABBY_NONADMIN_SNIPPET_CHILD", home.path())
+        .env("LABBY_HOME", home.path())
+        .env("HOME", home.path())
+        .env("LABBY_MCP_HTTP_PORT", "0")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn non_admin_snippet_contract(home: &Path) {
+    let script = home.join("echo.py");
+    fs::write(&script, r"import json, sys
+for line in sys.stdin:
+    request = json.loads(line)
+    if 'id' not in request: continue
+    method = request['method']
+    if method == 'initialize':
+        result = {'protocolVersion': '2025-06-18', 'capabilities': {'tools': {}}, 'serverInfo': {'name': 'snippet-echo-fixture', 'version': '1'}}
+    elif method == 'tools/list':
+        result = {'tools': [{'name': 'echo', 'description': 'Synthetic echo', 'inputSchema': {'type': 'object'}, 'annotations': {'readOnlyHint': True}}]}
+    elif method == 'ping':
+        result = {}
+    elif method == 'tools/call':
+        result = {'content': [{'type': 'text', 'text': 'echoed'}], 'isError': False}
+    else:
+        print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'error': {'code': -32601, 'message': 'Method not found'}}), flush=True)
+        continue
+    print(json.dumps({'jsonrpc': '2.0', 'id': request['id'], 'result': result}), flush=True)
+").unwrap();
+    let python = std::process::Command::new("python3")
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(python.status.success());
+    let python = String::from_utf8(python.stdout).unwrap().trim().to_owned();
+    let text = format!(
+        "[code_mode]\nenabled = true\n[gateway]\nextra_stdio_commands = [{}]\n[[upstream]]\nname = \"fixture\"\ntransport = \"stdio\"\ncommand = {}\nargs = [{}]\n",
+        serde_json::to_string(&python).unwrap(),
+        serde_json::to_string(&python).unwrap(),
+        serde_json::to_string(script.to_str().unwrap()).unwrap()
+    );
+    let config: labby::config::LabConfig = toml::from_str(&text).unwrap();
+    let gateway_config = config.to_gateway_config();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let store = StepJournalStore::open(home.join("journal.db")).await.unwrap();
+            let manager = GatewayManager::with_store(
+                home.join("config.toml"),
+                GatewayRuntimeHandle::default(),
+                Arc::new(labby::dispatch::gateway::config_store::LabConfigStore::new(
+                    Arc::new(std::sync::RwLock::new(config)),
+                    home.join("config.toml"),
+                )),
+            )
+            .with_step_journal(Arc::new(store))
+            .with_code_mode_runner_spawn(RunnerSpawn {
+                program: env!("CARGO_BIN_EXE_labby").into(),
+                args: vec!["internal".into(), "code-mode-runner".into()],
+            });
+            manager.seed_config(gateway_config).await;
+
+            let scoped = |namespace: &str| {
+                let mut caller = context("carol");
+                caller.is_admin = false;
+                caller.execution_caller = CodeModeCaller::Scoped {
+                    host_context: Default::default(),
+                    sub: Some("carol".into()),
+                    capabilities: CodeModeCallerCapabilities {
+                        can_read: true,
+                        can_execute: true,
+                        can_use_snippets: true,
+                        is_admin: false,
+                    },
+                };
+                caller.execution_scope =
+                    labby_codemode::ToolScope::scoped_namespaces(vec![namespace.into()], Vec::new());
+                caller.capability_filter_fingerprint = caller.execution_scope.fingerprint();
+                caller
+            };
+            let body = "async () => { try { await callTool('fixture::echo', {}); return { reached: true }; } catch (error) { return { reached: false }; } }";
+
+            // A read-only caller may not install code that later runs by name.
+            let mut reader = scoped("fixture");
+            reader.execution_caller = CodeModeCaller::Scoped {
+                host_context: Default::default(),
+                sub: Some("carol".into()),
+                capabilities: CodeModeCallerCapabilities {
+                    can_read: true,
+                    can_execute: false,
+                    can_use_snippets: false,
+                    is_admin: false,
+                },
+            };
+            let refused = call(&manager, "snippets.create", json!({"name":"reader-probe","body":body}), &reader)
+                .await
+                .unwrap_err();
+            assert_eq!(refused.kind(), "forbidden");
+
+            // A non-admin may add a new snippet but may not replace one.
+            let carol = scoped("fixture");
+            call(&manager, "snippets.create", json!({"name":"echo-probe","body":body}), &carol)
+                .await
+                .unwrap();
+            let replace = call(
+                &manager,
+                "snippets.create",
+                json!({"name":"echo-probe","body":body,"force":true}),
+                &carol,
+            )
+            .await
+            .unwrap_err();
+            assert_eq!(replace.kind(), "forbidden");
+            call(&manager, "snippets.validate", json!({"name":"echo-probe"}), &carol)
+                .await
+                .unwrap();
+
+            // With the tool in the caller's own scope, the call goes through.
+            let allowed = call(&manager, "snippets.exec", json!({"name":"echo-probe"}), &carol)
+                .await
+                .unwrap();
+            assert_eq!(allowed["result"]["reached"], true, "{allowed}");
+
+            // The same snippet run by a caller without that tool cannot reach it.
+            let outsider = scoped("elsewhere");
+            let denied = call(&manager, "snippets.exec", json!({"name":"echo-probe"}), &outsider)
+                .await
+                .unwrap();
+            assert_eq!(denied["result"]["reached"], false, "{denied}");
+            assert!(
+                denied["calls"]
+                    .as_array()
+                    .is_none_or(|calls| calls.iter().all(|call| call["ok"] != true)),
+                "{denied}"
+            );
+        });
+}

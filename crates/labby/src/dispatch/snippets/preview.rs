@@ -152,7 +152,9 @@ pub(super) async fn prepare(
     context: &SnippetDispatchContext,
     previous: Option<&SnippetExecutionReceipt>,
 ) -> Result<PreparedSnippet, ToolError> {
-    authorize(context)?;
+    // Running a snippet needs no admin authority: every tool call it makes is
+    // checked against the caller's own scope and caller identity. Preview,
+    // replay, and the fingerprint-guarded exec authorize at their entry points.
     let name = name.to_owned();
     let snippet = super::dispatch::store_operation(move |home| {
         resolve_snippet(home, &builtin_snippet_dir(), &name)
@@ -171,7 +173,6 @@ pub(super) async fn prepare_source(
     supplied: Value,
     context: &SnippetDispatchContext,
 ) -> Result<PreparedSnippet, ToolError> {
-    authorize(context)?;
     let snippet = super::store::resolve_inline_snippet(name, &body, format)?;
     prepare_resolved(manager, snippet, supplied, context, None).await
 }
@@ -447,6 +448,7 @@ pub(super) async fn guarded_exec(
         owned.as_ref()
     };
     let context = context.unwrap_or_else(SnippetDispatchContext::trusted_local);
+    authorize(&context)?;
     let prepared = prepare(manager, name, input, &context, None).await?;
     check_guard(&prepared, expected)?;
     outcome_json(

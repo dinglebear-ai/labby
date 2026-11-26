@@ -81,12 +81,11 @@ async fn handle(
         crate::dispatch::gateway::code_mode::CodeModeCaller::TrustedLocal,
         |value| crate::dispatch::gateway::code_mode::CodeModeCaller::Scoped {
             host_context: Default::default(),
-            capabilities: labby_codemode::CodeModeCallerCapabilities {
-                can_read: true,
-                can_execute: true,
-                can_use_snippets: true,
-                is_admin: true,
-            },
+            // Snippets are open to non-admin callers, so the run must carry
+            // the caller's real capabilities, never an admin ceiling.
+            capabilities: crate::mcp::call_tool_codemode::code_mode_capabilities_for_scopes(
+                &value.0.scopes,
+            ),
             sub: Some(value.0.sub.clone()),
         },
     );
@@ -225,11 +224,7 @@ mod tests {
         let app = app_with_auth(read_only_auth_context());
         for action in [
             "snippets.get",
-            "snippets.exec",
-            "snippets.create",
             "snippets.remove",
-            "snippets.test",
-            "snippets.validate",
             "snippets.preview",
             "snippets.replay",
             "snippets.receipt",
@@ -257,7 +252,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn validate_requires_admin_scope() {
+    async fn validate_is_open_to_non_admin_callers() {
         let app = app_with_auth(read_only_auth_context());
         let response = post_snippets(
             app,
@@ -271,7 +266,7 @@ mod tests {
         )
         .await;
 
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[cfg(feature = "gateway")]

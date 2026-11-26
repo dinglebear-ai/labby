@@ -218,7 +218,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "snippets.exec",
         description: "Execute a snippet through gateway Code Mode",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "CodeModeExecutionResponse",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetExecutionResponseSchema>),
         params: &[
@@ -334,7 +334,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         // Destructive: with `force` it overwrites an existing user snippet, and
         // any create installs code that later runs by name.
         destructive: true,
-        requires_admin: true,
+        requires_admin: false,
         returns: "SnippetInfo",
         output_schema: Some(
             labby_primitives::action::schema_for::<labby_codemode::snippet::store::SnippetInfo>,
@@ -422,7 +422,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "snippets.validate",
         description: "Validate a snippet body or existing snippet without executing it",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "SnippetValidation",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetValidationSchema>),
         params: &[
@@ -462,7 +462,7 @@ pub const ACTIONS: &[ActionSpec] = &[
         name: "snippets.test",
         description: "Test with deterministic fixtures; real upstream calls require live: true",
         destructive: false,
-        requires_admin: true,
+        requires_admin: false,
         returns: "SnippetTestResult",
         output_schema: Some(labby_primitives::action::schema_for::<SnippetTestResultSchema>),
         params: &[

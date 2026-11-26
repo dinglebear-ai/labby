@@ -6272,10 +6272,8 @@
           "name": "snippets.exec",
           "description": "Execute a snippet through gateway Code Mode",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -6386,10 +6384,8 @@
           "name": "snippets.create",
           "description": "Create a user snippet under LABBY_HOME/snippets",
           "destructive": true,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -6476,10 +6472,8 @@
           "name": "snippets.validate",
           "description": "Validate a snippet body or existing snippet without executing it",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "name",
@@ -6518,10 +6512,8 @@
           "name": "snippets.test",
           "description": "Test with deterministic fixtures; real upstream calls require live: true",
           "destructive": false,
-          "requires_admin": true,
-          "required_scopes": [
-            "lab:admin"
-          ],
+          "requires_admin": false,
+          "required_scopes": [],
           "params": [
             {
               "name": "fixture",

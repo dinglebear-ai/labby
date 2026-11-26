@@ -9780,11 +9780,9 @@
     "action": "snippets.create",
     "description": "Create a user snippet under LABBY_HOME/snippets",
     "destructive": true,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
     "required_capability": null,
     "resource_family": null,
     "params": [
@@ -9833,7 +9831,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -9842,11 +9840,9 @@
     "action": "snippets.exec",
     "description": "Execute a snippet through gateway Code Mode",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
     "required_capability": null,
     "resource_family": null,
     "params": [
@@ -9889,7 +9885,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -10279,11 +10275,9 @@
     "action": "snippets.test",
     "description": "Test with deterministic fixtures; real upstream calls require live: true",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
     "required_capability": null,
     "resource_family": null,
     "params": [
@@ -10326,7 +10320,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },
@@ -10335,11 +10329,9 @@
     "action": "snippets.validate",
     "description": "Validate a snippet body or existing snippet without executing it",
     "destructive": false,
-    "requires_admin": true,
-    "required_scopes": [
-      "lab:admin"
-    ],
-    "authorization_boundary": "transport_admin",
+    "requires_admin": false,
+    "required_scopes": [],
+    "authorization_boundary": "transport",
     "required_capability": null,
     "resource_family": null,
     "params": [
@@ -10364,7 +10356,7 @@
       "web_ui": false
     },
     "requires_http_subject": false,
-    "auth_posture": "requires lab:admin in addition to the selected transport authentication",
+    "auth_posture": "uses the selected transport auth and gateway visibility policy",
     "inventory_scope": "global_inventory_not_active_runtime_exposure",
     "builtin": false
   },

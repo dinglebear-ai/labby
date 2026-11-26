@@ -271,8 +271,8 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `snippets` | `help` | false | false | false |  | `transport` | `-` | `-` |  | `Catalog` | mcp, api |
 | `snippets` | `schema` | false | false | false |  | `transport` | `-` | `-` | `action*: string` | `Schema` | mcp, api |
 | `snippets` | `snippets.artifact` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`path*: string` | `SnippetArtifactResponse` | mcp, api |
-| `snippets` | `snippets.create` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string`<br>`shadow_builtin: boolean` | `SnippetInfo` | cli, mcp, api |
-| `snippets` | `snippets.exec` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`body: string`<br>`source_format: string`<br>`params: object`<br>`expected_preview_fingerprint: string` | `CodeModeExecutionResponse` | cli, mcp, api |
+| `snippets` | `snippets.create` | false | true | false |  | `transport` | `-` | `-` | `name*: string`<br>`body*: string`<br>`description: string`<br>`force: boolean`<br>`expected_digest: string`<br>`shadow_builtin: boolean` | `SnippetInfo` | cli, mcp, api |
+| `snippets` | `snippets.exec` | false | false | false |  | `transport` | `-` | `-` | `name*: string`<br>`body: string`<br>`source_format: string`<br>`params: object`<br>`expected_preview_fingerprint: string` | `CodeModeExecutionResponse` | cli, mcp, api |
 | `snippets` | `snippets.fixture` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string`<br>`params: object`<br>`tools: string[]`<br>`check: object`<br>`schemas: object`<br>`results: object`<br>`variant: string` | `SnippetFixtureDraft` | cli, mcp, api |
 | `snippets` | `snippets.get` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `ResolvedSnippet` | cli, mcp, api |
 | `snippets` | `snippets.history` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`limit: integer`<br>`cursor: string` | `SnippetReceiptHistory` | mcp, api |
@@ -282,8 +282,8 @@ This is a global inventory, not the active runtime exposure. `Admin` and `Requir
 | `snippets` | `snippets.receipt` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string` | `SnippetExecutionReceipt` | mcp, api |
 | `snippets` | `snippets.remove` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `name*: string` | `SnippetRemoveResult` | cli, mcp, api |
 | `snippets` | `snippets.replay` | false | true | true | lab:admin | `transport_admin` | `-` | `-` | `execution_id*: string`<br>`params*: object`<br>`expected_preview_fingerprint*: string`<br>`acknowledged_drift*: array` | `CodeModeExecutionResponse` | mcp, api |
-| `snippets` | `snippets.test` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `fixture: object`<br>`live: boolean`<br>`name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
-| `snippets` | `snippets.validate` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
+| `snippets` | `snippets.test` | false | false | false |  | `transport` | `-` | `-` | `fixture: object`<br>`live: boolean`<br>`name: string`<br>`params: object`<br>`all: boolean` | `SnippetTestResult` | cli, mcp, api |
+| `snippets` | `snippets.validate` | false | false | false |  | `transport` | `-` | `-` | `name: string`<br>`body: string` | `SnippetValidation` | cli, mcp, api |
 | `sources` | `help` | true | false | false |  | `transport` | `-` | `-` |  | `HelpPayload` | mcp, api |
 | `sources` | `schema` | true | false | false |  | `transport` | `-` | `-` | `action*: string` | `ActionSpec` | mcp, api |
 | `sources` | `sources.configure` | false | false | true | lab:admin | `transport_admin` | `-` | `-` | `connection_id: string`<br>`id*: string`<br>`enabled: boolean`<br>`interval_seconds: integer` | `Source` | mcp, api, web |

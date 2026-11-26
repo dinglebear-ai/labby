@@ -1,7 +1,7 @@
 ---
 title: "Gateway Management"
 created: "2026-07-30"
-updated: "2026-11-13"
+updated: "2026-11-26"
 ---
 
 # Gateway Management
@@ -45,6 +45,52 @@ Runtime views include optional `server_name`, `server_version`, and
 `protocol_version` from the connected upstream's negotiated server information.
 These are peer-reported metadata; missing values do not prove the upstream is
 absent. Runtime inspection does not start a connection just to fill them in.
+
+### Local Stdio Owner
+
+A standalone `labby mcp` process runs as the operating-system user who owns
+`$LABBY_HOME`. It has no network listener, and its requests carry no
+authentication context or verified identity. Labby treats that caller as the
+local owner of the installation. It may run installation-scoped `gateway.*`
+actions (`gateway.add`, `gateway.update`, `gateway.mcp.enable`,
+`gateway.mcp.disable`, `gateway.remove`, `gateway.list`, `gateway.oauth.authorize`, and the other
+platform gateway actions) without a set-up access store. These actions use the
+same validation and atomic configuration writes as the daemon.
+
+The grant has limits:
+
+- It applies only to the stdio transport. Loopback HTTP is not a local owner,
+  because any local process can connect to it. HTTP callers, including
+  unauthenticated loopback callers, keep the access-store authority rules.
+- Team-scoped actions (a `team_id` parameter or a Team-bound route) still need
+  a verified Team member.
+- When `labby mcp` finds a running daemon, it forwards requests to that daemon.
+  The daemon then applies its own authority rules.
+
+The CLI does not fall back to local state. `labby server add`, `enable`, and
+`disable` still need a reachable daemon (see
+[Remote gateway authority](../design/REMOTE_GATEWAY_TARGET.md)). A local
+program that cannot start `labby serve` can spawn `labby mcp` and call these
+actions over stdio.
+
+### Seed Upstreams For A New Labby
+
+Use one of the supported routes to give a new Labby a prepared set of
+upstreams, some enabled and others present but disabled:
+
+- **Before the first run.** Write `$LABBY_HOME/config.toml` with
+  `config_version = 1` and one `[[upstream]]` table for each server. Set
+  `enabled = false` on the servers that must be present but off. See
+  [Runtime Configuration](../runtime/CONFIG.md#gateway-upstreams). Use this
+  route only when no `config.toml` exists, because it replaces the file.
+- **On an existing configuration.** Spawn `labby mcp` and call `gateway.add`
+  once for each server, with `params.spec` set to the upstream configuration,
+  including `enabled`. `gateway.add` adds only. It refuses a name that is
+  already configured and does not change existing servers. Skip or report the
+  refused names. To preview, call `gateway.list` first and compare names.
+
+`labby server import` reads MCP configurations that editors have installed. It
+does not accept a seed file.
 
 ### Capability Observation
 
