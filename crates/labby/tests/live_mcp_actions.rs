@@ -1725,7 +1725,7 @@ async fn read_only_non_admin_discovers_mixed_service_but_cannot_execute_admin_ac
 }
 
 #[tokio::test]
-async fn selected_daemon_snippet_keeps_local_source_and_durable_receipts() {
+async fn selected_daemon_snippet_runs_from_the_daemon_store_with_durable_receipts() {
     let guard = live_labby::LiveLabbyBuilder::new()
         .env("LABBY_E2E_BOOTSTRAP_STATIC_OWNER", "1")
         .start()
@@ -1734,24 +1734,34 @@ async fn selected_daemon_snippet_keeps_local_source_and_durable_receipts() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".labby/snippets")).unwrap();
     std::fs::create_dir_all(home.path().join("tmp")).unwrap();
-    // The selected daemon deliberately has no copy of either local snippet.
+    // A configured server owns the snippet store: each snippet runs from the
+    // daemon's copy, and the stale local copy of the same name is never used.
+    let daemon_store = guard.root().join("labby-home/snippets");
+    std::fs::create_dir_all(&daemon_store).unwrap();
     for (name, declaration, raw) in [
         ("remote-legacy", "", false),
         ("remote-deny-all", "tools: []\n", false),
         ("remote-bare-js", "", true),
     ] {
-        let body = if raw {
-            "async () => ({ok:true, source:'local-only', markdown:'```js'})".to_owned()
-        } else {
-            format!(
-                "---\nname: {name}\ndescription: Local selected source\n{declaration}---\n```js\nasync () => ({{ok:true, source:'local-only'}})\n```\n"
-            )
+        let body = |source: &str| {
+            if raw {
+                format!("async () => ({{ok:true, source:'{source}', markdown:'```js'}})")
+            } else {
+                format!(
+                    "---\nname: {name}\ndescription: Selected source\n{declaration}---\n```js\nasync () => ({{ok:true, source:'{source}'}})\n```\n"
+                )
+            }
         };
         let extension = if raw { "js" } else { "md" };
         std::fs::write(
             home.path()
                 .join(format!(".labby/snippets/{name}.{extension}")),
-            &body,
+            body("local-only"),
+        )
+        .unwrap();
+        std::fs::write(
+            daemon_store.join(format!("{name}.{extension}")),
+            body("daemon-store"),
         )
         .unwrap();
         let mut command = tokio::process::Command::from(live_labby::isolated_command(home.path()));
@@ -1777,7 +1787,7 @@ async fn selected_daemon_snippet_keeps_local_source_and_durable_receipts() {
         );
         let response: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
         let response = response.get("data").unwrap_or(&response);
-        assert_eq!(response["result"]["source"], "local-only", "{response}");
+        assert_eq!(response["result"]["source"], "daemon-store", "{response}");
         assert_eq!(response["receipt_status"], "persisted", "{response}");
         assert!(
             response["execution_id"]
@@ -1785,13 +1795,6 @@ async fn selected_daemon_snippet_keeps_local_source_and_durable_receipts() {
                 .unwrap()
                 .starts_with("snippet_"),
             "{response}"
-        );
-        assert!(
-            !guard
-                .root()
-                .join(format!("labby-home/snippets/{name}.md"))
-                .exists(),
-            "inline source must not publish into the daemon store"
         );
     }
     assert!(guard.finish().await.is_clean());
@@ -1807,8 +1810,11 @@ async fn selected_daemon_snippet_failure_keeps_receipt_identity() {
     let home = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".labby/snippets")).unwrap();
     std::fs::create_dir_all(home.path().join("tmp")).unwrap();
+    // The configured server owns the snippet store, so the snippet lives there.
+    let daemon_store = guard.root().join("labby-home/snippets");
+    std::fs::create_dir_all(&daemon_store).unwrap();
     std::fs::write(
-        home.path().join(".labby/snippets/remote-failure.js"),
+        daemon_store.join("remote-failure.js"),
         "async () => { throw new Error('synthetic execution failure'); }",
     )
     .unwrap();
