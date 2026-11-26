@@ -1,30 +1,11 @@
 name: Incus image
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/incus-image.yml'
-      - '.github/workflows/build-incus-image.yml'
-      - '.config/incus/**'
-      - 'scripts/incus-bootstrap.sh'
-      - 'scripts/ci/build-incus-image.sh'
-      - 'scripts/ci/smoke-incus-image.sh'
-      - 'scripts/ci/create-incus-image-manifest.py'
-      - 'scripts/ci/verify-incus-image-manifest.py'
-      - 'scripts/ci/promote-incus-pointer.sh'
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/incus-image.yml'
-      - '.github/workflows/build-incus-image.yml'
-      - '.config/incus/**'
-      - 'scripts/incus-bootstrap.sh'
-      - 'scripts/ci/build-incus-image.sh'
-      - 'scripts/ci/smoke-incus-image.sh'
-      - 'scripts/ci/create-incus-image-manifest.py'
-      - 'scripts/ci/verify-incus-image-manifest.py'
-      - 'scripts/ci/promote-incus-pointer.sh'
+  # The image build and smoke takes about 45 minutes, so it runs nightly rather
+  # than on every pull request and push. Pull requests that touch the image keep
+  # the cheap `incus-contract` lint in CI.
+  schedule:
+    - cron: '41 7 * * *'
   workflow_dispatch:
     inputs:
       channel:
@@ -35,15 +16,40 @@ on:
 
 concurrency:
   group: incus-image-${{ github.ref }}
-  # Superseded PR builds are wasteful; main publication must complete or roll back.
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  # Main publication must complete or roll back.
+  cancel-in-progress: false
 
 permissions:
   contents: read
 
 jobs:
+  published:
+    name: Skip a commit whose dev image is published
+    # A quiet night leaves main unchanged. Publishing the same immutable
+    # incus-dev-<sha> again would fail its draft check, and that failure path
+    # re-drafts the published release, so the nightly run skips it instead.
+    if: ${{ github.event_name == 'schedule' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      exists: ${{ steps.check.outputs.exists }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: incus-dev-${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -Fxq false; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
   image:
     name: Build and smoke Incus substrate
+    needs: published
+    if: ${{ !cancelled() && needs.published.result != 'failure' && needs.published.outputs.exists != 'true' }}
     permissions:
       contents: write
       id-token: write
@@ -53,4 +59,4 @@ jobs:
       source_ref: ${{ github.sha }}
       release_tag: ${{ inputs.channel == 'stable' && format('incus-{0}', github.sha) || format('incus-dev-{0}', github.sha) }}
       channel: ${{ inputs.channel || 'dev' }}
-      publish: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' }}
+      publish: ${{ github.ref == 'refs/heads/main' }}

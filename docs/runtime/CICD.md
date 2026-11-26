@@ -733,11 +733,14 @@ replacement tag or bump the version merely to hide partial publication.
 
 ### Independent Incus image
 
-`incus-image.yml` runs on pull requests and main pushes that change the image
-definition, pinned supply, bootstrap, or image build/smoke/promotion logic. A
-manual run on `main` can rebuild it when an external supply source needs
-requalification. PR runs build and smoke without publishing. A successful automatic main
-run creates an immutable `incus-dev-<full commit SHA>` GitHub prerelease with a
+`incus-image.yml` builds and smokes the image nightly (07:41 UTC) on `main`,
+and on manual dispatch, for example when an external supply source needs
+requalification. It no longer runs per pull request or push: the build takes
+about 45 minutes, and pull requests that change the image definition, pinned
+supply, bootstrap, or image build/smoke/promotion logic still run the
+`incus-contract` lint in CI. A nightly run skips a commit whose
+`incus-dev-<sha>` image is already published, since republishing an immutable
+tag would fail. A successful nightly or manual main run creates an immutable `incus-dev-<full commit SHA>` GitHub prerelease with a
 checksummed image manifest, attests and verifies the artifacts, and advances
 `labby-incus-dev` with a leased rollback-capable pointer update. A manual main
 run with `channel: stable` uses `incus-<full commit SHA>` and

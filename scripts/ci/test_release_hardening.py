@@ -831,8 +831,14 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", incus)
         image = yaml.load(self.text(".github/workflows/incus-image.yml"), Loader=yaml.BaseLoader)
         self.assertEqual("./.github/workflows/build-incus-image.yml", image["jobs"]["image"]["uses"])
-        self.assertIn(".config/incus/**", image["on"]["pull_request"]["paths"])
-        self.assertIn(".config/incus/**", image["on"]["push"]["paths"])
+        # The 45-minute build runs nightly and on demand, not per pull request.
+        self.assertNotIn("pull_request", image["on"])
+        self.assertNotIn("push", image["on"])
+        self.assertTrue(image["on"]["schedule"][0]["cron"])
+        self.assertIn("workflow_dispatch", image["on"])
+        # A nightly run on an unchanged main must not republish its sha.
+        self.assertEqual("published", image["jobs"]["image"]["needs"])
+        self.assertIn("incus-dev-${{ github.sha }}", self.text(".github/workflows/incus-image.yml"))
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):
