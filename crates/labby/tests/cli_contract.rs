@@ -1257,13 +1257,11 @@ fn offline_help_and_completion_do_not_write_installation_state() {
 #[cfg(feature = "gateway")]
 #[tokio::test]
 async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal() {
+    // No Labby server is configured, so these snippet commands use the local store.
     let home = tempfile::tempdir().unwrap();
-    let gateway = wiremock::MockServer::start().await;
-    async fn run(home: &std::path::Path, gateway: &wiremock::MockServer, args: &[&str]) -> Output {
+    async fn run(home: &std::path::Path, args: &[&str]) -> Output {
         let mut command = tokio::process::Command::from(runtime_command(home, args));
-        command
-            .env("LABBY_SERVER_URL", gateway.uri())
-            .kill_on_drop(true);
+        command.kill_on_drop(true);
         tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
             .await
             .expect("CLI hung or unexpectedly prompted")
@@ -1271,7 +1269,6 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
     }
     let create = run(
         home.path(),
-        &gateway,
         &[
             "--json",
             "snippet",
@@ -1299,7 +1296,6 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
 
     let preview = run(
         home.path(),
-        &gateway,
         &["--json", "snippet", "remove", "preserved", "--dry-run"],
     )
     .await;
@@ -1312,12 +1308,7 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
     assert_eq!(value["executed"], false);
     assert_eq!(snapshot_tree(&state), before, "dry-run changed saved state");
 
-    let blocked = run(
-        home.path(),
-        &gateway,
-        &["--json", "snippet", "remove", "preserved"],
-    )
-    .await;
+    let blocked = run(home.path(), &["--json", "snippet", "remove", "preserved"]).await;
     assert_eq!(blocked.status.code(), Some(1));
     assert_eq!(blocked.stdout, Vec::<u8>::new());
     let error: serde_json::Value = serde_json::from_slice(&blocked.stderr).unwrap();
@@ -1332,7 +1323,6 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
     // Positive control: the same resource really can be removed when confirmed.
     let removed = run(
         home.path(),
-        &gateway,
         &["--json", "snippet", "remove", "preserved", "--yes"],
     )
     .await;
@@ -1346,16 +1336,53 @@ async fn snippet_preview_and_confirmation_preserve_state_until_explicit_removal(
         before,
         "confirmed removal did not change state"
     );
-    let missing = run(
-        home.path(),
-        &gateway,
-        &["--json", "snippet", "get", "preserved"],
-    )
-    .await;
+    let missing = run(home.path(), &["--json", "snippet", "get", "preserved"]).await;
     assert!(!missing.status.success(), "removed snippet still exists");
+}
+
+#[cfg(feature = "gateway")]
+#[tokio::test]
+async fn snippet_commands_with_a_configured_server_never_fall_back_to_the_local_store() {
+    let home = tempfile::tempdir().unwrap();
+    // A configured server that answers nothing Labby recognises (every path is a 404).
+    let gateway = wiremock::MockServer::start().await;
+    let mut command = tokio::process::Command::from(runtime_command(
+        home.path(),
+        &[
+            "--json",
+            "snippet",
+            "add",
+            "remote-only",
+            "--code",
+            "async () => ({ remote: true })",
+            "--description",
+            "Remote store regression fixture",
+        ],
+    ));
+    command
+        .env("LABBY_SERVER_URL", gateway.uri())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), command.output())
+        .await
+        .expect("CLI hung or unexpectedly prompted")
+        .unwrap();
     assert!(
-        gateway.received_requests().await.unwrap().is_empty(),
-        "local snippet administration contacted a gateway"
+        !output.status.success(),
+        "snippet add succeeded without the configured server: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert!(
+        !gateway.received_requests().await.unwrap().is_empty(),
+        "snippet add never contacted the configured server"
+    );
+    // The local store may not even exist; if it does, it must not hold the snippet.
+    let state = home.path().join(".labby");
+    assert!(
+        !state.exists()
+            || snapshot_tree(&state).values().flatten().all(|bytes| !bytes
+                .windows(b"remote: true".len())
+                .any(|window| window == b"remote: true")),
+        "snippet add wrote the snippet to the local store"
     );
 }
 

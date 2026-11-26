@@ -1076,6 +1076,19 @@ impl LiveGateway {
             .await
     }
 
+    /// Dispatch one `snippets` action against the daemon's own snippet store
+    /// through `POST /v1/snippets`. The HTTP surface carries no MCP
+    /// elicitation gate, so destructive store writes rely on the CLI's own
+    /// confirmation before this call.
+    pub async fn dispatch_snippets_action(
+        &self,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, ToolError> {
+        self.dispatch_surface_action_with("v1/snippets", action, params, true)
+            .await
+    }
+
     pub(crate) async fn dispatch_client_session(
         &self,
         action: &str,
@@ -1095,6 +1108,20 @@ impl LiveGateway {
         endpoint: &str,
         action: &str,
         params: Value,
+    ) -> Result<Value, ToolError> {
+        self.dispatch_surface_action_with(endpoint, action, params, false)
+            .await
+    }
+
+    /// Dispatch one surface action. With `structured_errors`, a JSON error
+    /// envelope keeps its origin, recovery, side effects and extra fields
+    /// instead of being reduced to a kind and a message.
+    async fn dispatch_surface_action_with(
+        &self,
+        endpoint: &str,
+        action: &str,
+        params: Value,
+        structured_errors: bool,
     ) -> Result<Value, ToolError> {
         let mut request = self
             .client
@@ -1134,6 +1161,19 @@ impl LiveGateway {
         )
         .await?;
         let body = serde_json::from_slice::<Value>(&body).unwrap_or(Value::Null);
+        if structured_errors
+            && let Some(envelope) = body
+                .get("error")
+                .filter(|error| error.is_object())
+                .or_else(|| body.is_object().then_some(&body))
+            && envelope.get("kind").and_then(Value::as_str).is_some()
+        {
+            return Err(contract_error_from_envelope(
+                envelope,
+                "internal_error",
+                format!("live gateway daemon returned HTTP {status}"),
+            ));
+        }
 
         let sdk_kind = body
             .get("kind")
@@ -1259,40 +1299,10 @@ impl LiveGateway {
             .unwrap_or_else(|| serde_json::from_str(&text).unwrap_or(Value::Null));
         if result.is_error == Some(true) || payload.get("ok") == Some(&Value::Bool(false)) {
             let error = payload.get("error").unwrap_or(&payload);
-            let mut extra = error.as_object().cloned().unwrap_or_default();
-            for key in [
-                "kind",
-                "message",
-                "origin",
-                "recovery",
-                "side_effects",
-                "contract_version",
-            ] {
-                extra.remove(key);
-            }
-            return Err(ToolError::contract(
-                error
-                    .get("kind")
-                    .and_then(Value::as_str)
-                    .unwrap_or("bridge_transport_error"),
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .map(labby_runtime::redact::redact_secret_like_segments)
-                    .unwrap_or_else(|| "remote snippet execution failed".to_owned()),
-                extra,
-                error
-                    .get("origin")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok()),
-                error
-                    .get("recovery")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok()),
-                error
-                    .get("side_effects")
-                    .cloned()
-                    .and_then(|value| serde_json::from_value(value).ok()),
+            return Err(contract_error_from_envelope(
+                error,
+                "bridge_transport_error",
+                "remote snippet execution failed".to_owned(),
             ));
         }
         let data = payload.get("data").unwrap_or(&payload);
@@ -1628,6 +1638,42 @@ fn typed_response_error(error: serde_json::Error) -> ToolError {
         sdk_kind: "decode_error".to_string(),
         message: format!("invalid typed response from live gateway daemon: {error}"),
     }
+}
+
+/// Rebuild a structured agent error from a serialized error envelope, keeping
+/// its refined origin, recovery and side-effect metadata and extra fields.
+fn contract_error_from_envelope(
+    error: &Value,
+    default_kind: &str,
+    default_message: String,
+) -> ToolError {
+    let mut extra = error.as_object().cloned().unwrap_or_default();
+    for key in [
+        "kind",
+        "message",
+        "origin",
+        "recovery",
+        "side_effects",
+        "contract_version",
+    ] {
+        extra.remove(key);
+    }
+    let field = |key: &str| error.get(key).cloned();
+    ToolError::contract(
+        error
+            .get("kind")
+            .and_then(Value::as_str)
+            .unwrap_or(default_kind),
+        error
+            .get("message")
+            .and_then(Value::as_str)
+            .map(labby_runtime::redact::redact_secret_like_segments)
+            .unwrap_or(default_message),
+        extra,
+        field("origin").and_then(|value| serde_json::from_value(value).ok()),
+        field("recovery").and_then(|value| serde_json::from_value(value).ok()),
+        field("side_effects").and_then(|value| serde_json::from_value(value).ok()),
+    )
 }
 
 #[cfg(test)]
@@ -2270,6 +2316,47 @@ pub(crate) mod tests {
             .expect_err("dispatch should fail");
         assert_eq!(error.kind(), "missing_param");
         assert_eq!(error.user_message(), "upstream is required");
+    }
+
+    #[tokio::test]
+    async fn snippet_dispatch_keeps_the_structured_error_contract() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/snippets"))
+            .respond_with(ResponseTemplate::new(409).set_body_json(serde_json::json!({
+                "kind": "conflict",
+                "message": "snippet already exists",
+                "existing_id": "nightly",
+                "origin": "validation",
+                "side_effects": "none_expected",
+                "recovery": {
+                    "action": "revise_and_retry",
+                    "same_arguments": "never",
+                    "guidance": "pick another name",
+                },
+            })))
+            .mount(&server)
+            .await;
+
+        let error = test_gateway(server.uri(), None)
+            .dispatch_snippets_action("snippets.add", json!({ "name": "nightly" }))
+            .await
+            .expect_err("conflict must surface");
+        let ToolError::Contract { kind, payload } = &error else {
+            panic!("expected the structured contract, got {error:?}");
+        };
+        assert_eq!(kind, "conflict");
+        assert_eq!(payload.message, "snippet already exists");
+        assert_eq!(payload.extra.get("existing_id"), Some(&json!("nightly")));
+        assert!(payload.origin.is_some(), "origin was dropped");
+        assert!(payload.side_effects.is_some(), "side effects were dropped");
+        assert_eq!(
+            payload
+                .recovery
+                .as_ref()
+                .map(|advice| advice.guidance.as_str()),
+            Some("pick another name"),
+        );
     }
 
     #[tokio::test]

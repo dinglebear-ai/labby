@@ -96,11 +96,13 @@ fn supports_target(command: &super::Command) -> bool {
             _ => false,
         },
         #[cfg(feature = "gateway")]
-        super::Command::Snippets(args) => {
-            matches!(&args.command, super::snippets::SnippetsCommand::Exec(_))
-                || matches!(&args.command, super::snippets::SnippetsCommand::Fixture(args) if args.schemas.is_none())
-                || matches!(&args.command, super::snippets::SnippetsCommand::Test(test) if test.live)
-        }
+        // A configured remote owns the snippet store, so every store-backed
+        // command follows it. Only fixture generation from saved schemas is
+        // purely offline.
+        super::Command::Snippets(args) => !matches!(
+            &args.command,
+            super::snippets::SnippetsCommand::Fixture(args) if args.schemas.is_some()
+        ),
         #[cfg(feature = "gateway")]
         super::Command::Gateway(_)
         | super::Command::Server(_)
@@ -131,7 +133,7 @@ mod snippet_target_tests {
     }
 
     #[test]
-    fn fixture_snippets_stay_on_the_local_installation() {
+    fn fixture_tests_follow_a_configured_remote() {
         let command = super::super::Command::Snippets(SnippetsArgs {
             command: SnippetsCommand::Test(SnippetTestArgs {
                 name: Some("example".into()),
@@ -141,15 +143,35 @@ mod snippet_target_tests {
                 params: vec![],
             }),
         });
-        assert!(!supports_target(&command));
+        assert!(supports_target(&command));
     }
 
     #[test]
-    fn listing_snippets_stays_on_the_local_installation() {
-        let command = super::super::Command::Snippets(SnippetsArgs {
-            command: SnippetsCommand::List,
-        });
-        assert!(!supports_target(&command));
+    fn store_commands_follow_a_configured_remote() {
+        use crate::cli::snippets::{SnippetCreateArgs, SnippetNameArgs, SnippetRemoveArgs};
+        for command in [
+            SnippetsCommand::List,
+            SnippetsCommand::Get(SnippetNameArgs {
+                name: "example".into(),
+            }),
+            SnippetsCommand::Create(SnippetCreateArgs {
+                name: "example".into(),
+                file: None,
+                code: Some("async () => 1".into()),
+                description: None,
+                force: false,
+                shadow_builtin: false,
+            }),
+            SnippetsCommand::Remove(SnippetRemoveArgs {
+                name: "example".into(),
+                yes: true,
+                no_confirm: false,
+                dry_run: false,
+            }),
+        ] {
+            let command = super::super::Command::Snippets(SnippetsArgs { command });
+            assert!(supports_target(&command));
+        }
     }
 
     #[test]
