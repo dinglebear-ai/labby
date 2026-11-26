@@ -1076,6 +1076,19 @@ impl LiveGateway {
             .await
     }
 
+    /// Dispatch one `snippets` action against the daemon's own snippet store
+    /// through `POST /v1/snippets`. The HTTP surface carries no MCP
+    /// elicitation gate, so destructive store writes rely on the CLI's own
+    /// confirmation before this call.
+    pub async fn dispatch_snippets_action(
+        &self,
+        action: &str,
+        params: Value,
+    ) -> Result<Value, ToolError> {
+        self.dispatch_surface_action("v1/snippets", action, params)
+            .await
+    }
+
     pub(crate) async fn dispatch_client_session(
         &self,
         action: &str,

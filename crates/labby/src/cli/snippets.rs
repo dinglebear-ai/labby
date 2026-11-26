@@ -150,6 +150,16 @@ pub async fn run(
     if let SnippetsCommand::Fixture(args) = args.command {
         return generate_fixture(args, format, config, team_id).await;
     }
+    // A configured remote (--server, --context, a selected context, or
+    // LABBY_SERVER_URL) owns the snippet store: every list, read, write,
+    // removal, run and test goes to it, never to this machine's ~/.labby.
+    if remote_target_configured(config)
+        && let Some(live) = crate::live_gateway::detect(config, "cli").await?
+        && !live.allows_local_fallback()
+    {
+        let live = live.with_team_id(team_id.map(ToOwned::to_owned));
+        return run_on_remote_store(args.command, live, format).await;
+    }
     let needs_upstreams = matches!(&args.command, SnippetsCommand::Exec(_))
         || matches!(&args.command, SnippetsCommand::Test(test) if test.live);
     if needs_upstreams {
@@ -160,8 +170,68 @@ pub async fn run(
         crate::cli::gateway::build_manager(config, true).await?;
     }
 
-    let (action, params, yes, dry_run) = match args.command {
-        SnippetsCommand::Fixture(_) => unreachable!("fixture generation handled above"),
+    let (action, params, yes, dry_run) = snippet_action(args.command)?;
+
+    if dry_run {
+        print_dry_run("snippets", &action, &params, format)?;
+        return Ok(ExitCode::SUCCESS);
+    }
+
+    if action == "snippets.remove" {
+        return run_confirmable_action_command(
+            "snippets",
+            crate::dispatch::snippets::ACTIONS,
+            action,
+            params,
+            yes,
+            format,
+            |action, params| async move {
+                crate::dispatch::snippets::dispatch(&action, params).await
+            },
+        )
+        .await;
+    }
+
+    let test_failed = Cell::new(false);
+    let failed_flag = &test_failed;
+    let source_limit = config.code_mode.max_source_bytes;
+    let exit = run_action_command(
+        "snippets",
+        action,
+        params,
+        format,
+        |action, params| async move {
+            let report = if action == "snippets.test" {
+                crate::dispatch::snippets::dispatch::dispatch_with_source_limit(
+                    &action,
+                    params,
+                    source_limit,
+                )
+                .await?
+            } else {
+                crate::dispatch::snippets::dispatch(&action, params).await?
+            };
+            if action == "snippets.test" {
+                failed_flag.set(report["passed"] != true);
+            }
+            Ok(report)
+        },
+    )
+    .await?;
+    Ok(if test_failed.get() {
+        ExitCode::FAILURE
+    } else {
+        exit
+    })
+}
+
+/// Maps a snippet subcommand to its action, params, confirmation and dry-run
+/// flags. Shared by the local store and a configured remote.
+fn snippet_action(command: SnippetsCommand) -> Result<(String, Value, bool, bool)> {
+    Ok(match command {
+        SnippetsCommand::Fixture(_) => {
+            anyhow::bail!("fixture generation is handled before store dispatch")
+        }
         SnippetsCommand::List => ("snippets.list".to_string(), json!({}), true, false),
         SnippetsCommand::Get(args) => (
             "snippets.get".to_string(),
@@ -225,13 +295,37 @@ pub async fn run(
             true,
             false,
         ),
-    };
+    })
+}
 
+/// Whether the caller configured a remote Labby for this invocation, as
+/// opposed to the opportunistic local-daemon probe.
+fn remote_target_configured(config: &LabConfig) -> bool {
+    config.cli_target.is_some()
+        || ["CLAUDE_PLUGIN_OPTION_SERVER_URL", "LABBY_SERVER_URL"]
+            .iter()
+            .any(|name| std::env::var(name).is_ok_and(|value| !value.trim().is_empty()))
+}
+
+/// Runs and tests can take as long as Code Mode allows; store reads and
+/// writes keep the client's ordinary bound.
+const REMOTE_EXECUTION_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(10);
+
+async fn run_on_remote_store(
+    command: SnippetsCommand,
+    live: crate::live_gateway::LiveGateway,
+    format: OutputFormat,
+) -> Result<ExitCode> {
+    let (action, params, yes, dry_run) = snippet_action(command)?;
     if dry_run {
         print_dry_run("snippets", &action, &params, format)?;
         return Ok(ExitCode::SUCCESS);
     }
-
+    let live = if matches!(action.as_str(), "snippets.exec" | "snippets.test") {
+        live.with_dispatch_timeout(REMOTE_EXECUTION_TIMEOUT)
+    } else {
+        live
+    };
     if action == "snippets.remove" {
         return run_confirmable_action_command(
             "snippets",
@@ -240,32 +334,20 @@ pub async fn run(
             params,
             yes,
             format,
-            |action, params| async move {
-                crate::dispatch::snippets::dispatch(&action, params).await
-            },
+            |action, params| async move { live.dispatch_snippets_action(&action, params).await },
         )
         .await;
     }
-
     let test_failed = Cell::new(false);
     let failed_flag = &test_failed;
-    let source_limit = config.code_mode.max_source_bytes;
+    let live = &live;
     let exit = run_action_command(
         "snippets",
         action,
         params,
         format,
         |action, params| async move {
-            let report = if action == "snippets.test" {
-                crate::dispatch::snippets::dispatch::dispatch_with_source_limit(
-                    &action,
-                    params,
-                    source_limit,
-                )
-                .await?
-            } else {
-                crate::dispatch::snippets::dispatch(&action, params).await?
-            };
+            let report = live.dispatch_snippets_action(&action, params).await?;
             if action == "snippets.test" {
                 failed_flag.set(report["passed"] != true);
             }
