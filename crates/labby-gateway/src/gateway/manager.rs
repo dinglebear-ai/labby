@@ -192,6 +192,8 @@ pub struct GatewayManager {
     pub(super) code_mode_skill_provider: Option<Arc<dyn CodeModeSkillProvider>>,
     pub(super) code_mode_artifact_search_provider: Option<Arc<dyn CodeModeArtifactSearchProvider>>,
     pub(super) code_mode_personal_oauth_provider: Option<Arc<dyn CodeModePersonalOauthProvider>>,
+    /// Exact https origins a personal OAuth callback may return the browser to.
+    pub(super) personal_oauth_return_origins: Arc<Vec<String>>,
     pub(super) agent_executions: Arc<AgentExecutionStore>,
     pub(super) agent_execution_cancellations:
         Arc<dashmap::DashMap<String, tokio_util::sync::CancellationToken>>,

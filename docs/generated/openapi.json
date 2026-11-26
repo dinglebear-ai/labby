@@ -9465,6 +9465,9 @@
           "upstream"
         ],
         "properties": {
+          "return_to": {
+            "type": "string"
+          },
           "upstream": {
             "type": "string"
           }

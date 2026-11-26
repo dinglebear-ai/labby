@@ -3448,6 +3448,12 @@
               "ty": "string",
               "required": true,
               "description": "Configured upstream name"
+            },
+            {
+              "name": "return_to",
+              "ty": "string",
+              "required": false,
+              "description": "https URL to return the browser to after the callback; its origin must be in [auth] personal_oauth_return_origins"
             }
           ],
           "returns": "BeginAuthorization"

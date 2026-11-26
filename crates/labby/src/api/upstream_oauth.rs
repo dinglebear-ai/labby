@@ -715,6 +715,38 @@ async fn callback(
         }
     }
 
+    // A personal grant may name a browser destination. Read it before the code
+    // exchange consumes the state, and re-check it against the current origins.
+    if state_subject != SHARED_GATEWAY_OAUTH_SUBJECT {
+        match sqlite
+            .find_upstream_oauth_state_return_to(&query.state, now)
+            .await
+        {
+            Ok(Some(return_to)) => match url::Url::parse(&return_to) {
+                Ok(url) if manager.personal_oauth_return_allowed(&return_to) => {
+                    redirect_url = url;
+                }
+                _ => warn!(
+                    surface = "api",
+                    service = "upstream_oauth",
+                    action = "callback",
+                    upstream = %upstream,
+                    kind = "return_destination_not_allowed",
+                    "personal oauth return destination is no longer allowed; using the result page"
+                ),
+            },
+            Ok(None) => {}
+            Err(error) => warn!(
+                surface = "api",
+                service = "upstream_oauth",
+                action = "callback",
+                upstream = %upstream,
+                kind = error.kind(),
+                "personal oauth return destination lookup failed; using the result page"
+            ),
+        }
+    }
+
     if query.error.is_some() {
         warn!(
             surface = "api",
@@ -1023,7 +1055,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "access_token":"fixture", "token_type":"Bearer", "expires_in":3600
             })))
-            .expect(1)
+            .expect(3)
             .mount(&server)
             .await;
         let config: UpstreamConfig = serde_json::from_value(serde_json::json!({
@@ -1049,7 +1081,8 @@ mod tests {
                 key,
                 "https://lab.example.com/auth/upstream/callback".into(),
             )
-            .with_upstream_oauth_managers(managers),
+            .with_upstream_oauth_managers(managers)
+            .with_personal_oauth_return_origins(vec!["https://vml.example".into()]),
         );
         manager.replace_config_for_tests(vec![config]).await;
         let result = crate::dispatch::gateway::dispatch_with_manager_scoped(
@@ -1103,7 +1136,7 @@ mod tests {
         let state = AppState::new()
             .with_auth_config((*auth_state.config).clone())
             .with_oauth_state(auth_state)
-            .with_gateway_manager(manager);
+            .with_gateway_manager(Arc::clone(&manager));
         let app = browser_routes(state.clone()).router.with_state(state);
         let uri = format!("/auth/upstream/callback?state={csrf}&code=fixture-code");
         let response = app
@@ -1118,16 +1151,17 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let location = response.headers()[header::LOCATION].to_str().unwrap();
         assert!(
-            response.headers()[header::LOCATION]
-                .to_str()
-                .unwrap()
-                .contains("status=ok")
+            location.starts_with("https://lab.example.com/gateway/oauth/result?")
+                && location.contains("status=ok"),
+            "{location}"
         );
         assert!(oauth.has_credentials("personal-caller").await.unwrap());
         assert!(!oauth.has_credentials("other-caller").await.unwrap());
         assert!(!oauth.has_credentials("gateway").await.unwrap());
         let replay = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .uri(&uri)
@@ -1138,6 +1172,85 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(replay.status(), StatusCode::SEE_OTHER);
+
+        // A personal grant started with an allowed `return_to` lands there with
+        // the outcome appended, instead of on the built-in result page.
+        let start = |params: serde_json::Value| {
+            let manager = Arc::clone(&manager);
+            async move {
+                let result = crate::dispatch::gateway::dispatch_with_manager_scoped(
+                    &manager,
+                    "gateway.oauth.authorize",
+                    params,
+                    crate::dispatch::gateway::GatewayEnrichmentScope {
+                        oauth_subject: Some("personal-caller".into()),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+                url::Url::parse(result["authorization_url"].as_str().unwrap())
+                    .unwrap()
+                    .query_pairs()
+                    .find(|(key, _)| key == "state")
+                    .unwrap()
+                    .1
+                    .into_owned()
+            }
+        };
+        let finish = |csrf: String| {
+            let app = app.clone();
+            let cookie = cookie.clone();
+            async move {
+                let response = app
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!(
+                                "/auth/upstream/callback?state={csrf}&code=fixture-code"
+                            ))
+                            .header(header::COOKIE, &cookie)
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), StatusCode::SEE_OTHER);
+                response.headers()[header::LOCATION]
+                    .to_str()
+                    .unwrap()
+                    .to_string()
+            }
+        };
+        let returning = start(serde_json::json!({
+            "upstream": "personal",
+            "return_to": "https://vml.example/after?x=1"
+        }))
+        .await;
+        assert_eq!(
+            finish(returning).await,
+            "https://vml.example/after?x=1&upstream=personal&status=ok"
+        );
+
+        // A stored destination outside the current origins (configuration
+        // changed mid-flight) falls back to the built-in result page.
+        let stale = start(serde_json::json!({"upstream": "personal"})).await;
+        assert!(
+            store
+                .set_upstream_oauth_state_return_to(
+                    "personal",
+                    "personal-caller",
+                    &stale,
+                    "https://retired.example/after",
+                    now_seconds()
+                )
+                .await
+                .unwrap()
+        );
+        let location = finish(stale).await;
+        assert!(
+            location.starts_with("https://lab.example.com/gateway/oauth/result?"),
+            "{location}"
+        );
     }
 
     #[tokio::test]

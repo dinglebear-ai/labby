@@ -1784,12 +1784,20 @@ pub const ACTIONS: &[ActionSpec] = &[
         output_schema: Some(
             labby_primitives::action::schema_for::<labby_auth::upstream::types::BeginAuthorization>,
         ),
-        params: &[ParamSpec {
-            name: "upstream",
-            ty: "string",
-            required: true,
-            description: "Configured upstream name",
-        }],
+        params: &[
+            ParamSpec {
+                name: "upstream",
+                ty: "string",
+                required: true,
+                description: "Configured upstream name",
+            },
+            ParamSpec {
+                name: "return_to",
+                ty: "string",
+                required: false,
+                description: "https URL to return the browser to after the callback; its origin must be in [auth] personal_oauth_return_origins",
+            },
+        ],
     },
     ActionSpec {
         name: "gateway.oauth.start",

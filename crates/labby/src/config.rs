@@ -1334,6 +1334,9 @@ pub struct AuthFileConfig {
     /// Exact verified email domains eligible for automatic Viewer membership.
     #[serde(default)]
     pub viewer_email_domains: Option<Vec<String>>,
+    /// Exact https origins personal upstream OAuth may return the browser to.
+    #[serde(default)]
+    pub personal_oauth_return_origins: Option<Vec<String>>,
     /// Host-selected project for domain Viewers; never selected by a request.
     #[serde(default)]
     pub viewer_project_id: Option<String>,
@@ -1620,6 +1623,12 @@ pub(crate) fn resolve_auth_with_env(
             merged.insert(
                 "LABBY_AUTH_VIEWER_EMAIL_DOMAINS".to_string(),
                 domains.join(","),
+            );
+        }
+        if let Some(origins) = config.personal_oauth_return_origins.as_ref() {
+            merged.insert(
+                "LABBY_AUTH_PERSONAL_OAUTH_RETURN_ORIGINS".to_string(),
+                origins.join(","),
             );
         }
         insert_if_some(
@@ -4134,6 +4143,7 @@ future = "keep"
             ]),
             allowed_email_domains: None,
             viewer_email_domains: None,
+            personal_oauth_return_origins: None,
             viewer_project_id: None,
             provider: None,
             authelia_issuer_url: None,

@@ -186,6 +186,10 @@ pub struct AuthConfig {
     /// Exact verified-email domains admitted only as browser Viewers. Never
     /// grants the legacy allowlist's administrative OAuth scopes. Default off.
     pub viewer_email_domains: Vec<String>,
+    /// Exact HTTPS origins that personal upstream OAuth (`gateway.oauth.authorize`)
+    /// may send the browser back to after its callback. Empty (the default)
+    /// keeps the built-in result page as the only destination.
+    pub personal_oauth_return_origins: Vec<String>,
     /// Explicitly selected inbound identity provider. `None` preserves legacy
     /// Google inference when Google credentials are configured.
     pub inbound_provider: Option<InboundProviderKind>,
@@ -269,6 +273,7 @@ impl Default for AuthConfig {
             admin_emails: Vec::new(),
             allowed_email_domains: Vec::new(),
             viewer_email_domains: Vec::new(),
+            personal_oauth_return_origins: Vec::new(),
             inbound_provider: None,
             google: GoogleConfig::default(),
             authelia: None,
@@ -480,6 +485,16 @@ impl AuthConfig {
                 "viewer email domains must be exact ASCII DNS domains".into(),
             ));
         }
+        if self.personal_oauth_return_origins.len() > 16
+            || self
+                .personal_oauth_return_origins
+                .iter()
+                .any(|origin| canonical_https_origin(origin).as_deref() != Some(origin.as_str()))
+        {
+            return Err(AuthError::Config(
+                "personal OAuth return origins must be exact https origins (scheme, host and optional port, no path)".into(),
+            ));
+        }
         if !self.viewer_email_domains.is_empty()
             && (!matches!(self.mode, AuthMode::OAuth)
                 || !matches!(
@@ -670,6 +685,55 @@ impl AuthConfig {
     }
 }
 
+/// Serialize `value` as an origin when it is an https URL naming only a scheme,
+/// host and optional port. Paths other than `/`, queries, fragments and
+/// userinfo are rejected so a configured entry cannot hide a narrower target.
+fn canonical_https_origin(value: &str) -> Option<String> {
+    let url = Url::parse(value.trim()).ok()?;
+    let bare = url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.host_str().is_some_and(|host| !host.contains('*'))
+        && matches!(url.path(), "" | "/")
+        && url.query().is_none()
+        && url.fragment().is_none();
+    bare.then(|| url.origin().ascii_serialization())
+}
+
+/// Longest accepted personal OAuth return URL, so a stored destination cannot
+/// produce a `Location` header a reverse proxy refuses.
+const MAX_PERSONAL_OAUTH_RETURN_BYTES: usize = 2048;
+
+/// Query keys the callback appends to report the outcome. A destination that
+/// already carries one could pre-set a misleading result, so it is refused.
+const PERSONAL_OAUTH_RESULT_KEYS: [&str; 3] = ["upstream", "status", "error_kind"];
+
+/// Whether a browser may be returned to `candidate` after personal upstream
+/// OAuth: an https URL of at most 2 KiB, without userinfo, fragment or the
+/// callback's own result keys, whose origin exactly matches one configured
+/// origin. Loopback and custom schemes are not implied.
+#[must_use]
+pub fn personal_oauth_return_allowed(origins: &[String], candidate: &str) -> bool {
+    if candidate.len() > MAX_PERSONAL_OAUTH_RETURN_BYTES {
+        return false;
+    }
+    let Ok(url) = Url::parse(candidate) else {
+        return false;
+    };
+    if url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+        || url
+            .query_pairs()
+            .any(|(key, _)| PERSONAL_OAUTH_RESULT_KEYS.contains(&key.as_ref()))
+    {
+        return false;
+    }
+    let origin = url.origin().ascii_serialization();
+    origins.iter().any(|allowed| allowed == &origin)
+}
+
 fn valid_viewer_domain(domain: &str) -> bool {
     domain.len() <= 253
         && domain.contains('.')
@@ -846,6 +910,7 @@ impl AuthConfigBuilder {
         let key_enc_key = env_key(&prefix, "TOKEN_ENCRYPTION_KEY");
         let key_allowed_domains = env_key(&prefix, "AUTH_ALLOWED_EMAIL_DOMAINS");
         let key_viewer_domains = env_key(&prefix, "AUTH_VIEWER_EMAIL_DOMAINS");
+        let key_return_origins = env_key(&prefix, "AUTH_PERSONAL_OAUTH_RETURN_ORIGINS");
         let key_scopes_supported = env_key(&prefix, "AUTH_SCOPES_SUPPORTED");
         let key_machine_clients = env_key(&prefix, "AUTH_MACHINE_CLIENTS_JSON");
         let key_enterprise_issuers = env_key(&prefix, "AUTH_ENTERPRISE_ISSUERS_JSON");
@@ -907,6 +972,14 @@ impl AuthConfigBuilder {
                     domains
                         .into_iter()
                         .map(|domain| domain.trim().to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            personal_oauth_return_origins: read_csv(&vars, &key_return_origins)
+                .map(|origins| {
+                    origins
+                        .into_iter()
+                        .map(|origin| canonical_https_origin(&origin).unwrap_or(origin))
                         .collect()
                 })
                 .unwrap_or_default(),
@@ -1155,6 +1228,70 @@ fn read_bool(vars: &HashMap<String, String>, key: &str) -> Result<Option<bool>, 
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn personal_oauth_return_origins_accept_only_bare_https_origins() {
+        use super::canonical_https_origin as origin;
+        assert_eq!(
+            origin("https://vml.tootie.tv").as_deref(),
+            Some("https://vml.tootie.tv")
+        );
+        assert_eq!(
+            origin("https://vml.tootie.tv/").as_deref(),
+            Some("https://vml.tootie.tv")
+        );
+        assert_eq!(
+            origin("https://Dev.Manatee-Triceratops.ts.net:5880").as_deref(),
+            Some("https://dev.manatee-triceratops.ts.net:5880")
+        );
+        for rejected in [
+            "http://vml.tootie.tv",
+            "https://vml.tootie.tv/app",
+            "https://vml.tootie.tv/?next=1",
+            "https://vml.tootie.tv/#x",
+            "https://user@vml.tootie.tv",
+            "https://*.tootie.tv",
+            "vml.tootie.tv",
+        ] {
+            assert_eq!(origin(rejected), None, "{rejected}");
+        }
+    }
+
+    #[test]
+    fn personal_oauth_return_allows_only_configured_https_origins() {
+        let origins = vec![
+            "https://vml.tootie.tv".to_string(),
+            "https://dev.manatee-triceratops.ts.net:5880".to_string(),
+        ];
+        let allowed = |url: &str| super::personal_oauth_return_allowed(&origins, url);
+        assert!(allowed("https://vml.tootie.tv/settings?tab=linear"));
+        assert!(allowed(
+            "https://dev.manatee-triceratops.ts.net:5880/api/linear/callback"
+        ));
+        for rejected in [
+            "http://vml.tootie.tv/",
+            "https://vml.tootie.tv.evil.example/",
+            "https://evil.example/?u=https://vml.tootie.tv",
+            "https://dev.manatee-triceratops.ts.net/",
+            "https://dev.manatee-triceratops.ts.net:5881/",
+            "https://user:pw@vml.tootie.tv/",
+            "https://vml.tootie.tv/#frag",
+            "http://127.0.0.1:8080/",
+            "vml://callback",
+            "not a url",
+            "https://vml.tootie.tv/settings?status=ok",
+            "https://vml.tootie.tv/settings?x=1&upstream=linear",
+            "https://vml.tootie.tv/settings?error_kind=none",
+        ] {
+            assert!(!allowed(rejected), "{rejected}");
+        }
+        let long = format!("https://vml.tootie.tv/{}", "a".repeat(2048));
+        assert!(!allowed(&long), "return URLs over 2 KiB are refused");
+        assert!(!super::personal_oauth_return_allowed(
+            &[],
+            "https://vml.tootie.tv/"
+        ));
+    }
 
     /// Finding 7: the admin list parser and every admin comparison fold
     /// addresses with the one shared normalization, so a non-ASCII address
