@@ -3099,10 +3099,13 @@ fn run_stdio(
             Arc::new(runtime)
         };
         #[cfg(not(feature = "gateway"))]
-        let route_runtime = Arc::new(crate::mcp::runtime::McpRouteRuntime {
-            hide_bundled_skills: no_bundled_skills,
-            ..Default::default()
-        });
+        let route_runtime = {
+            // Set the one visible field: the struct's other fields are private
+            // outside `mcp::runtime` when the gateway feature is off.
+            let mut runtime = crate::mcp::runtime::McpRouteRuntime::default();
+            runtime.hide_bundled_skills = no_bundled_skills;
+            Arc::new(runtime)
+        };
         let server = LabMcpServer {
             installation_id: stdio_installation_id,
             registry,
