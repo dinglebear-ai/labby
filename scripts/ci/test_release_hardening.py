@@ -70,9 +70,9 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
     def test_pr_arm64_smoke_uses_exact_head_and_cannot_publish(self):
         workflow = yaml.load((ROOT / '.github/workflows/arm64-package-smoke.yml').read_text(), Loader=yaml.BaseLoader)
         # Pull requests smoke ARM64 only for packaging, toolchain, dependency,
-        # and native-build inputs; every merge to main smokes it regardless.
-        self.assertEqual(['pull_request', 'push', 'workflow_dispatch'], list(workflow['on']))
-        self.assertEqual(['main'], workflow['on']['push']['branches'])
+        # and native-build inputs; main is smoked nightly, not on every merge.
+        self.assertEqual(['pull_request', 'schedule', 'workflow_dispatch'], list(workflow['on']))
+        self.assertTrue(workflow['on']['schedule'][0]['cron'])
         paths = set(workflow['on']['pull_request']['paths'])
         for build_input in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', '.cargo/**', 'crates/*/Cargo.toml', 'crates/*/build.rs', '.github/actions/build-gateway-admin/**', '.github/actions/setup-rust-kache/**', '.github/workflows/release.yml'):
             self.assertIn(build_input, paths)
@@ -831,8 +831,19 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         self.assertIn("scripts/ci/promote-incus-pointer.sh rollback", incus)
         image = yaml.load(self.text(".github/workflows/incus-image.yml"), Loader=yaml.BaseLoader)
         self.assertEqual("./.github/workflows/build-incus-image.yml", image["jobs"]["image"]["uses"])
-        self.assertIn(".config/incus/**", image["on"]["pull_request"]["paths"])
-        self.assertIn(".config/incus/**", image["on"]["push"]["paths"])
+        # The 45-minute build runs nightly and on demand, not per pull request.
+        self.assertNotIn("pull_request", image["on"])
+        self.assertNotIn("push", image["on"])
+        self.assertTrue(image["on"]["schedule"][0]["cron"])
+        self.assertIn("workflow_dispatch", image["on"])
+        # A nightly run on an unchanged main must not republish its sha.
+        self.assertEqual("published", image["jobs"]["image"]["needs"])
+        self.assertIn("incus-dev-${{ github.sha }}", self.text(".github/workflows/incus-image.yml"))
+        # The guard fails closed: only a confirmed 404 means "not published".
+        guard = self.text(".github/workflows/incus-image.yml")
+        self.assertIn("(HTTP 404)", guard)
+        self.assertIn("exit 1", guard)
+        self.assertIn("needs.published.result != 'failure'", guard)
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):

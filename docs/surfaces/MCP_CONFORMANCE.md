@@ -371,8 +371,11 @@ compare the published documents directly. Default mode advertises
 RFC 9207 issuer binding and returns the exact issuer. Explicit Codex issuer
 compatibility mode disables that advertisement and omits the response issuer;
 it does not claim stable-callback eligibility through issuer identification.
-`refresh_openai_auth_denominator.py --check` still fetches the live guide in CI
-and rejects any digest or retained-clause drift. `--source-file <captured-guide>`
+`refresh_openai_auth_denominator.py --check` fetches the live guide in the
+nightly and manually dispatched CI runs and rejects any digest or
+retained-clause drift. Pull requests and main pushes skip that fetch, because an
+upstream edit to the guide is not caused by the change under review; they still
+run the requirement-specific OpenAI auth suites. `--source-file <captured-guide>`
 applies the same checks offline to reviewed bytes; it does not establish that the
 live guide is unchanged or execute the requirement-specific auth suites.
 

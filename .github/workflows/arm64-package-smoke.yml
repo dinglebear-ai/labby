@@ -18,8 +18,10 @@ on:
       - crates/*/build.rs
       - install.sh
       - scripts/install.sh
-  push:
-    branches: [main]
+  # Nightly on main instead of on every merge; the release matrix builds
+  # ARM64 natively for every release as well.
+  schedule:
+    - cron: '17 8 * * *'
   workflow_dispatch:
 
 concurrency:
