@@ -16,7 +16,7 @@ use crate::gateway::code_mode::{
     CodeModeExecutionSource, CodeModeHistoryEntry, CodeModeSourceLookup,
 };
 use crate::upstream::pool::{ToolCatalogGeneration, UpstreamPool};
-use crate::upstream::types::{UpstreamRuntimeOwner, UpstreamTool};
+use crate::upstream::types::{UpstreamCapability, UpstreamRuntimeOwner, UpstreamTool};
 use labby_runtime::error::ToolError;
 use labby_runtime::gateway_config::{CodeModeConfig, GatewayConfig, UpstreamConfig};
 
@@ -81,10 +81,10 @@ fn merge_visible_catalog_tools(
             .entry((tool.upstream_name.to_string(), tool.tool.name.to_string()))
             .or_insert(tool);
     }
-    by_identity
-        .into_values()
-        .take(crate::upstream::pool::MAX_UPSTREAM_TOOLS)
-        .collect()
+    // No global cap: the Code Mode catalog never enters model context, and a
+    // global cap silently hid every upstream sorting after the cutoff. Each
+    // upstream is already bounded by `MAX_UPSTREAM_TOOLS` at discovery.
+    by_identity.into_values().collect()
 }
 
 async fn healthy_tools_with_generation(
@@ -96,7 +96,17 @@ async fn healthy_tools_with_generation(
         .await
         .ok()
         .map(|snapshot| snapshot.generation());
-    let tools = pool.healthy_tools_allowed(allowed).await;
+    // Read per upstream: `healthy_tools_allowed` caps the combined catalog,
+    // which would drop late-sorting upstreams from Code Mode.
+    let mut tools = Vec::new();
+    for upstream in pool
+        .routable_upstream_names(UpstreamCapability::Tools)
+        .await
+    {
+        if upstream_allowed(&upstream, allowed) {
+            tools.extend(pool.healthy_tools_for_upstream(&upstream).await);
+        }
+    }
     let after = pool
         .published_tool_catalog()
         .await
@@ -570,7 +580,8 @@ impl GatewayManager {
                 &cfg.upstream,
                 subject,
                 allowed_upstreams,
-                crate::upstream::pool::MAX_UPSTREAM_TOOLS,
+                // Uncapped across upstreams; each is bounded at discovery.
+                usize::MAX,
                 CODE_MODE_SUBJECT_ENUMERATION_BUDGET,
             )
             .await
@@ -1679,18 +1690,25 @@ mod catalog_merge_tests {
     }
 
     #[test]
-    fn combined_catalog_caps_after_deterministic_cross_scope_merge() {
-        let global = (0..crate::upstream::pool::MAX_UPSTREAM_TOOLS)
-            .map(|index| tool("z-global", &format!("tool_{index:04}")))
+    fn combined_catalog_keeps_late_sorting_upstreams_past_the_per_upstream_cap() {
+        let per_upstream = crate::upstream::pool::MAX_UPSTREAM_TOOLS / 2 + 1;
+        let global = ["a-big", "m-big", "z-vml"]
+            .into_iter()
+            .flat_map(|upstream| {
+                (0..per_upstream).map(move |index| tool(upstream, &format!("tool_{index:04}")))
+            })
             .collect();
-        let merged = merge_visible_catalog_tools(global, vec![tool("a-subject", "private")]);
+        let merged = merge_visible_catalog_tools(global, vec![tool("zz-subject", "private")]);
 
-        assert_eq!(merged.len(), crate::upstream::pool::MAX_UPSTREAM_TOOLS);
-        assert_eq!(merged[0].upstream_name.as_ref(), "a-subject");
-        assert!(
+        assert_eq!(merged.len(), per_upstream * 3 + 1);
+        assert!(merged.len() > crate::upstream::pool::MAX_UPSTREAM_TOOLS);
+        assert_eq!(
             merged
                 .iter()
-                .any(|tool| tool.tool.name.as_ref() == "private")
+                .filter(|tool| tool.upstream_name.as_ref() == "z-vml")
+                .count(),
+            per_upstream
         );
+        assert_eq!(merged.last().unwrap().upstream_name.as_ref(), "zz-subject");
     }
 }

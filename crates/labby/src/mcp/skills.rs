@@ -71,6 +71,34 @@ mod native_wire_tests {
             }
         }
     }
+
+    #[test]
+    fn hiding_bundled_skills_keeps_operator_and_upstream_skills() {
+        let mut page = serde_json::json!({"skills":[
+            {"uri":"skill://labby/using-labby/SKILL.md"},
+            {"uri":"skill://labby/using-snippets/SKILL.md"},
+            {"uri":"skill://labby/using-codemode/SKILL.md"},
+            {"uri":"skill://labby/operator-notes/SKILL.md"},
+            {"uri":"skill://depot/skill/acme/using-labby/SKILL.md"}
+        ]});
+        hide_bundled_skills(&mut page);
+        let uris: Vec<&str> = page["skills"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|skill| skill["uri"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            uris,
+            [
+                "skill://labby/operator-notes/SKILL.md",
+                "skill://depot/skill/acme/using-labby/SKILL.md"
+            ]
+        );
+        assert!(!crate::skills::is_bundled_skill_uri(
+            "skill://labby/using-labby/references/operator-cli.md"
+        ));
+    }
 }
 
 #[cfg(feature = "gateway")]
@@ -487,7 +515,28 @@ impl LabMcpServer {
             skill_generation_digest = registry.generation_digest(),
             "captured Skill generation"
         );
-        dispatch_native_with_registry(request, &registry).await
+        let mut result = dispatch_native_with_registry(request, &registry).await?;
+        if self.route_runtime.hide_bundled_skills && request.method == SKILLS_LIST_METHOD {
+            hide_bundled_skills(&mut result.0);
+        }
+        Ok(result)
+    }
+}
+
+/// Drop Labby's bundled skills from a `skills/list` page. The client already
+/// has them installed locally; `skills/get` and `resources/read` still serve
+/// them by URI.
+fn hide_bundled_skills(result: &mut serde_json::Value) {
+    if let Some(skills) = result
+        .get_mut("skills")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        skills.retain(|skill| {
+            !skill
+                .get("uri")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(crate::skills::is_bundled_skill_uri)
+        });
     }
 }
 

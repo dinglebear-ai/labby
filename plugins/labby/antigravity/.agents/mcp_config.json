@@ -2,6 +2,9 @@
   "mcpServers": {
     "labby": {
       "command": "npx",
+      "env": {
+        "LABBY_MCP_NO_BUNDLED_SKILLS": "1"
+      },
       "args": [
         "-y",
         "@dinglebear/labby",

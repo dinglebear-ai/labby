@@ -1,7 +1,7 @@
 ---
 title: "Artifacts And Agent Skills"
 created: "2026-08-26"
-updated: "2026-09-30"
+updated: "2026-11-26"
 ---
 
 # Artifacts And Agent Skills
@@ -23,6 +23,44 @@ the SEP-2640 protocol methods.
 The native extension contract is pinned and documented in
 [Skills extension](../contracts/skills-extension.md). This document owns the
 Labby product lifecycle and operator behavior.
+
+## Bundled Skills Over MCP
+
+Labby embeds `using-labby`, `using-codemode`, and `using-snippets` in the
+binary and serves them under `skill://labby/<name>/SKILL.md`. Every product
+build advertises the `io.modelcontextprotocol/skills` extension. The root
+route lists these skills by default over stdio `labby mcp`, the stdio bridge to
+a running daemon, and HTTP `/mcp`. A protected route lists them only when its
+loadout enables Skills. Operator skills in `$LABBY_HOME/skills` share the
+`labby` origin and follow the same rules.
+
+Claude Code reads skills through this extension and names each one
+`<server>:<skill>`. It does not merge an MCP skill with a local skill of the
+same name. The Labby plugin installs the same three skills locally and also
+starts `labby mcp`. Without an opt-out, the client would load each skill twice.
+
+`labby mcp --no-bundled-skills`, or `LABBY_MCP_NO_BUNDLED_SKILLS=1`, removes
+the embedded skills from `skills/list` on that connection. `skills/get` and
+`resources/read` still serve them by URI, as SEP-2640 requires. Operator,
+Artifact, Depot, and upstream skills stay listed. The generated plugin MCP
+configurations set the environment variable, because those plugins already
+install the skills. Older binaries ignore an unknown variable, so the plugin
+works with any release. Connections without the plugin, such as VML or a
+hand-added `claude mcp add`, keep the default listing.
+
+Labby cannot see what a client has installed. SEP-2640 has no capability or
+identity field for "the client already has this skill", and Claude Code
+documents no de-duplication. For a local copy that did not come from the
+plugin, such as a file under `~/.claude/skills/using-labby`, choose one of
+these client-side options:
+
+- set `LABBY_MCP_NO_BUNDLED_SKILLS=1` in that client's Labby server entry;
+- deny the MCP copy with a Claude Code permission rule such as
+  `Skill(labby:using-labby)` (use the server name from `/mcp`);
+- remove the local copy and use the MCP skill.
+
+HTTP has no per-client switch. A client that installs the plugin connects
+through its stdio entry, which carries the setting.
 
 ## Catalog Performance And Freshness
 

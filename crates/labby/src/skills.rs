@@ -140,6 +140,16 @@ impl FirstPartySkill {
     }
 }
 
+/// Whether `uri` is the `SKILL.md` of a skill embedded in this binary.
+///
+/// Operator skills under `$LABBY_HOME/skills` share the `labby` origin but are
+/// not bundled, so they do not match.
+pub(crate) fn is_bundled_skill_uri(uri: &str) -> bool {
+    EMBEDDED_FILES
+        .iter()
+        .any(|(skill, path, _)| *path == "SKILL.md" && uri == first_party_uri(skill, path))
+}
+
 /// URI of a first-party skill's file.
 fn first_party_uri(skill: &str, path: &str) -> String {
     format!("skill://{FIRST_PARTY_ORIGIN}/{skill}/{path}")

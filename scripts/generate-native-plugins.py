@@ -61,6 +61,9 @@ def build(target: str, output: Path) -> None:
             "mcpServers": {"labby": {
                 "type": "stdio", "command": "npx",
                 "args": ["-y", "@dinglebear/labby", "mcp"],
+                # This plugin installs the same skills locally; keep them out of
+                # the MCP skills listing so clients do not load them twice.
+                "env": {"LABBY_MCP_NO_BUNDLED_SKILLS": "1"},
             }},
         })
 
@@ -99,6 +102,7 @@ def build(target: str, output: Path) -> None:
             "  mcp:\n    - name: labby\n      registry: false\n"
             "      transport: stdio\n      command: npx\n"
             "      args: ['-y', '@dinglebear/labby', 'mcp']\n"
+            "      env:\n        LABBY_MCP_NO_BUNDLED_SKILLS: '1'\n"
         )
         (source / "apm.yml").write_text(
             f"name: labby\nversion: 0.1.0\ntargets: [{projection_target}]\n"
