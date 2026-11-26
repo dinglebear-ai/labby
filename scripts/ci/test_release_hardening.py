@@ -839,6 +839,11 @@ class ReleaseWorkflowContractTests(unittest.TestCase):
         # A nightly run on an unchanged main must not republish its sha.
         self.assertEqual("published", image["jobs"]["image"]["needs"])
         self.assertIn("incus-dev-${{ github.sha }}", self.text(".github/workflows/incus-image.yml"))
+        # The guard fails closed: only a confirmed 404 means "not published".
+        guard = self.text(".github/workflows/incus-image.yml")
+        self.assertIn("(HTTP 404)", guard)
+        self.assertIn("exit 1", guard)
+        self.assertIn("needs.published.result != 'failure'", guard)
 
     def test_immutable_release_assets_are_never_clobbered(self) -> None:
         for path in (".github/workflows/release.yml", ".github/workflows/build-incus-image.yml"):

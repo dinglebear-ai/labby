@@ -38,13 +38,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: incus-dev-${{ github.sha }}
+        # Fail closed: only a confirmed 404 means "not published". Any other
+        # lookup error fails this job, which blocks the build below. The tags
+        # endpoint returns published releases only, never drafts.
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null | grep -Fxq false; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
+          errors="$(mktemp)"
+          if draft="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" --jq .draft 2>"$errors")"; then
+            if [[ "$draft" == false ]]; then exists=true; else exists=false; fi
+          elif grep -Fq '(HTTP 404)' "$errors"; then
+            exists=false
           else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+            cat "$errors" >&2
+            echo "::error::could not determine whether $RELEASE_TAG is published"
+            exit 1
           fi
+          echo "exists=$exists" >> "$GITHUB_OUTPUT"
 
   image:
     name: Build and smoke Incus substrate
