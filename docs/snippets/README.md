@@ -502,10 +502,6 @@ A snippet is ready to reuse when:
 ## Current Snippets
 
 - [`worktree-identity.md`](./worktree-identity.md) resolves a Git worktree and its associated issue or pull request.
-- [`axon-fanout.md`](./axon-fanout.md) defines reusable Axon research fan-out workflows for Code Mode.
-- [`cross-server-docs-brief.md`](./cross-server-docs-brief.md) combines Context7, SearXNG, Cloudflare docs, GitHub, Axon, and time into a compact documentation brief.
-- [`repo-context-triage.md`](./repo-context-triage.md) combines local file reads, current Octocode lexical search, and GitHub issue/file lookups for repo orientation.
-- [`repo-status-gh-pulse.md`](./repo-status-gh-pulse.md) collects the GitHub PR/CI side of a repo-status evidence sweep and returns equivalent `gh` commands for shell parity.
 - [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Synapse, and time for a read-only homelab status pulse.
 - [`homelab-ssh-targets.md`](./homelab-ssh-targets.md) discovers and probes SSH aliases through the configured controller.
 - [`docker-host-inventory.md`](./docker-host-inventory.md) inventories one SSH-reachable Docker host, including optional registry digest checks.

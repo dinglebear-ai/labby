@@ -230,7 +230,7 @@ jobs:
           python3 - "$smoke_home/snippets.json" <<'PYTHON'
           import json, sys
           listing = json.load(open(sys.argv[1]))
-          assert any(s["name"] == "axon-fanout" for s in listing["snippets"])
+          assert any(s["name"] == "homelab-readonly-pulse" for s in listing["snippets"])
           PYTHON
 
       - name: Attest exact platform candidate archive
