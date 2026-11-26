@@ -108,9 +108,11 @@ Snippets are also available through the shared dispatch layer and MCP/API servic
 { "action": "snippets.remove", "params": { "name": "my-workflow" } }
 ```
 
-On MCP/API, only `snippets.list`, `help`, and `schema` are non-admin. Reading
-bodies, executing, validating, testing, creating, promoting, and removing require
-`lab:admin`; the local CLI is trusted-local.
+On MCP/API, any Code Mode caller may list, run, validate, test, and create new
+snippets. Each `callTool()` runs with the caller's own authority, so a snippet
+cannot reach a tool the caller cannot call. Reading bodies, replacing a snippet
+(`force`) or shadowing a built-in, promoting, and removing require `lab:admin`;
+the local CLI is trusted-local.
 
 `remove` is destructive and only removes user snippets. Built-ins are read-only.
 

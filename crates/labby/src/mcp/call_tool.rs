@@ -153,11 +153,16 @@ async fn synthetic_gateway_authority(
     server: &LabMcpServer,
     context: &RequestContext<RoleServer>,
     action: &str,
-) -> Result<crate::access::GatewayActionAuthorization, ToolError> {
+) -> Result<Option<crate::access::GatewayActionAuthorization>, ToolError> {
     let denied = || ToolError::Forbidden {
         message: "Gateway operation is not authorized".into(),
         required_scopes: Vec::new(),
     };
+    // The stdio owner has no access-store principal; it holds the CLI's
+    // authority over this installation (see `is_stdio_local_owner`).
+    if server.is_stdio_local_owner(context) {
+        return Ok(None);
+    }
     let identity = crate::mcp::context::verified_identity_from_extensions(&context.extensions)
         .cloned()
         .ok_or_else(denied)?;
@@ -182,7 +187,7 @@ async fn synthetic_gateway_authority(
     .await?
     .ok_or_else(denied)?;
     authority.validate_before_external_effect().await?;
-    Ok(authority)
+    Ok(Some(authority))
 }
 
 #[cfg(feature = "skills")]
@@ -1703,9 +1708,12 @@ impl LabMcpServer {
                                 enrichment_scope,
                             ))
                             .await;
-                        match authority.validate_after_external_effect().await {
-                            Ok(()) => response,
-                            Err(error) => Err(error),
+                        match authority {
+                            Some(authority) => authority
+                                .validate_after_external_effect()
+                                .await
+                                .and(response),
+                            None => response,
                         }
                     }
                     _ => Err(ToolError::UnknownAction {
@@ -1797,7 +1805,9 @@ impl LabMcpServer {
                                     enrichment_scope,
                                 ))
                                 .await;
-                            authority.validate_after_external_effect().await?;
+                            if let Some(authority) = authority {
+                                authority.validate_after_external_effect().await?;
+                            }
                             response.map(|mut value| {
                                 retain_route_visible_gateway_status_rows(
                                     &mut value,
@@ -2386,7 +2396,13 @@ impl LabMcpServer {
                     let identity =
                         crate::mcp::context::verified_identity_from_extensions(&context.extensions)
                             .cloned();
-                    let Some(identity) = identity else {
+                    // The stdio owner has no access-store principal; it holds
+                    // the CLI's authority over this installation, but never a
+                    // Team's (see `is_stdio_local_owner`).
+                    let local_owner = self.is_stdio_local_owner(&context)
+                        && params.get("team_id").is_none()
+                        && self.route_scope.bound_team_id().is_none();
+                    if identity.is_none() && !local_owner {
                         return Ok(error_result_from_envelope(build_error(
                             &service,
                             &action,
@@ -2394,7 +2410,7 @@ impl LabMcpServer {
                             "Gateway operation is not authorized",
                         ))
                         .into());
-                    };
+                    }
                     // A protected route bound to a Team Loadout is the
                     // authoritative selector; `params.team_id` may only
                     // agree with it. Root/unbound routes take the parameter.
@@ -2442,16 +2458,21 @@ impl LabMcpServer {
                             .into());
                         }
                     };
-                    let gateway_authority = match crate::access::authorize_gateway_action(
-                        &self.access_runtime,
-                        identity,
-                        ceiling,
-                        None,
-                        team_id.as_deref(),
-                        &action,
-                    )
-                    .await
-                    {
+                    let authorized = match identity {
+                        Some(identity) => {
+                            crate::access::authorize_gateway_action(
+                                &self.access_runtime,
+                                identity,
+                                ceiling,
+                                None,
+                                team_id.as_deref(),
+                                &action,
+                            )
+                            .await
+                        }
+                        None => Ok(None),
+                    };
+                    let gateway_authority = match authorized {
                         Ok(authority) => authority,
                         Err(error) => {
                             // Authorization errors carry fixed caller-safe

@@ -1,7 +1,7 @@
 ---
 title: "Snippets Service"
 created: "2026-08-18"
-updated: "2026-10-24"
+updated: "2026-11-26"
 ---
 
 # Snippets Service
@@ -36,16 +36,44 @@ Nested `codemode.run()` inherits the already-established execution scope. Truste
 local saved snippets may compose inside that declared scope; route-scoped callers
 still cannot use nested snippet resolution to widen their authority.
 
-## Administrative Actions
+## Who May Run And Create Snippets
 
-Reading snippet bodies, executing or testing snippets, creating/removing snippets, and promotion flows require the scopes shown in the generated catalog. Creation, promotion, and removal are destructive actions: a create installs code that later runs by name, and with `force` it overwrites a user snippet.
+Any caller that may run Code Mode (the `lab` scope, or the local CLI/stdio
+owner) may run, create, and test snippets. Any caller may validate snippet
+source, because validation has no side effects. These actions
+(`snippets.exec`, `snippets.create`, `snippets.validate`, and `snippets.test`)
+do not need `lab:admin`. A read-only caller cannot create a snippet.
+
+A snippet grants nothing the caller does not already have. Every `callTool()`
+call in a snippet runs with the caller's own identity, capabilities, and route
+scope. A snippet's `tools` declaration can only narrow that scope. A tool that
+the caller cannot call directly fails inside the snippet in the same way.
+
+These actions still require `lab:admin`:
+
+- Replacing an existing user snippet (`force: true`) or shadowing a built-in
+  (`shadow_builtin: true`) through `snippets.create`. A non-admin can create
+  only new names. User snippets share one store, so this rule keeps one person
+  from replacing another person's snippet.
+- `snippets.remove` and `snippets.promote`.
+- Reading snippet bodies and owner records: `snippets.get`, `snippets.preview`,
+  `snippets.replay`, `snippets.receipt`, `snippets.history`,
+  `snippets.artifact`, and `snippets.fixture`. A guarded
+  `snippets.exec` with `expected_preview_fingerprint` also requires admin,
+  because its fingerprint comes from a preview.
+- `snippets.list` shows user snippets only to admins. Other callers see the
+  built-in snippets.
+
+Built-in snippets are read-only. Creation, promotion, and removal are
+destructive actions: a create installs code that later runs by name, and with
+`force` it overwrites a user snippet. The generated catalog lists the scope
+each action requires.
 
 The native MCP `snippets` router remains visible when Code Mode is enabled.
 Use its `help` and `schema` actions to discover the shared operation catalog,
 then call the selected action directly with `action` and `params`. This exposes
 the CLI's snippet operations without a local shell or SSH connection. Native
-calls preserve the original caller and route authority; privileged operations
-still require `lab:admin`.
+calls preserve the original caller and route authority.
 
 The binary includes the shipped snippets and their JSON fixtures. User snippets continue to load from the configured Labby home. Built-in snippets are read-only through the user-snippet mutation surface. Explicit shadowing is required before a created or promoted user snippet may replace a built-in name: `snippets.create` and `snippets.promote` refuse a built-in name with `confirmation_required` unless `shadow_builtin: true` is passed (`labby snippet add --shadow-builtin` on the CLI).
 

@@ -2633,7 +2633,7 @@ async fn code_mode_snippets_router_preserves_cli_discovery_and_contract() {
 }
 
 #[tokio::test]
-async fn code_mode_snippets_router_keeps_admin_validation_and_denies_non_admins() {
+async fn code_mode_snippets_router_validation_is_open() {
     for (transport_label, scopes) in [
         ("http", Some(&["lab:admin"][..])),
         ("http", Some(&["lab"][..])),
@@ -2674,22 +2674,11 @@ async fn code_mode_snippets_router_keeps_admin_validation_and_denies_non_admins(
             .await
             .unwrap();
         let text = serde_json::to_string(&response).unwrap();
-        if scopes.is_some_and(|scopes| scopes.contains(&"lab:admin")) {
-            assert!(!response.is_error.unwrap_or(false), "{text}");
-            assert_eq!(
-                response.structured_content.as_ref().unwrap()["data"]["valid"],
-                true
-            );
-        } else {
-            assert!(
-                response.is_error.unwrap_or(false),
-                "{transport_label} {scopes:?}: {text}"
-            );
-            assert!(
-                text.contains("forbidden"),
-                "admin authority must remain required: {text}"
-            );
-        }
+        // Validation is a side-effect-free syntax check, open like `list`.
+        assert!(
+            !response.is_error.unwrap_or(false),
+            "{transport_label} {scopes:?}: {text}"
+        );
     }
 }
 
@@ -8786,4 +8775,144 @@ async fn settings_state_applies_transport_trust_when_auth_is_absent() {
             );
         }
     }
+}
+
+async fn gateway_call_as(
+    transport_label: &'static str,
+    scopes: Option<&[&str]>,
+    action: &str,
+    params: Value,
+    dir: &std::path::Path,
+) -> (bool, Value) {
+    let manager = Arc::new(
+        crate::dispatch::gateway::config_store::test_gateway_manager(
+            dir.join("config.toml"),
+            crate::dispatch::gateway::manager::GatewayRuntimeHandle::default(),
+        ),
+    );
+    manager
+        .seed_config_unchecked_for_tests(
+            crate::config::LabConfig {
+                code_mode: crate::config::CodeModeConfig {
+                    enabled: false,
+                    ..Default::default()
+                },
+                ..crate::config::LabConfig::default()
+            }
+            .to_gateway_config(),
+        )
+        .await;
+    let mut server = test_server(
+        crate::registry::build_default_registry(),
+        Some(manager),
+        crate::mcp::route_scope::McpRouteScope::Root,
+    );
+    server.transport_label = transport_label;
+    // A brand-new Labby: no access store has been set up.
+    let (_access_dir, runtime) = uninitialized_test_access_runtime().await;
+    server.access_runtime = runtime;
+    let (transport, _client) = tokio::io::duplex(256 * 1024);
+    let running = rmcp::service::serve_directly::<rmcp::RoleServer, _, _, std::io::Error, _>(
+        server, transport, None,
+    );
+    let context = match scopes {
+        Some(scopes) => scoped_context(running.peer().clone(), scopes),
+        None => request_context_with_peer(running.peer().clone()),
+    };
+    let result = Box::pin(running.service().call_tool_impl(
+        CallToolRequestParams::new("gateway").with_arguments(serde_json::Map::from_iter([
+            ("action".into(), Value::String(action.into())),
+            ("params".into(), params),
+        ])),
+        context,
+    ))
+    .await
+    .expect("call tool result");
+    let text = result.content[0].as_text().expect("text").text.clone();
+    (
+        !result.is_error.unwrap_or(false),
+        serde_json::from_str(&text).expect("gateway envelope"),
+    )
+}
+
+#[tokio::test]
+async fn stdio_local_owner_manages_gateway_without_an_access_principal() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut spec = fixture_upstream_config("seeded");
+    spec.enabled = false;
+    let (ok, envelope) = gateway_call_as(
+        "test",
+        None,
+        "gateway.add",
+        serde_json::json!({ "spec": spec }),
+        dir.path(),
+    )
+    .await;
+    assert!(ok, "{envelope}");
+    assert_eq!(envelope["data"]["config"]["name"], "seeded");
+    let (ok, envelope) = gateway_call_as(
+        "test",
+        None,
+        "gateway.mcp.disable",
+        serde_json::json!({ "name": "seeded" }),
+        dir.path(),
+    )
+    .await;
+    assert!(ok, "{envelope}");
+    let (ok, envelope) = gateway_call_as(
+        "test",
+        None,
+        "gateway.list",
+        serde_json::json!({}),
+        dir.path(),
+    )
+    .await;
+    assert!(ok, "{envelope}");
+    // Each call uses a fresh manager, so check the committed file instead.
+    let written = std::fs::read_to_string(dir.path().join("config.toml")).expect("config written");
+    assert!(written.contains("seeded"), "{written}");
+    // Team policy is never inherited from local ownership.
+    let (ok, envelope) = gateway_call_as(
+        "test",
+        None,
+        "gateway.loadout.list",
+        serde_json::json!({ "team_id": "team-a" }),
+        dir.path(),
+    )
+    .await;
+    assert!(!ok, "{envelope}");
+}
+
+#[tokio::test]
+async fn http_callers_keep_gateway_access_store_authority() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut spec = fixture_upstream_config("seeded");
+    spec.enabled = false;
+    // Authenticated non-admin HTTP caller: refused.
+    let (ok, envelope) = gateway_call_as(
+        "http",
+        Some(&["lab"]),
+        "gateway.add",
+        serde_json::json!({ "spec": spec }),
+        dir.path(),
+    )
+    .await;
+    assert!(!ok, "{envelope}");
+    assert_eq!(envelope["error"]["kind"], "forbidden", "{envelope}");
+    // Unauthenticated loopback HTTP is not the stdio owner.
+    let (ok, envelope) = gateway_call_as(
+        "http",
+        None,
+        "gateway.add",
+        serde_json::json!({ "spec": spec }),
+        dir.path(),
+    )
+    .await;
+    assert!(!ok, "{envelope}");
+    assert_eq!(envelope["error"]["kind"], "forbidden", "{envelope}");
+    assert!(
+        !std::fs::read_to_string(dir.path().join("config.toml"))
+            .unwrap_or_default()
+            .contains("seeded")
+    );
 }

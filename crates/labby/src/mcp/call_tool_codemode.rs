@@ -1026,14 +1026,17 @@ impl LabMcpServer {
 
 pub(crate) fn code_mode_capabilities_for_scopes(scopes: &[String]) -> CodeModeCallerCapabilities {
     let is_admin = scopes.iter().any(|scope| scope == "lab:admin");
+    let can_execute = scopes
+        .iter()
+        .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin"));
     CodeModeCallerCapabilities {
         can_read: scopes
             .iter()
             .any(|scope| matches!(scope.as_str(), "lab:read" | "lab" | "lab:admin")),
-        can_execute: scopes
-            .iter()
-            .any(|scope| matches!(scope.as_str(), "lab" | "lab:admin")),
-        can_use_snippets: is_admin,
+        can_execute,
+        // Snippets run with the caller's own tool authority, so any caller
+        // that may execute Code Mode may also run snippets.
+        can_use_snippets: can_execute,
         is_admin,
     }
 }

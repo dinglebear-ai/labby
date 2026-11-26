@@ -13,6 +13,16 @@ identifiers were removed. Commit links remain the authoritative historical recor
 
 ### Added
 
+- **gateway/mcp:** a standalone stdio `labby mcp`, spawned by the user who owns
+  `LABBY_HOME`, is the local owner: it may add, update, enable, disable, remove,
+  list, and authorize gateway upstreams without a set-up access store. HTTP
+  callers, including unauthenticated loopback, and Team-scoped actions keep the
+  access-store rules.
+- **snippets:** any Code Mode caller may run, create, validate, and test
+  snippets without `lab:admin`. Snippet tool calls use the caller's own
+  authority. Replacing or shadowing, removal, promotion, and body reads stay
+  admin-only. The HTTP snippets API now runs snippets with the caller's real
+  Code Mode capabilities instead of an admin ceiling.
 - **auth:** CLI sign-in uses server-hosted callback polling when advertised with
   dynamic registration, allowing authorization from another workstation without
   an SSH tunnel or pasted callback URL. Saved custom client bindings are preserved.

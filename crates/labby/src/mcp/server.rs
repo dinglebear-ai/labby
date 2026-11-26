@@ -1364,6 +1364,22 @@ impl LabMcpServer {
             crate::mcp::context::AbsentAuth::Untrusted
         }
     }
+    /// Whether this request comes from the local owner over process stdio.
+    ///
+    /// `labby mcp` is spawned by the OS user who owns `LABBY_HOME`, has no
+    /// network listener, and carries neither a request `AuthContext` nor a
+    /// verified identity. Such a caller already has the CLI's authority over
+    /// that installation's files, so installation-scoped gateway management
+    /// is granted to it without an access-store principal. Loopback HTTP is
+    /// deliberately excluded: any local process can reach it.
+    pub(crate) fn is_stdio_local_owner(&self, context: &RequestContext<RoleServer>) -> bool {
+        let stdio =
+            self.transport_label == "stdio" || (cfg!(test) && self.transport_label == "test");
+        stdio
+            && super::context::auth_context_from_extensions(&context.extensions).is_none()
+            && super::context::verified_identity_from_extensions(&context.extensions).is_none()
+    }
+
     /// `source` attributes the emission — see `labby_runtime::catalog_notify`.
     /// Per-call sites pass their own label so a notification triggered by a
     /// tool call is never confused with a gateway reconcile.
