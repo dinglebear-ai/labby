@@ -414,8 +414,8 @@ fn shipped_plugin_markdown_routes_to_documentation_checks() {
 #[test]
 fn compiled_snippets_and_their_fixtures_route_to_rust_builds() {
     for path in [
-        "docs/snippets/axon-fanout.md",
-        "docs/snippets/axon-fanout.test.json",
+        "docs/snippets/homelab-readonly-pulse.md",
+        "docs/snippets/homelab-readonly-pulse.test.json",
         "docs/snippets/example.js",
     ] {
         let out = classify("pull_request", &[path]);

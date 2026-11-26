@@ -275,32 +275,31 @@ fn homelab_inventory_snippets_pin_ssh_safety_and_artifact_redaction() {
 }
 
 #[test]
-fn repo_status_gh_pulse_builtin_is_discoverable_and_executable() {
+fn homelab_readonly_pulse_builtin_is_discoverable_and_executable() {
     let lab_home = tempfile::tempdir().expect("temp lab home");
     let builtin_dir = builtin_snippet_dir();
     let snippets = list_snippets(lab_home.path(), &builtin_dir).expect("list snippets");
     let info = snippets
         .iter()
-        .find(|snippet| snippet.name == "repo-status-gh-pulse")
-        .expect("repo-status-gh-pulse listed");
+        .find(|snippet| snippet.name == "homelab-readonly-pulse")
+        .expect("homelab-readonly-pulse listed");
 
     assert_eq!(info.source, SnippetSource::Builtin);
     assert!(!info.path.is_absolute());
     let fixture = builtin_snippet_asset(&info.path.with_extension("test.json"))
         .expect("packaged default fixture");
     serde_json::from_slice::<Value>(fixture).expect("valid fixture JSON");
-    assert!(info.inputs.contains_key("owner"));
-    assert!(info.inputs.contains_key("repo"));
-    assert!(info.inputs.contains_key("root"));
-    assert!(info.inputs.contains_key("skill_dir"));
+    assert!(info.inputs.contains_key("timezone"));
+    assert!(info.inputs.contains_key("log_query"));
+    assert!(info.inputs.contains_key("log_limit"));
+    assert!(info.inputs.contains_key("container_sample"));
 
-    let resolved = resolve_snippet(lab_home.path(), &builtin_dir, "repo-status-gh-pulse")
+    let resolved = resolve_snippet(lab_home.path(), &builtin_dir, "homelab-readonly-pulse")
         .expect("resolve builtin snippet");
     let code = code_for_snippet(&resolved).expect("extract executable code");
 
-    assert!(code.contains("github::search_pull_requests"));
-    assert!(code.contains("claude-macpoo::Bash"));
-    assert!(code.contains("github::pull_request_read"));
+    assert!(code.contains("codemode.batch"));
+    assert!(code.contains("callTool(id, params)"));
 }
 
 #[test]
