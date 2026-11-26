@@ -1,7 +1,7 @@
 ---
 title: "Labby Plugins"
 created: "2026-07-30"
-updated: "2026-09-29"
+updated: "2026-11-26"
 ---
 
 # Labby Plugins
@@ -58,6 +58,9 @@ The repository root is also an [APM](https://microsoft.github.io/apm/) package.
 Its `.apm/skills/` directory is the source of the five skills. Root `skills/`
 entries are symlinks to that same source for repository discovery. The nested
 package also registers the `labby` stdio MCP server through the npm launcher.
+That registration sets `LABBY_MCP_NO_BUNDLED_SKILLS=1`: the package installs the
+skills locally, so the server leaves its embedded copies out of `skills/list`.
+See [Bundled Skills over MCP](services/SKILLS.md#bundled-skills-over-mcp).
 The root `apm.yml` carries a `# x-release-please-version` marker, so Release Please keeps
 its version aligned with the workspace. The package ships no binary and no
 hooks; host provisioning stays with `install-labby` and `labby setup`.

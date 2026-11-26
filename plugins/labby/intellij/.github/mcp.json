@@ -7,6 +7,9 @@
       ],
       "id": "",
       "command": "npx",
+      "env": {
+        "LABBY_MCP_NO_BUNDLED_SKILLS": "${LABBY_MCP_NO_BUNDLED_SKILLS}"
+      },
       "args": [
         "-y",
         "@dinglebear/labby",

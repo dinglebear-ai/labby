@@ -25,3 +25,5 @@ dependencies:
       transport: stdio
       command: npx
       args: ["-y", "@dinglebear/labby", "mcp"]
+      env:
+        LABBY_MCP_NO_BUNDLED_SKILLS: "1"
