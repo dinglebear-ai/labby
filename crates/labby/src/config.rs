@@ -801,18 +801,12 @@ impl LabConfig {
             .map_err(|error| ConfigError::InvalidProxyConfig {
                 reason: error.to_string(),
             })?;
-        if let Some(value) = self.upstream_request_timeout_ms
-            && !(1..=300_000).contains(&value)
-        {
-            return Err(ConfigError::InvalidUpstreamRequestTimeout { value });
-        }
-        // The relay deadline allows a wider ceiling (30 min) than the pooled
-        // request timeout because it spans a human answering an elicitation.
-        if let Some(value) = self.upstream_relay_timeout_ms
-            && !(1..=1_800_000).contains(&value)
-        {
-            return Err(ConfigError::InvalidUpstreamRelayTimeout { value });
-        }
+        // Shared with every gateway reload, so SIGUSR1 and `gateway.reload`
+        // hold these to the same bounds as startup.
+        labby_runtime::gateway_config::validate_upstream_timeouts(
+            self.upstream_request_timeout_ms,
+            self.upstream_relay_timeout_ms,
+        )?;
         if let Some(value) = self.mcp.catalog_notification_timeout_ms
             && !(1..=MAX_CATALOG_NOTIFICATION_TIMEOUT_MS).contains(&value)
         {
@@ -2291,7 +2285,7 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
                 validate_top_level_extension_boundary(&raw)
                     .with_context(|| format!("failed to parse {}", path.display()))?;
                 let mut cfg = toml::from_str::<LabConfig>(&raw)
-                    .with_context(|| format!("failed to parse {}", path.display()))?;
+                    .with_context(|| parse_failure_context(path, &raw))?;
                 cfg.normalize_protected_mcp_routes()
                     .with_context(|| format!("invalid config {}", path.display()))?;
                 // Validate all upstream configs eagerly at startup so that
@@ -2304,6 +2298,14 @@ fn load_toml_from_paths(candidates: &[PathBuf]) -> Result<LabConfig> {
         }
     }
     Ok(LabConfig::default())
+}
+
+/// `failed to parse <path>`, plus the key and line it failed on when known.
+fn parse_failure_context(path: &Path, raw: &str) -> String {
+    match labby_runtime::gateway_config::describe_config_parse_error::<LabConfig>(raw) {
+        Some(detail) => format!("failed to parse {}: {detail}", path.display()),
+        None => format!("failed to parse {}", path.display()),
+    }
 }
 
 /// Labby-owned app-surface sections that `raw` (a `config.toml` document)
@@ -2327,9 +2329,12 @@ pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
 pub(crate) fn parse_snapshot(raw: &str) -> Result<LabConfig> {
     validate_top_level_extension_boundary(raw)
         .map_err(|_| anyhow::anyhow!("Invalid top-level TOML structure in config.toml"))?;
-    let mut config: LabConfig = toml::from_str(raw).map_err(|error| {
-        let span = error.span().unwrap_or(0..0);
-        anyhow::anyhow!("Invalid configuration type or syntax at bytes {}..{}; inspect that location in config.toml", span.start, span.end)
+    // The detail names the key, line and column but never the value, which may
+    // be a secret.
+    let mut config: LabConfig = toml::from_str(raw).map_err(|_| {
+        let detail = labby_runtime::gateway_config::describe_config_parse_error::<LabConfig>(raw)
+            .unwrap_or_else(|| "invalid configuration type or syntax".to_string());
+        anyhow::anyhow!("Invalid config.toml: {detail}")
     })?;
     config.normalize_protected_mcp_routes()?;
     config.validate()?;

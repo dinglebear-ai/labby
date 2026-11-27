@@ -140,6 +140,54 @@ async fn reload_moves_a_running_pool_to_a_widened_request_timeout() {
 }
 
 #[tokio::test]
+async fn reload_refuses_an_out_of_range_timeout_and_keeps_the_running_pool() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config.toml");
+    let cfg = GatewayConfig {
+        upstream_request_timeout_ms: Some(60_000),
+        upstream: vec![fixture_http_upstream("alpha")],
+        ..GatewayConfig::default()
+    };
+    write_gateway_config(&path, &cfg).expect("write config");
+    let manager = GatewayManager::new(path.clone(), GatewayRuntimeHandle::default());
+    manager
+        .reload_with_origin(None, None)
+        .await
+        .expect("first reload");
+
+    // An edit made by hand, as SIGUSR1 would pick up; startup refuses 0.
+    let raw = std::fs::read_to_string(&path).expect("read config");
+    std::fs::write(
+        &path,
+        raw.replace(
+            "upstream_request_timeout_ms = 60000",
+            "upstream_request_timeout_ms = 0",
+        ),
+    )
+    .expect("break config");
+    let error = manager
+        .reload_with_origin(None, None)
+        .await
+        .expect_err("a zero timeout must not reload");
+    let message = error.to_string();
+    assert!(
+        message.contains("upstream_request_timeout_ms=0"),
+        "{message}"
+    );
+    assert!(message.contains(&path.display().to_string()), "{message}");
+
+    assert_eq!(
+        manager
+            .current_pool()
+            .await
+            .expect("pool")
+            .request_timeout(),
+        Duration::from_mins(1),
+        "the running pool keeps its previous timeout"
+    );
+}
+
+#[tokio::test]
 async fn gateway_test_does_not_schedule_background_reprobes() {
     UpstreamPool::reset_probe_task_schedule_count_for_tests("ephemeral-stdio");
     let dir = tempfile::tempdir().expect("tempdir");

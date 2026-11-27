@@ -60,6 +60,19 @@ first header. Unknown top-level scalar keys (for example `mcpp = 1` or
 `config_verzion = 1`) are also errors. Foreign extensions must be explicitly
 namespaced as TOML tables (for example `[vendor.example]`); those sections
 remain accepted and are preserved by supported gateway/settings mutations.
+`labby config check` lists the same ignored keys under `warnings`, and
+`setup check` and Doctor report each one as a non-fatal `config_key_ignored`
+problem.
+
+A value of the wrong type, a missing required field or an unknown enum value
+fails with the dotted key, its line and column, and the expected type, for
+example ``key `mcp.port` (line 2, column 8): wrong type, expected u16``.
+`labby config check` never repeats the rejected value, because `config.toml`
+can hold secrets. Range checks, such as `upstream_request_timeout_ms` in
+`1..=300000` and `upstream_relay_timeout_ms` in `1..=1800000`, run at startup
+and on every gateway reload. A bad value stops startup. A reload that finds
+one, from `gateway.reload` or `SIGUSR1`, fails with the key and the file, and
+the running gateway keeps its previous configuration.
 
 Gateway bearer-token mutations commit the selected `.env` key with their
 configuration transaction and restore that key on failure, preserving unrelated

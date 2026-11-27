@@ -42,7 +42,7 @@ pub fn run(operation: Operation, format: OutputFormat) -> anyhow::Result<ExitCod
     config.cli.validate()?;
     let result = match operation {
         Operation::Check => {
-            json!({"valid":true,"path":path,"configured":!raw.is_empty(),"source":"host configuration snapshot; environment overrides not applied"})
+            json!({"valid":true,"path":path,"configured":!raw.is_empty(),"source":"host configuration snapshot; environment overrides not applied","warnings":ignored_key_warnings(&raw)})
         }
         Operation::Show => {
             json!({"path":path,"configured":!raw.is_empty(),"source":"host configuration snapshot; environment overrides not applied","config":diagnostic_config(config)?})
@@ -52,9 +52,58 @@ pub fn run(operation: Operation, format: OutputFormat) -> anyhow::Result<ExitCod
     Ok(ExitCode::SUCCESS)
 }
 
+/// Keys the snapshot sets that Labby reads past. They do not make the config
+/// invalid, since serve starts with them, but each one has no effect.
+fn ignored_key_warnings(raw: &str) -> Vec<serde_json::Value> {
+    labby_runtime::gateway_config::ignored_config_keys::<crate::config::LabConfig>(
+        raw,
+        crate::config::OWNED_TOP_LEVEL_KEYS,
+    )
+    .iter()
+    .map(|key| {
+        json!({
+            "key": key,
+            "message": labby_runtime::gateway_config::ignored_config_key_message(key),
+        })
+    })
+    .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn check_warns_about_a_setting_written_inside_a_table() {
+        let warnings = ignored_key_warnings(
+            "[mcp]\nport = 8765\n\n[gateway]\nupstream_request_timeout_ms = 300000\n",
+        );
+        assert_eq!(warnings.len(), 1);
+        assert_eq!(warnings[0]["key"], "gateway.upstream_request_timeout_ms");
+        assert!(
+            warnings[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("move it above the first [table] header")
+        );
+        assert_eq!(
+            ignored_key_warnings("upstream_request_timeout_ms = 300000\n"),
+            Vec::<serde_json::Value>::new()
+        );
+    }
+
+    #[test]
+    fn check_names_the_bad_key_without_echoing_its_value() {
+        let error =
+            crate::config::parse_snapshot("[mcp]\nport = \"unique-secret-looking-value\"\n")
+                .unwrap_err()
+                .to_string();
+        assert!(
+            error.contains("key `mcp.port` (line 2, column 8): wrong type"),
+            "{error}"
+        );
+        assert!(!error.contains("unique-secret-looking-value"), "{error}");
+    }
 
     #[test]
     fn configuration_masks_arbitrary_upstream_credentials_including_pending_entries() {
