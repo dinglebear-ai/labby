@@ -50,7 +50,7 @@ live under `crates/labby-codemode/tests/fixtures/snippet-harness/`; the original
 snippet's 26-issue fixtures are not interchangeable. The offline harness caps
 raw output at 16,000 bytes even when `maxOutputBytes` is set higher. A passing
 fixture verifies its assertions; it does not establish complete upstream data.
-Tests and authoring instructions are in [SNIPPET_TESTING.md](../dev/SNIPPET_TESTING.md).
+Tests and authoring instructions are in [SNIPPET_TESTING.md](../../../../../docs/dev/SNIPPET_TESTING.md).
 
 ```js
 async (input = {}) => {

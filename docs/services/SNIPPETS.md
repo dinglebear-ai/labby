@@ -246,11 +246,11 @@ scripts that intentionally tested real upstreams must add `--live` (or
 `live: true` through the shared action).
 
 ```bash
-labby snippet validate unraid-linear-pr-triage --file docs/snippets/unraid-linear-pr-triage.md
-labby snippet test unraid-linear-pr-triage
-labby snippet test unraid-linear-pr-triage --fixture docs/snippets/unraid-linear-pr-triage.deep.test.json --param deep=true
+labby snippet validate example --file ./example.md
+labby snippet test homelab-readonly-pulse
+labby snippet test example --fixture ./example.deep.test.json --param deep=true
 labby snippet test --all
-labby snippet test unraid-linear-pr-triage --live
+labby snippet test homelab-readonly-pulse --live
 ```
 
 The CLI reports a failing test with a nonzero exit status. With `--json`, its

@@ -17,20 +17,20 @@ Use the native singular `snippet` command group:
 
 ~~~sh
 # Parse the frontmatter and JavaScript without executing the snippet.
-labby snippet validate unraid-linear-pr-triage
+labby snippet validate homelab-readonly-pulse
 labby snippet validate example --file ./example.md
 
 # Offline fixture execution. No configured gateway is required.
-labby --json snippet test unraid-linear-pr-triage
-labby --json snippet test unraid-linear-pr-triage \
-  --fixture docs/snippets/unraid-linear-pr-triage.deep.test.json \
+labby --json snippet test homelab-readonly-pulse
+labby --json snippet test example \
+  --fixture ./example.deep.test.json \
   --param deep=true
 
 # Every listed snippet must have a usable adjacent fixture.
 labby --json snippet test --all
 
 # Explicit opt-in to real upstream operations.
-labby --json snippet test unraid-linear-pr-triage --live
+labby --json snippet test homelab-readonly-pulse --live
 ~~~
 
 A named test uses an adjacent `<name>.test.json` unless `--fixture` supplies
@@ -301,7 +301,7 @@ information rather than immediately repeating a failing batch.
 
 ### Version 2
 
-[unraid-linear-pr-triage-v2](../snippets/unraid-linear-pr-triage-v2.md) has a
+[unraid-linear-pr-triage-v2](../../crates/labby/tests/fixtures/snippets/unraid-linear-pr-triage-v2.md) has a
 separate result schema and fixture family. It stores PRs once and returns keys
 from issue and personal-PR lists. Unlike the original snippet, deep mode uses
 separate open and closed searches, and GitHub searches paginate (three pages

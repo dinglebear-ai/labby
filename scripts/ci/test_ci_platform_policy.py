@@ -202,22 +202,22 @@ class ProductRoutingTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_identity_reader_changes_collect_the_real_python_suite(self) -> None:
-        command = "python3 docs/snippets/worktree-identity.test.py"
+        command = "python3 crates/labby/tests/fixtures/snippets/worktree-identity.test.py"
         steps = self.jobs["docs-check"]["steps"]
         collectors = [step for step in steps if command in step.get("run", "")]
         self.assertEqual(len(collectors), 1, "collect the real reader, beyond mocked snippet fixtures")
         self.assertEqual(collectors[0]["run"].strip(), command, "preserve the suite's exit status")
         for path in (
-            "docs/snippets/worktree-identity.py",
-            "docs/snippets/worktree-identity-reader.py",
-            "docs/snippets/worktree-identity.test.py",
+            "crates/labby/tests/fixtures/snippets/worktree-identity.py",
+            "crates/labby/tests/fixtures/snippets/worktree-identity-reader.py",
+            "crates/labby/tests/fixtures/snippets/worktree-identity.test.py",
         ):
             with self.subTest(path=path):
                 context = self.context("pull_request", False, [path])
                 self.assertTrue(evaluate_condition(self.jobs["docs-check"].get("if"), context))
 
     def test_identity_reader_qualification_failure_blocks_the_required_gate(self) -> None:
-        context = self.context("pull_request", False, ["docs/snippets/worktree-identity.py"])
+        context = self.context("pull_request", False, ["crates/labby/tests/fixtures/snippets/worktree-identity.py"])
         failed = self.run_aggregate(context, **{"docs-check": "failure"})
         self.assertNotEqual(0, failed.returncode, failed.stdout + failed.stderr)
 
