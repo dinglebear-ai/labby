@@ -65,7 +65,8 @@ Gateway bearer-token mutations commit the selected `.env` key with their
 configuration transaction and restore that key on failure, preserving unrelated
 entries. They reconnect upstreams referencing the changed key. A manual
 `gateway.reload` also reconnects bearer upstreams and observes changed
-file-managed credentials. A key supplied by the external process environment
+file-managed credentials. Sending the daemon `SIGUSR1` runs the same reload;
+sections outside the gateway still apply only after a restart. A key supplied by the external process environment
 before startup dotenv loading remains authoritative until process restart;
 gateway mutations do not overwrite that environment authority.
 

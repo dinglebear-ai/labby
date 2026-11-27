@@ -1937,7 +1937,89 @@ async fn wait_for_reload_signals(transport: &'static str) -> Result<()> {
             action = "config.reload",
             "SIGUSR1 received; config reload triggered",
         );
-        // Future: re-read config.toml and apply diffs here.
+        reload_on_signal().await;
+    }
+}
+
+/// Run the same reconcile as `gateway.reload`: re-read `config.toml`, rebuild
+/// the upstream pool when its settings changed, and log the outcome. The reload
+/// runs in its own task, so a shutdown signal arriving meanwhile cannot drop it
+/// halfway. Sections outside the gateway still apply only on restart.
+#[cfg(all(unix, feature = "gateway"))]
+async fn reload_on_signal() {
+    reload_gateway_on_signal(crate::dispatch::gateway::current_gateway_manager()).await;
+}
+
+#[cfg(all(unix, feature = "gateway"))]
+async fn reload_gateway_on_signal(manager: Option<Arc<GatewayManager>>) {
+    let Some(manager) = manager else {
+        tracing::warn!(
+            surface = "api",
+            action = "config.reload",
+            "SIGUSR1 reload skipped: this process has no gateway; restart to apply config.toml"
+        );
+        return;
+    };
+    match manager
+        .reload_with_origin_detached(Some("sigusr1"), None, Duration::from_secs(20))
+        .await
+    {
+        Ok(outcome) => tracing::info!(
+            surface = "api",
+            action = "config.reload",
+            completed = outcome.completed,
+            "SIGUSR1 reload applied gateway settings from config.toml; \
+             other sections still need a restart"
+        ),
+        Err(error) => tracing::warn!(
+            surface = "api",
+            action = "config.reload",
+            error = %error,
+            "SIGUSR1 reload failed; the running gateway keeps its previous config"
+        ),
+    }
+}
+
+#[cfg(all(unix, not(feature = "gateway")))]
+async fn reload_on_signal() {
+    tracing::warn!(
+        surface = "api",
+        action = "config.reload",
+        "SIGUSR1 reload skipped: this build has no gateway; restart to apply config.toml"
+    );
+}
+
+// `GatewayManager::new` is a testkit constructor.
+#[cfg(all(test, unix, feature = "gateway", feature = "proxy-testkit"))]
+mod reload_signal_tests {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    use crate::dispatch::gateway::manager::{GatewayManager, GatewayRuntimeHandle};
+
+    #[tokio::test]
+    async fn sigusr1_reload_applies_a_widened_upstream_timeout() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.toml");
+        let upstream = "[[upstream]]\nname = \"alpha\"\nurl = \"http://127.0.0.1:9/mcp\"\n";
+        std::fs::write(&path, upstream).expect("write config");
+        let manager = Arc::new(GatewayManager::new(
+            path.clone(),
+            GatewayRuntimeHandle::default(),
+        ));
+        manager
+            .reload_with_origin(None, None)
+            .await
+            .expect("first reload");
+        std::fs::write(
+            &path,
+            format!("upstream_request_timeout_ms = 300000\n{upstream}"),
+        )
+        .expect("widen timeout");
+        super::reload_gateway_on_signal(Some(Arc::clone(&manager))).await;
+
+        let pool = manager.current_pool().await.expect("pool");
+        assert_eq!(pool.request_timeout(), Duration::from_mins(5));
     }
 }
 
