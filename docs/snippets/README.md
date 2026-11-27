@@ -501,13 +501,14 @@ A snippet is ready to reuse when:
 
 ## Current Snippets
 
-- [`worktree-identity.md`](./worktree-identity.md) resolves a Git worktree and its associated issue or pull request.
 - [`homelab-readonly-pulse.md`](./homelab-readonly-pulse.md) combines Dozzle, Cortex, Synapse, and time for a read-only homelab status pulse.
 - [`homelab-ssh-targets.md`](./homelab-ssh-targets.md) discovers and probes SSH aliases through the configured controller.
 - [`docker-host-inventory.md`](./docker-host-inventory.md) inventories one SSH-reachable Docker host, including optional registry digest checks.
 - [`homelab-docker-inventory.md`](./homelab-docker-inventory.md) composes those primitives and writes a combined artifact.
-- [`unraid-linear-pr-triage.md`](./unraid-linear-pr-triage.md) provides bounded issue/PR matching with default and deep offline fixtures.
-- [`unraid-linear-pr-triage-v2.md`](./unraid-linear-pr-triage-v2.md) adds bounded GitHub pagination, shared PR references, coverage gaps, and a separate fixture matrix.
+
+The `worktree-identity` and `unraid-linear-pr-triage` examples are no longer
+shipped. They live in `crates/labby/tests/fixtures/snippets/` as harness test
+fixtures.
 
 Upstream names and schemas in these examples are deployment-specific snapshots,
 not built-in Labby capabilities. Rediscover them on the intended gateway before

@@ -31,7 +31,7 @@ The adjacent fixture covers the default 26-issue case with 10 calls. Use
 History uses one all-state query per identifier chunk. These fixtures belong
 to this original schema; [v2](unraid-linear-pr-triage-v2.md) has separate
 pagination, result references, and fixtures. See
-[Snippet development and testing](../dev/SNIPPET_TESTING.md).
+[Snippet development and testing](../../../../../docs/dev/SNIPPET_TESTING.md).
 
 ```js
 async (input = {}) => {

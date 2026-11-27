@@ -13,7 +13,7 @@ def main() -> int:
         return 2
     executable = Path(sys.argv[1]).resolve(strict=True)
     fixtures = Path(__file__).parent / "fixtures" / "snippet-harness"
-    source = Path(__file__).resolve().parents[3] / "docs/snippets/unraid-linear-pr-triage-v2.md"
+    source = Path(__file__).resolve().parents[3] / "crates/labby/tests/fixtures/snippets/unraid-linear-pr-triage-v2.md"
     cases = [
         ("fast", source, "fast", {}, 0),
         ("diagnostics", source, "fast", {"diagnostics": True}, 0),

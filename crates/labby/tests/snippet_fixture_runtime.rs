@@ -52,9 +52,22 @@ fn install(home: &Path, name: &str, code: &str, fixture: Option<Value>) {
     }
 }
 
+fn install_triage(home: &Path) {
+    let dir = home.join(".labby/snippets");
+    std::fs::create_dir_all(&dir).unwrap();
+    let fixtures = root().join("crates/labby/tests/fixtures/snippets");
+    for file in [
+        "unraid-linear-pr-triage.md",
+        "unraid-linear-pr-triage.test.json",
+    ] {
+        std::fs::copy(fixtures.join(file), dir.join(file)).unwrap();
+    }
+}
+
 #[test]
 fn fast_triage_uses_real_runner_with_ten_synthetic_calls_and_no_gateway() {
     let home = tempfile::tempdir().unwrap();
+    install_triage(home.path());
     let output = invoke(home.path(), &["test", "unraid-linear-pr-triage"]);
     let value = report(&output);
     assert!(output.status.success(), "{value}");
@@ -72,7 +85,9 @@ fn fast_triage_uses_real_runner_with_ten_synthetic_calls_and_no_gateway() {
 #[test]
 fn deep_triage_uses_explicit_fixture_and_compact_handoffs() {
     let home = tempfile::tempdir().unwrap();
-    let fixture = root().join("docs/snippets/unraid-linear-pr-triage.deep.test.json");
+    install_triage(home.path());
+    let fixture =
+        root().join("crates/labby/tests/fixtures/snippets/unraid-linear-pr-triage.deep.test.json");
     let output = invoke(
         home.path(),
         &[

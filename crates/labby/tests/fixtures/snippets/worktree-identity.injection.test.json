@@ -3,7 +3,7 @@
     {
       "tool": "claude-example-host::Bash",
       "match": {
-        "command": "python3 /opt/labby/docs/snippets/worktree-identity.py --input-json '{\"path\":\"/fixture/repo/worktrees/a'\\'' $(touch /tmp/NEVER) `id`\",\"session_limit\":10,\"session_cursor\":\"\"}'"
+        "command": "python3 /opt/labby/crates/labby/tests/fixtures/snippets/worktree-identity.py --input-json '{\"path\":\"/fixture/repo/worktrees/a'\\'' $(touch /tmp/NEVER) `id`\",\"session_limit\":10,\"session_cursor\":\"\"}'"
       },
       "result": {
         "content": [

@@ -8,7 +8,7 @@ fn run(fixture: Value, params: &[&str]) -> (bool, Value) {
     fs::create_dir(&snippets).unwrap();
     fs::write(
         snippets.join("unraid-linear-pr-triage-v2.md"),
-        include_str!("../../../docs/snippets/unraid-linear-pr-triage-v2.md"),
+        include_str!("fixtures/snippets/unraid-linear-pr-triage-v2.md"),
     )
     .unwrap();
     fs::write(

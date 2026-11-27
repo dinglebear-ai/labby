@@ -56,15 +56,15 @@ fn run_with_config(
 
 #[test]
 fn triage_fast_path_and_deep_path_use_real_runner() {
-    let source = include_str!("../../../docs/snippets/unraid-linear-pr-triage.md");
+    let source = include_str!("fixtures/snippets/unraid-linear-pr-triage.md");
     for (fixture, params, expected_calls) in [
         (
-            include_str!("../../../docs/snippets/unraid-linear-pr-triage.test.json"),
+            include_str!("fixtures/snippets/unraid-linear-pr-triage.test.json"),
             vec![],
             10,
         ),
         (
-            include_str!("../../../docs/snippets/unraid-linear-pr-triage.deep.test.json"),
+            include_str!("fixtures/snippets/unraid-linear-pr-triage.deep.test.json"),
             vec!["deep=true"],
             36,
         ),
@@ -193,7 +193,7 @@ fn global_tool_bridge_cannot_reach_a_live_upstream() {
 
 #[test]
 fn triage_v2_acceptance_fixtures_run_through_product_dispatch() {
-    let source = include_str!("../../../docs/snippets/unraid-linear-pr-triage-v2.md");
+    let source = include_str!("fixtures/snippets/unraid-linear-pr-triage-v2.md");
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../labby-codemode/tests/fixtures/snippet-harness");
     for (case, fixture, input, expected) in [
