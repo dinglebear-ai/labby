@@ -30,13 +30,40 @@ pub(crate) struct ConfigProblem {
 /// cleanly. A load failure stops validation (there is nothing to validate).
 pub(crate) fn check_config_candidates(candidates: &[PathBuf]) -> Vec<ConfigProblem> {
     match crate::config::load_toml(candidates).context("load config.toml") {
-        Ok(config) => validate_startup_config(&config),
+        Ok(config) => {
+            let mut problems = validate_startup_config(&config);
+            problems.extend(ignored_key_problems(candidates));
+            problems
+        }
         Err(error) => vec![ConfigProblem {
             code: "config_invalid",
             fatal: true,
             message: error_chain(error.as_ref()),
         }],
     }
+}
+
+/// One non-fatal problem per key in the loaded `config.toml` that Labby reads
+/// past, such as a top-level timeout written under `[gateway]`. Serve starts,
+/// but the setting has no effect, which is what an operator needs to hear.
+fn ignored_key_problems(candidates: &[PathBuf]) -> Vec<ConfigProblem> {
+    let Some(raw) = candidates
+        .iter()
+        .find_map(|path| std::fs::read_to_string(path).ok())
+    else {
+        return Vec::new();
+    };
+    labby_runtime::gateway_config::ignored_config_keys::<LabConfig>(
+        &raw,
+        crate::config::OWNED_TOP_LEVEL_KEYS,
+    )
+    .iter()
+    .map(|key| ConfigProblem {
+        code: "config_key_ignored",
+        fatal: false,
+        message: labby_runtime::gateway_config::ignored_config_key_message(key),
+    })
+    .collect()
 }
 
 /// Resolve the installation's `config.toml` candidates and validate them.
@@ -434,6 +461,45 @@ backend_url = "http://127.0.0.1:3100/mcp"
             problems[0]
                 .message
                 .starts_with("load config.toml: failed to parse"),
+            "{}",
+            problems[0].message
+        );
+    }
+
+    #[test]
+    fn misplaced_top_level_setting_is_reported_non_fatal() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(&path, "[gateway]\nupstream_request_timeout_ms = 300000\n").unwrap();
+        let problems = check_config_candidates(&[path]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0].code, "config_key_ignored");
+        assert!(!problems[0].fatal);
+        assert!(
+            problems[0]
+                .message
+                .contains("move it above the first [table] header"),
+            "{}",
+            problems[0].message
+        );
+    }
+
+    #[test]
+    fn wrong_type_names_the_key_and_line() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "upstream_request_timeout_ms = \"unique-wrong-type-value\"\n",
+        )
+        .unwrap();
+        let problems = check_config_candidates(&[path]);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert!(problems[0].fatal);
+        assert!(
+            problems[0]
+                .message
+                .contains("key `upstream_request_timeout_ms` (line 1, column 31): wrong type"),
             "{}",
             problems[0].message
         );

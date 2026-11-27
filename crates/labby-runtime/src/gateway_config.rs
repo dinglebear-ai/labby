@@ -650,6 +650,21 @@ pub fn ignored_config_keys<T: serde::de::DeserializeOwned>(
     ignored
 }
 
+/// Operator-facing explanation for one path [`ignored_config_keys`] returned,
+/// naming the fix when a top-level setting was written inside a table.
+#[must_use]
+pub fn ignored_config_key_message(key: &str) -> String {
+    let leaf = key.rsplit('.').next().unwrap_or(key);
+    if key.contains('.') && TOP_LEVEL_ONLY_KEYS.contains(&leaf) {
+        format!(
+            "config.toml setting `{leaf}` is inside a table (`{key}`) and is ignored; \
+             move it above the first [table] header"
+        )
+    } else {
+        format!("config.toml key `{key}` is not a Labby setting and is ignored")
+    }
+}
+
 /// Log one warning per key in `path` that `T` ignores, naming the fix when a
 /// top-level setting was written inside a table. Returns the ignored paths.
 pub fn warn_ignored_config_keys<T: serde::de::DeserializeOwned>(
@@ -661,25 +676,87 @@ pub fn warn_ignored_config_keys<T: serde::de::DeserializeOwned>(
     };
     let ignored = ignored_config_keys::<T>(&raw, owned);
     for key in &ignored {
-        let leaf = key.rsplit('.').next().unwrap_or(key);
-        if key.contains('.') && TOP_LEVEL_ONLY_KEYS.contains(&leaf) {
-            tracing::warn!(
-                subsystem = "config",
-                config_path = %path.display(),
-                key = %key,
-                "config.toml setting `{leaf}` is inside a table and is ignored; \
-                 move it above the first [table] header"
-            );
-        } else {
-            tracing::warn!(
-                subsystem = "config",
-                config_path = %path.display(),
-                key = %key,
-                "config.toml key `{key}` is not a Labby setting and is ignored"
-            );
-        }
+        tracing::warn!(
+            subsystem = "config",
+            config_path = %path.display(),
+            key = %key,
+            "{}",
+            ignored_config_key_message(key)
+        );
     }
     ignored
+}
+
+/// Where a `config.toml` document stopped deserializing as `T`, phrased so
+/// it never repeats the offending value: `config.toml` holds secrets, and this
+/// text reaches logs and CLI output.
+///
+/// Returns `None` when `raw` deserializes. Otherwise names the dotted key (when
+/// the failure is inside a key), its 1-based line and column, and why, for
+/// example ``key `gateway.upstream_max_response_bytes` (line 4, column 31):
+/// wrong type, expected u64``.
+#[must_use]
+pub fn describe_config_parse_error<T: serde::de::DeserializeOwned>(raw: &str) -> Option<String> {
+    let location = |span: Option<std::ops::Range<usize>>| {
+        span.map(|span| {
+            let before = &raw[..span.start.min(raw.len())];
+            let line = before.matches('\n').count() + 1;
+            let column = before.rsplit('\n').next().unwrap_or(before).chars().count() + 1;
+            format!("line {line}, column {column}")
+        })
+    };
+    let deserializer = match toml::Deserializer::parse(raw) {
+        Ok(deserializer) => deserializer,
+        Err(error) => {
+            let at = location(error.span()).map_or_else(String::new, |at| format!(" at {at}"));
+            return Some(format!("TOML syntax error{at}"));
+        }
+    };
+    let error = serde_path_to_error::deserialize::<_, T>(deserializer).err()?;
+    let key = error
+        .path()
+        .iter()
+        .filter_map(|segment| match segment {
+            serde_path_to_error::Segment::Seq { index } => Some(index.to_string()),
+            serde_path_to_error::Segment::Map { key } => Some(key.clone()),
+            serde_path_to_error::Segment::Enum { variant } => Some(variant.clone()),
+            serde_path_to_error::Segment::Unknown => None,
+        })
+        .collect::<Vec<_>>()
+        .join(".");
+    let reason = redacted_deserialize_reason(error.inner().message());
+    let at = location(error.inner().span());
+    Some(match (key.is_empty(), at) {
+        (false, Some(at)) => format!("key `{key}` ({at}): {reason}"),
+        (false, None) => format!("key `{key}`: {reason}"),
+        (true, Some(at)) => format!("{at}: {reason}"),
+        (true, None) => reason,
+    })
+}
+
+/// Keep the schema half of a serde message and drop any echoed value.
+fn redacted_deserialize_reason(message: &str) -> String {
+    let message = message.trim();
+    // Field names come from the schema, not the document's values.
+    if message.starts_with("unknown field") || message.starts_with("missing field") {
+        return message.to_string();
+    }
+    let expected = message
+        .rsplit_once(", expected ")
+        .map(|(_, expected)| expected.trim().to_string());
+    let kind = if message.starts_with("invalid type") {
+        "wrong type"
+    } else if message.starts_with("unknown variant") {
+        "unknown value"
+    } else if message.starts_with("invalid length") {
+        "wrong number of entries"
+    } else {
+        "invalid value"
+    };
+    match expected {
+        Some(expected) => format!("{kind}, expected {expected}"),
+        None => kind.to_string(),
+    }
 }
 
 /// Configuration for a single upstream MCP server.
@@ -2326,6 +2403,34 @@ impl ResolvedPublicUrls {
 pub const DEFAULT_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 30_000;
 /// Default deadline for a single *relayed* upstream tool call (5 minutes).
 pub const DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 300_000;
+/// Largest accepted `upstream_request_timeout_ms` (5 minutes).
+pub const MAX_UPSTREAM_REQUEST_TIMEOUT_MS: u64 = 300_000;
+/// Largest accepted `upstream_relay_timeout_ms` (30 minutes). It is wider than
+/// the request ceiling because a relayed call can wait on a human answering an
+/// elicitation.
+pub const MAX_UPSTREAM_RELAY_TIMEOUT_MS: u64 = 1_800_000;
+
+/// Range-check the top-level upstream timeouts.
+///
+/// Startup (`LabConfig::validate`) and every gateway reload call this, so a
+/// value SIGUSR1 or `gateway.reload` would apply is held to the same bounds as
+/// one read at startup.
+pub fn validate_upstream_timeouts(
+    request_timeout_ms: Option<u64>,
+    relay_timeout_ms: Option<u64>,
+) -> Result<(), ConfigError> {
+    if let Some(value) = request_timeout_ms
+        && !(1..=MAX_UPSTREAM_REQUEST_TIMEOUT_MS).contains(&value)
+    {
+        return Err(ConfigError::InvalidUpstreamRequestTimeout { value });
+    }
+    if let Some(value) = relay_timeout_ms
+        && !(1..=MAX_UPSTREAM_RELAY_TIMEOUT_MS).contains(&value)
+    {
+        return Err(ConfigError::InvalidUpstreamRelayTimeout { value });
+    }
+    Ok(())
+}
 
 /// Surface-neutral gateway configuration the [`GatewayManager`] reads and
 /// mutates.
@@ -2394,6 +2499,14 @@ impl GatewayConfig {
         std::time::Duration::from_millis(
             self.upstream_relay_timeout_ms
                 .unwrap_or(DEFAULT_UPSTREAM_RELAY_TIMEOUT_MS),
+        )
+    }
+
+    /// Range-check the top-level upstream timeouts in this slice.
+    pub fn validate_upstream_timeouts(&self) -> Result<(), ConfigError> {
+        validate_upstream_timeouts(
+            self.upstream_request_timeout_ms,
+            self.upstream_relay_timeout_ms,
         )
     }
 
@@ -2542,6 +2655,55 @@ anything = "goes"
             ignored_config_keys::<GatewayConfig>("not = [toml", owned),
             Vec::<String>::new()
         );
+    }
+
+    #[test]
+    fn describe_config_parse_error_names_key_and_line_but_never_the_value() {
+        assert_eq!(
+            describe_config_parse_error::<GatewayConfig>("upstream_request_timeout_ms = 60000\n"),
+            None
+        );
+        let wrong_type = describe_config_parse_error::<GatewayConfig>(
+            "[gateway]\nupstream_max_response_bytes = \"unique-value, expected secret\"\n",
+        )
+        .expect("wrong type is an error");
+        assert_eq!(
+            wrong_type,
+            "key `gateway.upstream_max_response_bytes` (line 2, column 31): wrong type, expected usize"
+        );
+        assert!(!wrong_type.contains("unique-value"), "{wrong_type}");
+
+        let missing = describe_config_parse_error::<GatewayConfig>(
+            "[[upstream]]\nurl = \"https://mcp.example/mcp\"\n",
+        )
+        .expect("an upstream needs a name");
+        assert!(missing.starts_with("key `upstream.0"), "{missing}");
+        assert!(missing.contains("missing field `name`"), "{missing}");
+
+        let syntax = describe_config_parse_error::<GatewayConfig>("[gateway\nx = 1\n")
+            .expect("syntax error");
+        assert!(
+            syntax.starts_with("TOML syntax error at line 1"),
+            "{syntax}"
+        );
+    }
+
+    #[test]
+    fn upstream_timeouts_are_range_checked() {
+        assert!(validate_upstream_timeouts(None, None).is_ok());
+        assert!(validate_upstream_timeouts(Some(300_000), Some(1_800_000)).is_ok());
+        assert!(matches!(
+            validate_upstream_timeouts(Some(0), None),
+            Err(ConfigError::InvalidUpstreamRequestTimeout { value: 0 })
+        ));
+        assert!(matches!(
+            validate_upstream_timeouts(Some(300_001), None),
+            Err(ConfigError::InvalidUpstreamRequestTimeout { value: 300_001 })
+        ));
+        assert!(matches!(
+            validate_upstream_timeouts(None, Some(1_800_001)),
+            Err(ConfigError::InvalidUpstreamRelayTimeout { value: 1_800_001 })
+        ));
     }
 
     #[test]
