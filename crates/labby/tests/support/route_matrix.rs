@@ -132,10 +132,10 @@ pub(crate) const SECURITY_INVARIANTS: &[SecurityInvariant] = &[
 // inbox route and POST /v1/notifications/agent publication, the caller-authenticated
 // GET /v1/stash/folders listing, and
 // local setup handoff minting plus one-shot redemption and the opt-in
-// local messaging bridge proof.
-pub(crate) const PINNED_ROUTE_COUNT: usize = 141;
+// local messaging bridge proof plus the provider-selected Linear OAuth callback.
+pub(crate) const PINNED_ROUTE_COUNT: usize = 142;
 pub(crate) const PINNED_METHOD_PATH_SHA256: &str =
-    "a98f602eab0fd4162465ced6f0b01c4673948d051352042582be9a021cbe5aec";
+    "b726660981b408894fab811755af9fe7dbb894eb5fe5970818e427d9f3a7ab7d";
 
 const MESSAGE_BRIDGE_PROOF: &str = "/v1/notifications/agent/message-bridge-proof";
 
@@ -326,6 +326,12 @@ fn request_body(route: &RouteDescriptor) -> Option<&'static str> {
 }
 
 fn sample_path(template: &str) -> Result<String, String> {
+    if template == "/auth/linear/callback" {
+        // An unissued state reaches protocol validation without a provider exchange.
+        return Ok(format!(
+            "{template}?state=unissued-route-matrix&code=fixture-code"
+        ));
+    }
     let substitutions = BTreeMap::from([
         ("{machine_id}", "missing-machine"),
         ("{credential_id}", "missing-credential"),
@@ -389,6 +395,21 @@ mod tests {
             PINNED_METHOD_PATH_SHA256,
             "the independent method/path denominator changed; review and deliberately repin"
         );
+    }
+
+    #[test]
+    fn linear_callback_has_a_provider_selected_protocol_recipe() {
+        let cases = route_cases().expect("route cases");
+        let callback = cases
+            .iter()
+            .find(|case| case.key() == "GET /auth/linear/callback")
+            .expect("Linear OAuth callback");
+        assert_eq!(callback.class, RequestClass::OAuthProtocol);
+        assert!(callback.permits_runtime_absence());
+        assert!(callback.path.contains("state=unissued-route-matrix"));
+        invariant_for(callback.class)
+            .validate_descriptor(&callback.descriptor)
+            .expect("Linear callback security axes");
     }
 
     #[test]

@@ -327,7 +327,7 @@ pub(crate) fn support_decisions() -> Value {
     json!({
         "google_deterministic": {"status":"qualified", "flow":"browser_session", "refresh":"not_applicable"},
         "authelia_deterministic": {"status":"qualified", "flow":"browser_session", "refresh":"not_applicable"},
-        "github_inbound": {"status":"unsupported", "basis":"closed provider enum: google or authelia"},
+        "github_inbound": {"status":"unsupported", "basis":"closed provider enum: google, authelia, or linear"},
         "github_upstream": {"status":"unknown", "basis":"actual endpoint metadata and registration are not qualified"}
     })
 }

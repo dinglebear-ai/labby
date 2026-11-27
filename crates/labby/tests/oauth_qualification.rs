@@ -375,9 +375,9 @@ fn actual_provider_rows_are_explicitly_unavailable_without_credentials() {
 #[test]
 fn github_inbound_and_upstream_support_are_decided_separately() {
     let rejection = github_inbound_rejection();
-    assert!(
-        rejection.contains("must be `google` or `authelia`"),
-        "{rejection}"
+    assert_eq!(
+        rejection,
+        "LAB_AUTH_PROVIDER must be google, authelia, or linear"
     );
     let decisions = support_decisions();
     assert_eq!(decisions["google_deterministic"]["flow"], "browser_session");
