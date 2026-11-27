@@ -11,7 +11,7 @@ use crate::oauth_provider::InboundProvider;
 
 pub use crate::config_providers::{
     AUTHELIA_CALLBACK_PATH, AutheliaConfig, GOOGLE_CALLBACK_PATH, InboundProviderKind,
-    TrustedIssuerOrigin,
+    LINEAR_CALLBACK_PATH, LinearConfig, TrustedIssuerOrigin,
 };
 
 const DEFAULT_CALLBACK_PATH: &str = GOOGLE_CALLBACK_PATH;
@@ -195,6 +195,7 @@ pub struct AuthConfig {
     pub inbound_provider: Option<InboundProviderKind>,
     pub google: GoogleConfig,
     pub authelia: Option<AutheliaConfig>,
+    pub linear: Option<LinearConfig>,
     pub access_token_ttl: Duration,
     pub refresh_token_ttl: Duration,
     pub auth_code_ttl: Duration,
@@ -277,6 +278,7 @@ impl Default for AuthConfig {
             inbound_provider: None,
             google: GoogleConfig::default(),
             authelia: None,
+            linear: None,
             access_token_ttl: Duration::from_secs(DEFAULT_ACCESS_TOKEN_TTL_SECS),
             refresh_token_ttl: Duration::from_secs(DEFAULT_REFRESH_TOKEN_TTL_SECS),
             auth_code_ttl: Duration::from_secs(DEFAULT_AUTH_CODE_TTL_SECS),
@@ -345,6 +347,22 @@ impl AuthConfig {
             .find(|allowed| valid_viewer_domain(allowed) && allowed.eq_ignore_ascii_case(domain))
             .map(|domain| domain.to_ascii_lowercase())
     }
+    /// Maximum interval before this provider must prove its identity again.
+    pub(crate) fn inbound_identity_ttl(&self, kind: InboundProviderKind) -> Duration {
+        if kind == InboundProviderKind::Linear {
+            self.refresh_token_ttl.min(Duration::from_secs(86_400))
+        } else {
+            self.refresh_token_ttl
+        }
+    }
+
+    pub(crate) fn linear_scope_allowed(&self, email: &str, scope: &str) -> bool {
+        self.is_admin_email(email)
+            || !scope
+                .split_whitespace()
+                .any(|scope| scope.ends_with(":admin"))
+    }
+
     pub fn inbound_provider_fingerprint(&self) -> Result<String, AuthError> {
         let selected = self.selected_inbound_provider()?;
         let (kind, issuer, client_id, callback) = match selected {
@@ -353,6 +371,12 @@ impl AuthConfig {
                 crate::google::GOOGLE_ISSUER.to_string(),
                 config.client_id,
                 GOOGLE_CALLBACK_PATH,
+            ),
+            InboundProvider::Linear(config) => (
+                "linear",
+                crate::linear::LINEAR_ISSUER.to_string(),
+                format!("{}:{}", config.client_id, config.workspace_id),
+                LINEAR_CALLBACK_PATH,
             ),
             InboundProvider::Authelia(config) => (
                 "authelia",
@@ -384,6 +408,7 @@ impl AuthConfig {
         }
         let provider_callback = match self.inbound_provider {
             Some(InboundProviderKind::Authelia) => AUTHELIA_CALLBACK_PATH,
+            Some(InboundProviderKind::Linear) => LINEAR_CALLBACK_PATH,
             _ => self.google.callback_path.as_str(),
         };
         for (route_name, route) in [
@@ -592,12 +617,30 @@ impl AuthConfig {
         let google_configured =
             !self.google.client_id.is_empty() || !self.google.client_secret.is_empty();
         let authelia_configured = self.authelia.is_some();
+        let linear_configured = self.linear.is_some();
+        if u8::from(google_configured) + u8::from(authelia_configured) + u8::from(linear_configured)
+            > 1
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix} inbound OAuth config is ambiguous; configure exactly one provider"
+            )));
+        }
+
+        if linear_configured
+            && (!self.allowed_email_domains.is_empty() || !self.viewer_email_domains.is_empty())
+        {
+            return Err(AuthError::Config(format!(
+                "{prefix} Linear inbound OAuth requires explicit email admission; domain policies are not supported"
+            )));
+        }
 
         let selected = self.inbound_provider.or({
             if google_configured {
                 Some(InboundProviderKind::Google)
             } else if authelia_configured {
                 Some(InboundProviderKind::Authelia)
+            } else if linear_configured {
+                Some(InboundProviderKind::Linear)
             } else {
                 None
             }
@@ -616,8 +659,15 @@ impl AuthConfig {
                 self.validate_authelia()?;
                 Ok(InboundProviderKind::Authelia)
             }
-            Some(_) if google_configured && authelia_configured => Err(AuthError::Config(format!(
-                "{prefix} inbound OAuth config is ambiguous; configure exactly one provider"
+            Some(InboundProviderKind::Linear)
+                if self.linear.as_ref().is_some_and(|config| {
+                    !config.client_id.trim().is_empty() && !config.workspace_id.is_nil()
+                }) =>
+            {
+                Ok(InboundProviderKind::Linear)
+            }
+            Some(InboundProviderKind::Linear) => Err(AuthError::Config(format!(
+                "{prefix}_LINEAR_CLIENT_ID and {prefix}_LINEAR_WORKSPACE_ID must both be set for Linear"
             ))),
             Some(InboundProviderKind::Google) => Err(AuthError::Config(format!(
                 "{prefix}_AUTH_PROVIDER selects google but Google credentials are not configured"
@@ -637,6 +687,11 @@ impl AuthConfig {
     pub fn selected_inbound_provider(&self) -> Result<InboundProvider, AuthError> {
         match self.resolved_inbound_provider()? {
             InboundProviderKind::Google => Ok(InboundProvider::Google(self.google.clone())),
+            InboundProviderKind::Linear => self
+                .linear
+                .clone()
+                .map(InboundProvider::Linear)
+                .ok_or_else(|| AuthError::Config("Linear configuration is incomplete".into())),
             InboundProviderKind::Authelia => Ok(InboundProvider::Authelia(
                 self.authelia.clone().ok_or_else(|| {
                     AuthError::Config(format!(
@@ -923,9 +978,29 @@ impl AuthConfigBuilder {
             .map(|provider| match provider.to_ascii_lowercase().as_str() {
                 "google" => Ok(InboundProviderKind::Google),
                 "authelia" => Ok(InboundProviderKind::Authelia),
+                "linear" => Ok(InboundProviderKind::Linear),
                 _ => Err(AuthError::Config(format!(
-                    "{key_provider} must be `google` or `authelia`"
+                    "{key_provider} must be google, authelia, or linear"
                 ))),
+            })
+            .transpose()?;
+        let key_l_id = env_key(&prefix, "LINEAR_CLIENT_ID");
+        let key_l_workspace = env_key(&prefix, "LINEAR_WORKSPACE_ID");
+        let linear_id = read_string(&vars, &key_l_id);
+        let linear_workspace = read_string(&vars, &key_l_workspace);
+        let linear = (linear_id.is_some() || linear_workspace.is_some())
+            .then(|| -> Result<LinearConfig, AuthError> {
+                Ok(LinearConfig {
+                    client_id: linear_id.unwrap_or_default(),
+                    workspace_id: linear_workspace
+                        .as_deref()
+                        .and_then(|value| value.parse().ok())
+                        .ok_or_else(|| {
+                            AuthError::Config(format!(
+                                "{key_l_workspace} must be a Linear workspace UUID"
+                            ))
+                        })?,
+                })
             })
             .transpose()?;
         let authelia_issuer = read_url(&vars, &key_a_issuer)?;
@@ -1002,6 +1077,7 @@ impl AuthConfigBuilder {
                 scopes: read_csv(&vars, &key_g_scopes).unwrap_or_else(default_google_scopes),
             },
             authelia,
+            linear,
             access_token_ttl: Duration::from_secs(
                 read_u64(&vars, &key_at_ttl)?.unwrap_or(DEFAULT_ACCESS_TOKEN_TTL_SECS),
             ),
@@ -1769,6 +1845,50 @@ mod tests {
             .build_from_sources(Vec::<(String, String)>::new())
             .unwrap_err();
         assert!(err.to_string().contains("login_path"));
+    }
+
+    #[test]
+    fn linear_requires_a_workspace_uuid_and_explicit_email_policy() {
+        let env = [
+            ("LAB_AUTH_MODE", "oauth"),
+            ("LAB_AUTH_PROVIDER", "linear"),
+            ("LAB_PUBLIC_URL", "https://lab.example.com"),
+            ("LAB_AUTH_ADMIN_EMAIL", "admin@example.com"),
+            ("LAB_TOKEN_ENCRYPTION_KEY", TEST_ENCRYPTION_KEY),
+            ("LAB_LINEAR_CLIENT_ID", "linear-client"),
+            (
+                "LAB_LINEAR_WORKSPACE_ID",
+                "2a5332a8-b7a7-465e-aaae-fc59f8e65566",
+            ),
+        ];
+        let config = AuthConfig::from_sources(fake_env_with_many(env)).unwrap();
+        assert_eq!(
+            config.resolved_inbound_provider().unwrap(),
+            InboundProviderKind::Linear
+        );
+        assert_eq!(
+            config.inbound_identity_ttl(InboundProviderKind::Linear),
+            Duration::from_secs(86_400)
+        );
+        let fingerprint = config.inbound_provider_fingerprint().unwrap();
+        let mut missing_workspace = env;
+        missing_workspace[6].1 = "not-a-uuid";
+        assert!(AuthConfig::from_sources(fake_env_with_many(missing_workspace)).is_err());
+        let mut different_workspace = env;
+        different_workspace[6].1 = "c71908ed-cbbe-4563-accb-ad5cd0fe26ea";
+        assert_ne!(
+            fingerprint,
+            AuthConfig::from_sources(fake_env_with_many(different_workspace))
+                .unwrap()
+                .inbound_provider_fingerprint()
+                .unwrap()
+        );
+        let domain_policy = env
+            .into_iter()
+            .chain([("LAB_AUTH_ALLOWED_EMAIL_DOMAINS", "example.com")]);
+        assert!(
+            AuthConfig::from_sources(domain_policy.map(|(k, v)| (k.into(), v.into()))).is_err()
+        );
     }
 
     #[test]

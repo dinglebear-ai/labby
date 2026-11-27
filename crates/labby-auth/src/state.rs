@@ -387,6 +387,24 @@ impl AuthState {
                 google.scopes.clone_from(&google_config.scopes);
                 InboundProviderRuntime::Google(Box::new(google))
             }
+            InboundProvider::Linear(linear_config) => {
+                #[cfg(feature = "http-axum")]
+                {
+                    let redirect_uri =
+                        build_google_redirect_uri(&public_url, crate::config::LINEAR_CALLBACK_PATH);
+                    InboundProviderRuntime::Linear(Box::new(crate::linear::LinearProvider::new(
+                        linear_config,
+                        redirect_uri,
+                    )?))
+                }
+                #[cfg(not(feature = "http-axum"))]
+                {
+                    let _ = linear_config;
+                    return Err(AuthError::Config(
+                        "Linear inbound authentication requires the http-axum feature".into(),
+                    ));
+                }
+            }
             InboundProvider::Authelia(authelia_config) => {
                 #[cfg(feature = "http-axum")]
                 {
@@ -424,6 +442,7 @@ impl AuthState {
                 match inbound_provider.kind() {
                     crate::config::InboundProviderKind::Google => "google",
                     crate::config::InboundProviderKind::Authelia => "authelia",
+                    crate::config::InboundProviderKind::Linear => "linear",
                 },
                 inbound_provider.issuer(),
                 &config_fingerprint,

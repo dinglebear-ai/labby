@@ -3,6 +3,14 @@ use url::Url;
 
 use crate::error::AuthError;
 
+pub const LINEAR_CALLBACK_PATH: &str = "/auth/linear/callback";
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearConfig {
+    pub client_id: String,
+    pub workspace_id: uuid::Uuid,
+}
+
 pub const GOOGLE_CALLBACK_PATH: &str = "/auth/google/callback";
 pub const AUTHELIA_CALLBACK_PATH: &str = "/auth/oidc/callback";
 
@@ -11,6 +19,7 @@ pub const AUTHELIA_CALLBACK_PATH: &str = "/auth/oidc/callback";
 pub enum InboundProviderKind {
     Google,
     Authelia,
+    Linear,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]

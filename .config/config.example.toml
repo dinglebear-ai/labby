@@ -317,6 +317,12 @@
 # authelia_trusted_private_origin = "https://auth.example.com" # exact HTTPS origin only
 # authelia_ca_certificate_path = "/etc/labby/authelia-ca.pem" # optional private CA PEM
 
+# Linear OAuth is another single active inbound provider:
+# provider = "linear"
+# linear_client_id = "linear-oauth-client-id"
+# linear_workspace_id = "2a5332a8-b7a7-465e-aaae-fc59f8e65566"
+# Register the exact https://<labby-host>/auth/linear/callback with Linear.
+
 # Optional Google callback path override.
 # Override with LABBY_GOOGLE_CALLBACK_PATH.
 # google_callback_path = "/auth/google/callback"

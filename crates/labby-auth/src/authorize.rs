@@ -597,7 +597,17 @@ pub async fn callback(
                 .iter()
                 .any(|entry| crate::util::normalize_email(entry) == email)
         });
-    let admission = if domain_only_viewer {
+    let linear_scope_denied = state.inbound_provider.kind()
+        == crate::config::InboundProviderKind::Linear
+        && !google
+            .email
+            .as_deref()
+            .is_some_and(|email| state.config.linear_scope_allowed(email, &request.scope));
+    let admission = if linear_scope_denied {
+        Err(AuthError::AuthFailed(
+            "Linear identity is not permitted to request administrative scope".into(),
+        ))
+    } else if domain_only_viewer {
         Err(AuthError::AuthFailed(
             "domain Viewer admission is limited to browser sessions".into(),
         ))
@@ -645,7 +655,7 @@ pub async fn callback(
     );
     if matches!(
         state.inbound_provider.kind(),
-        crate::config::InboundProviderKind::Authelia
+        crate::config::InboundProviderKind::Authelia | crate::config::InboundProviderKind::Linear
     ) {
         callback_try!(
             state
@@ -2732,6 +2742,137 @@ pub mod tests {
             .unwrap()
             .1
             .into_owned();
+        let token = app.oneshot(Request::builder().method("POST").uri("/token")
+            .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+            .body(Body::from(format!("grant_type=authorization_code&code={code}&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=downstream-verifier")))
+            .unwrap()).await.unwrap();
+        assert_eq!(token.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn linear_callback_redeems_a_bound_labby_token_once() {
+        assert_linear_callback_policy("teammate@example.com", "lab", true, true).await;
+        assert_linear_callback_policy("teammate@example.com", "lab:admin", true, false).await;
+        assert_linear_callback_policy("outsider@example.com", "lab", false, false).await;
+    }
+
+    async fn assert_linear_callback_policy(
+        email: &str,
+        scope: &str,
+        allowed: bool,
+        accepted: bool,
+    ) {
+        let upstream_state = "linear-e2e-state";
+        use wiremock::{
+            Mock, MockServer, ResponseTemplate,
+            matchers::{body_string_contains, header as match_header, method, path},
+        };
+        let server = MockServer::start().await;
+        Mock::given(method("POST")).and(path("/oauth/token"))
+            .and(body_string_contains("code_verifier=upstream-verifier"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+               "access_token":"linear-test-access", "token_type":"Bearer", "refresh_token":"must-not-be-kept"
+            }))).expect(1).mount(&server).await;
+        Mock::given(method("POST")).and(path("/graphql")).and(match_header("authorization", "Bearer linear-test-access"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":{"viewer":{
+                "id":"c71908ed-cbbe-4563-accb-ad5cd0fe26ea","email":email,
+                "active":true,"guest":false,"app":false,"organization":{"id":"2a5332a8-b7a7-465e-aaae-fc59f8e65566"}
+            }}}))).expect(1).mount(&server).await;
+        let provider = crate::linear::mock_provider(&server.uri());
+        let base = test_auth_state_with_registered_client().await;
+        if allowed {
+            base.store
+                .add_allowed_user(email, "fixture", "member", now_unix())
+                .await
+                .unwrap();
+        }
+        base.store
+            .activate_inbound_provider(
+                "linear",
+                crate::linear::LINEAR_ISSUER,
+                "linear-e2e",
+                now_unix(),
+            )
+            .await
+            .unwrap();
+        let state = AuthState::for_tests_with_provider(
+            (*base.config).clone(),
+            base.store.clone(),
+            (*base.signing_keys).clone(),
+            crate::oauth_provider::InboundProviderRuntime::Linear(Box::new(provider)),
+            base.store
+                .inbound_provider_state()
+                .await
+                .unwrap()
+                .generation,
+        );
+        state
+            .store
+            .insert_authorization_request(AuthorizationRequestRow {
+                state: upstream_state.into(),
+                client_id: "client".into(),
+                redirect_uri: "http://127.0.0.1:7777/callback".into(),
+                client_state: "downstream-state".into(),
+                native_poll_token_hash: None,
+                resource: "https://lab.example.com/mcp".into(),
+                scope: scope.into(),
+                provider_code_verifier: "upstream-verifier".into(),
+                code_challenge: base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .encode(Sha256::digest(b"downstream-verifier")),
+                code_challenge_method: "S256".into(),
+                created_at: now_unix(),
+                expires_at: now_unix() + 300,
+            })
+            .await
+            .unwrap();
+        let app = router(state);
+        let callback = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/auth/linear/callback?state={upstream_state}&code=provider-code"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+        let location = callback
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let redirect = Url::parse(location).unwrap();
+        if !accepted {
+            assert!(
+                redirect
+                    .query_pairs()
+                    .any(|(key, value)| key == "error" && value == "access_denied")
+            );
+            return;
+        }
+        let code = redirect
+            .query_pairs()
+            .find(|(key, _)| key == "code")
+            .unwrap()
+            .1
+            .into_owned();
+        let replay = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!(
+                        "/auth/linear/callback?state={upstream_state}&code=provider-code"
+                    ))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(replay.status(), StatusCode::SEE_OTHER);
         let token = app.oneshot(Request::builder().method("POST").uri("/token")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!("grant_type=authorization_code&code={code}&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=downstream-verifier")))

@@ -1340,9 +1340,15 @@ pub struct AuthFileConfig {
     /// Host-selected project for domain Viewers; never selected by a request.
     #[serde(default)]
     pub viewer_project_id: Option<String>,
-    /// Active inbound human identity provider (`google` or `authelia`).
+    /// Active inbound human identity provider (google, authelia, or linear).
     #[serde(default)]
     pub provider: Option<String>,
+    /// Linear OAuth application client ID for an S256 PKCE login.
+    #[serde(default)]
+    pub linear_client_id: Option<String>,
+    /// The exact Linear workspace UUID admitted by this gateway.
+    #[serde(default)]
+    pub linear_workspace_id: Option<String>,
     /// Authelia OpenID Connect issuer URL.
     #[serde(default)]
     pub authelia_issuer_url: Option<String>,
@@ -1639,6 +1645,16 @@ pub(crate) fn resolve_auth_with_env(
         insert_if_some(&mut merged, "LABBY_AUTH_PROVIDER", config.provider.clone());
         insert_if_some(
             &mut merged,
+            "LABBY_LINEAR_CLIENT_ID",
+            config.linear_client_id.clone(),
+        );
+        insert_if_some(
+            &mut merged,
+            "LABBY_LINEAR_WORKSPACE_ID",
+            config.linear_workspace_id.clone(),
+        );
+        insert_if_some(
+            &mut merged,
             "LABBY_AUTHELIA_ISSUER_URL",
             config.authelia_issuer_url.clone(),
         );
@@ -1757,6 +1773,7 @@ pub(crate) fn resolve_auth_with_env(
             || key == "LABBY_PUBLIC_URL"
             || key.starts_with("LABBY_GOOGLE_")
             || key.starts_with("LABBY_AUTHELIA_")
+            || key.starts_with("LABBY_LINEAR_")
             || key == "LABBY_TOKEN_ENCRYPTION_KEY"
         {
             merged.insert(key, value);
@@ -1770,19 +1787,23 @@ pub(crate) fn resolve_auth_with_env(
     // An explicit provider selection owns precedence across configuration
     // sources. Credentials for the non-selected legacy provider must not make
     // an env override appear ambiguous.
-    match merged.get("LABBY_AUTH_PROVIDER").map(String::as_str) {
-        Some("authelia") => {
-            merged.remove("LABBY_GOOGLE_CLIENT_ID");
-            merged.remove("LABBY_GOOGLE_CLIENT_SECRET");
-        }
-        Some("google") => {
-            merged.remove("LABBY_AUTHELIA_ISSUER_URL");
-            merged.remove("LABBY_AUTHELIA_CLIENT_ID");
-            merged.remove("LABBY_AUTHELIA_CLIENT_SECRET");
-            merged.remove("LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN");
-            merged.remove("LABBY_AUTHELIA_CA_CERT_PATH");
-        }
-        _ => {}
+    let provider = merged
+        .get("LABBY_AUTH_PROVIDER")
+        .map(|value| value.to_ascii_lowercase());
+    if matches!(provider.as_deref(), Some("authelia" | "linear")) {
+        merged.remove("LABBY_GOOGLE_CLIENT_ID");
+        merged.remove("LABBY_GOOGLE_CLIENT_SECRET");
+    }
+    if matches!(provider.as_deref(), Some("google" | "linear")) {
+        merged.remove("LABBY_AUTHELIA_ISSUER_URL");
+        merged.remove("LABBY_AUTHELIA_CLIENT_ID");
+        merged.remove("LABBY_AUTHELIA_CLIENT_SECRET");
+        merged.remove("LABBY_AUTHELIA_TRUSTED_PRIVATE_ORIGIN");
+        merged.remove("LABBY_AUTHELIA_CA_CERT_PATH");
+    }
+    if matches!(provider.as_deref(), Some("google" | "authelia")) {
+        merged.remove("LABBY_LINEAR_CLIENT_ID");
+        merged.remove("LABBY_LINEAR_WORKSPACE_ID");
     }
 
     let dynamic_registration = match merged
@@ -4177,6 +4198,8 @@ future = "keep"
             personal_oauth_return_origins: None,
             viewer_project_id: None,
             provider: None,
+            linear_client_id: None,
+            linear_workspace_id: None,
             authelia_issuer_url: None,
             authelia_client_id: None,
             authelia_client_secret: None,

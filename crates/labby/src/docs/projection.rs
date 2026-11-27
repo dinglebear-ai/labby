@@ -191,7 +191,9 @@ fn build_env_reference(services: &[ServiceDoc]) -> Vec<EnvDoc> {
         auth_env("LABBY_AUTH_DESKTOP_ORIGIN", false, false, "https://lab.example.com", "Trusted Control Plane origin for desktop browser-session handoff; defaults to public URL origin"),
         auth_env("LABBY_GOOGLE_CLIENT_ID", true, false, "google-client-id", "Google OAuth client identifier; required when OAuth mode selects Google"),
         auth_env("LABBY_GOOGLE_CLIENT_SECRET", true, true, "<labby_google_client_secret>", "Google OAuth client secret; required when OAuth mode selects Google"),
-        auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Inbound identity provider: google or authelia; inferred from credentials when omitted, with exactly one provider configured"),
+        auth_env("LABBY_AUTH_PROVIDER", false, false, "authelia", "Inbound identity provider: google, authelia, or linear; inferred from credentials when omitted, with exactly one provider configured"),
+        auth_env("LABBY_LINEAR_CLIENT_ID", true, false, "linear-client-id", "Linear OAuth application client ID; required when OAuth mode selects Linear"),
+        auth_env("LABBY_LINEAR_WORKSPACE_ID", true, false, "2a5332a8-b7a7-465e-aaae-fc59f8e65566", "Exact Linear workspace UUID; required when OAuth mode selects Linear"),
         auth_env("LABBY_AUTHELIA_ISSUER_URL", true, false, "https://auth.example.com", "Exact Authelia OIDC issuer URL; required when OAuth mode selects Authelia"),
         auth_env("LABBY_AUTHELIA_CLIENT_ID", true, false, "labby", "Authelia confidential OIDC client identifier; required when OAuth mode selects Authelia"),
         auth_env("LABBY_AUTHELIA_CLIENT_SECRET", true, true, "<labby_authelia_client_secret>", "Authelia confidential OIDC client secret; required when OAuth mode selects Authelia"),
@@ -976,6 +978,8 @@ mod tests {
             ("LABBY_AUTHELIA_ISSUER_URL", "Authelia"),
             ("LABBY_AUTHELIA_CLIENT_ID", "Authelia"),
             ("LABBY_AUTHELIA_CLIENT_SECRET", "Authelia"),
+            ("LABBY_LINEAR_CLIENT_ID", "Linear"),
+            ("LABBY_LINEAR_WORKSPACE_ID", "Linear"),
         ] {
             let var = vars.iter().find(|var| var.env_var == name).expect(name);
             assert!(var.required, "{name} is required for its selected provider");
@@ -1226,6 +1230,8 @@ mod tests {
                 "LABBY_GOOGLE_CLIENT_ID",
                 "LABBY_GOOGLE_CLIENT_SECRET",
                 "LABBY_GOOGLE_SCOPES",
+                "LABBY_LINEAR_CLIENT_ID",
+                "LABBY_LINEAR_WORKSPACE_ID",
                 "LABBY_MCP_HTTP_TOKEN",
                 "LABBY_PUBLIC_URL",
                 "LABBY_TOKEN_ENCRYPTION_KEY",
