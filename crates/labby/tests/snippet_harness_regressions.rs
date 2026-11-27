@@ -3,7 +3,7 @@
 use serde_json::{Value, json};
 use std::{fs, process::Command};
 
-const TRIAGE: &str = include_str!("../../../docs/snippets/unraid-linear-pr-triage.md");
+const TRIAGE: &str = include_str!("../../../crates/labby/tests/fixtures/snippets/unraid-linear-pr-triage.md");
 
 fn run(source: &str, name: &str, fixture: Value, params: &[&str]) -> (bool, Value) {
     let home = tempfile::tempdir().unwrap();

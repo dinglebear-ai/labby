@@ -28,7 +28,7 @@ scripts, tests, locks, and descriptors. These checks do not launch a microVM
 on CI.
 
 The required docs-check job directly executes
-`python3 docs/snippets/worktree-identity.test.py`. Its disposable Git/SQLite
+`python3 crates/labby/tests/fixtures/snippets/worktree-identity.test.py`. Its disposable Git/SQLite
 fixtures exercise the real Python readers independently of the snippet's mocked
 Bash responses. Changes to either reader or the test file route to this job;
 a suite failure fails docs-check and the required aggregate.

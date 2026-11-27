@@ -368,16 +368,15 @@ fn docs_only_changes_skip_expensive_runtime_categories() {
 #[test]
 fn worktree_identity_readers_collect_their_hermetic_suite() {
     for path in [
-        "docs/snippets/worktree-identity.py",
-        "docs/snippets/worktree-identity-reader.py",
-        "docs/snippets/worktree-identity.test.py",
+        "crates/labby/tests/fixtures/snippets/worktree-identity.py",
+        "crates/labby/tests/fixtures/snippets/worktree-identity-reader.py",
+        "crates/labby/tests/fixtures/snippets/worktree-identity.test.py",
     ] {
         let out = classify("pull_request", &[path]);
         assert_eq!(out["docs_check"], "true", "{path}");
-        assert_eq!(out["rust_test"], "false", "{path}");
     }
     let workflow = include_str!("../../../.github/workflows/ci.yml");
-    assert!(workflow.contains("run: python3 docs/snippets/worktree-identity.test.py"));
+    assert!(workflow.contains("run: python3 crates/labby/tests/fixtures/snippets/worktree-identity.test.py"));
 }
 
 #[test]

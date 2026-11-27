@@ -438,6 +438,10 @@ def classify(event: str, paths: list[str]) -> dict[str, bool]:
     # Generated catalogs come from library/binary sources and manifests, not
     # from integration tests, so test-only edits no longer run docs-check.
     docs_check = docs_check or rust_api
+    # The worktree-identity readers are exercised by a Python suite in docs-check.
+    docs_check = docs_check or any_match(paths, lambda p: starts(
+        p, "crates/labby/tests/fixtures/snippets/worktree-identity"
+    ) and p.endswith(".py"))
     incus_inputs = any_match(
         paths,
         lambda p: starts(p, ".config/incus/")

@@ -7,6 +7,18 @@ use std::path::PathBuf;
 // Product subprocess startup is expensive; keep this suite's runner demand bounded.
 static PRODUCT_EXECUTION: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Repository-only examples are not shipped; install them into the isolated
+/// home as user snippets before exercising their fixtures.
+fn install_fixture_snippet(home: &std::path::Path, fixtures: &std::path::Path, name: &str) {
+    let dir = home.join("snippets");
+    std::fs::create_dir_all(&dir).expect("user snippet directory");
+    std::fs::copy(
+        fixtures.join(format!("{name}.md")),
+        dir.join(format!("{name}.md")),
+    )
+    .expect("install fixture snippet");
+}
+
 #[tokio::test]
 async fn every_builtin_declares_dependencies_and_passes_offline_fixture() {
     let _product = PRODUCT_EXECUTION.lock().await;
@@ -15,7 +27,7 @@ async fn every_builtin_declares_dependencies_and_passes_offline_fixture() {
     let snippets = store::list_snippets(home.path(), &builtin).expect("builtin catalog");
     assert_eq!(
         snippets.len(),
-        7,
+        4,
         "review fixture coverage when adding examples"
     );
     for snippet in &snippets {
@@ -127,7 +139,8 @@ async fn fixture_input_precedence_and_synthetic_writes_are_enforced() {
 async fn worktree_identity_verifies_the_linked_linear_workspace() {
     let _product = PRODUCT_EXECUTION.lock().await;
     let home = tempfile::tempdir().expect("isolated identity fixture home");
-    let builtin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snippets");
+    install_fixture_snippet(home.path(), &fixtures, "worktree-identity");
     for scenario in [
         "explicit-link",
         "wrong-workspace",
@@ -151,7 +164,7 @@ async fn worktree_identity_verifies_the_linked_linear_workspace() {
                     "path=/fixture/repo/worktrees/topic",
                     "--fixture",
                 ])
-                .arg(builtin.join(format!("worktree-identity.{scenario}.test.json")))
+                .arg(fixtures.join(format!("worktree-identity.{scenario}.test.json")))
                 .env_clear()
                 .env("HOME", home.path())
                 .env("LABBY_HOME", home.path())
@@ -177,7 +190,8 @@ async fn worktree_identity_verifies_the_linked_linear_workspace() {
 async fn worktree_identity_bounds_errors_and_reports_attachment_coverage() {
     let _product = PRODUCT_EXECUTION.lock().await;
     let home = tempfile::tempdir().expect("isolated identity boundary home");
-    let builtin = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../docs/snippets");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/snippets");
+    install_fixture_snippet(home.path(), &fixtures, "worktree-identity");
     for scenario in [
         "huge-ascii-kind",
         "huge-utf8-kind",
@@ -189,7 +203,7 @@ async fn worktree_identity_bounds_errors_and_reports_attachment_coverage() {
         "attachment-complete",
         "attachment-overflow",
     ] {
-        let fixture_path = builtin.join(format!("worktree-identity.{scenario}.test.json"));
+        let fixture_path = fixtures.join(format!("worktree-identity.{scenario}.test.json"));
         let fixture: SnippetFixture = serde_json::from_slice(
             &std::fs::read(&fixture_path).expect("identity boundary fixture"),
         )

@@ -175,7 +175,7 @@ async (input = {}) => {
   const localInput={path:input.path,session_limit:input.session_limit??10,session_cursor:input.session_cursor??''};
   if (input.repo_hint!==undefined) localInput.repo_hint=input.repo_hint;
   const core=await run('claude-example-host::Bash',{
-    command:'python3 /opt/labby/docs/snippets/worktree-identity.py --input-json '+quote(JSON.stringify(localInput)),
+    command:'python3 /opt/labby/crates/labby/tests/fixtures/snippets/worktree-identity.py --input-json '+quote(JSON.stringify(localInput)),
     timeout:20000,description:'Read exact worktree Git identity and Codex metadata'
   },'local_identity');
   if (!core || core.ok!==true || !core.identity) return bounded({ok:false,snippet:'worktree-identity',error:{kind:'local_identity_unavailable'},failures,timings});
