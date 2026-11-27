@@ -57,6 +57,7 @@ impl std::fmt::Debug for ProviderExchange {
 pub enum InboundProvider {
     Google(GoogleConfig),
     Authelia(AutheliaConfig),
+    Linear(crate::config::LinearConfig),
 }
 
 /// Closed runtime dispatch for inbound human identity providers.
@@ -70,6 +71,8 @@ pub enum InboundProviderRuntime {
     Google(Box<GoogleProvider>),
     #[cfg(feature = "http-axum")]
     Authelia(Box<AutheliaProvider>),
+    #[cfg(feature = "http-axum")]
+    Linear(Box<crate::linear::LinearProvider>),
 }
 
 impl InboundProviderRuntime {
@@ -79,6 +82,8 @@ impl InboundProviderRuntime {
             Self::Google(_) => InboundProviderKind::Google,
             #[cfg(feature = "http-axum")]
             Self::Authelia(_) => InboundProviderKind::Authelia,
+            #[cfg(feature = "http-axum")]
+            Self::Linear(_) => InboundProviderKind::Linear,
         }
     }
 
@@ -89,7 +94,9 @@ impl InboundProviderRuntime {
         match self {
             Self::Google(provider) => provider,
             #[cfg(feature = "http-axum")]
-            Self::Authelia(_) => panic!("Google provider requested while Authelia is active"),
+            Self::Authelia(_) | Self::Linear(_) => {
+                panic!("Google provider requested while another provider is active")
+            }
         }
     }
 
@@ -98,7 +105,7 @@ impl InboundProviderRuntime {
         match self {
             Self::Google(provider) => Some(provider),
             #[cfg(feature = "http-axum")]
-            Self::Authelia(_) => None,
+            Self::Authelia(_) | Self::Linear(_) => None,
         }
     }
 
@@ -108,6 +115,8 @@ impl InboundProviderRuntime {
             Self::Google(provider) => &provider.client_id,
             #[cfg(feature = "http-axum")]
             Self::Authelia(provider) => &provider.client_id,
+            #[cfg(feature = "http-axum")]
+            Self::Linear(provider) => &provider.client_id,
         }
     }
 
@@ -117,6 +126,8 @@ impl InboundProviderRuntime {
             Self::Google(_) => crate::google::GOOGLE_ISSUER,
             #[cfg(feature = "http-axum")]
             Self::Authelia(provider) => provider.issuer(),
+            #[cfg(feature = "http-axum")]
+            Self::Linear(_) => crate::linear::LINEAR_ISSUER,
         }
     }
 
@@ -125,6 +136,7 @@ impl InboundProviderRuntime {
         match self {
             Self::Google(provider) => provider.authorize_url(request),
             Self::Authelia(provider) => provider.authorize_url(request),
+            Self::Linear(provider) => provider.authorize_url(request),
         }
     }
 
@@ -152,6 +164,7 @@ impl InboundProviderRuntime {
                         id_token: exchange.id_token,
                     })
             }
+            Self::Linear(provider) => provider.exchange_code(code, verifier).await,
             Self::Authelia(provider) => {
                 provider
                     .exchange_code(code, verifier, &crate::util::oauth_provider_nonce(state))
@@ -167,6 +180,7 @@ impl InboundProvider {
         match self {
             Self::Google(_) => InboundProviderKind::Google,
             Self::Authelia(_) => InboundProviderKind::Authelia,
+            Self::Linear(_) => InboundProviderKind::Linear,
         }
     }
 }

@@ -47,7 +47,9 @@ pub async fn create_browser_session(
         created_at,
         expires_at: expires_at(
             created_at,
-            state.config.refresh_token_ttl,
+            state
+                .config
+                .inbound_identity_ttl(state.inbound_provider.kind()),
             &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
         )?,
         project_binding: None,
@@ -73,7 +75,9 @@ pub async fn create_bound_browser_session(
         created_at,
         expires_at: expires_at(
             created_at,
-            state.config.refresh_token_ttl,
+            state
+                .config
+                .inbound_identity_ttl(state.inbound_provider.kind()),
             &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
         )?,
         project_binding: None,
@@ -103,7 +107,10 @@ pub fn build_browser_session_cookie(state: &AuthState, session_id: &str) -> Stri
         "{name}={value}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}{secure}",
         name = state.config.session_cookie_name,
         value = session_id,
-        max_age = state.config.refresh_token_ttl.as_secs(),
+        max_age = state
+            .config
+            .inbound_identity_ttl(state.inbound_provider.kind())
+            .as_secs(),
         secure = secure_cookie_attr(state),
     )
 }

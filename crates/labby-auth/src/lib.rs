@@ -24,6 +24,9 @@ pub mod google;
 #[cfg(any(test, feature = "http-axum", feature = "upstream-oauth-rmcp"))]
 mod google_refresh;
 pub mod jwt;
+mod linear;
+#[cfg(feature = "http-axum")]
+pub use linear::LinearProvider;
 pub mod managed_depot_delegation;
 #[cfg(feature = "http-axum")]
 pub mod metadata;

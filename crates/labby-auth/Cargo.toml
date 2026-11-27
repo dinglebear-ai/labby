@@ -38,6 +38,7 @@ jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 labby-runtime = { path = "../labby-runtime", optional = true }
 labby-primitives = { path = "../labby-primitives" }
 reqwest.workspace = true
+uuid.workspace = true
 rustix = { version = "1", features = ["fs"] }
 rustls.workspace = true
 ed25519-dalek.workspace = true

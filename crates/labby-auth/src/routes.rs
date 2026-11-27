@@ -50,6 +50,7 @@ pub fn auth_route_specs(provider: crate::config::InboundProviderKind) -> Vec<Aut
     let callback = match provider {
         crate::config::InboundProviderKind::Google => "/auth/google/callback",
         crate::config::InboundProviderKind::Authelia => "/auth/oidc/callback",
+        crate::config::InboundProviderKind::Linear => crate::config::LINEAR_CALLBACK_PATH,
     };
     vec![
         AuthRouteSpec {
@@ -323,6 +324,7 @@ fn auth_dispatch_action(path: &str) -> &'static str {
     for provider in [
         crate::config::InboundProviderKind::Google,
         crate::config::InboundProviderKind::Authelia,
+        crate::config::InboundProviderKind::Linear,
     ] {
         for spec in auth_route_specs(provider) {
             let matched = path == spec.path

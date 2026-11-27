@@ -301,6 +301,38 @@ impl VerifiedIdentity {
     }
 }
 
+/// Verify Linear provenance against the currently selected inbound workspace.
+pub(crate) fn verified_linear_identity(
+    authenticator: Authenticator,
+    transport_issuer: impl Into<String>,
+    subject: &str,
+    config: &crate::config::AuthConfig,
+) -> Result<VerifiedIdentity, VerifiedIdentityError> {
+    let Some(linear) = config.linear.as_ref().filter(|_| {
+        config.mode == crate::config::AuthMode::OAuth
+            && matches!(
+                config.resolved_inbound_provider(),
+                Ok(crate::config::InboundProviderKind::Linear)
+            )
+    }) else {
+        return Err(VerifiedIdentityError::InvalidIdentityProvenance);
+    };
+    let valid_subject = subject.split_once(':').is_some_and(|(workspace, viewer)| {
+        uuid::Uuid::parse_str(workspace).is_ok_and(|id| id == linear.workspace_id)
+            && uuid::Uuid::parse_str(viewer).is_ok_and(|id| !id.is_nil())
+    });
+    if !valid_subject {
+        return Err(VerifiedIdentityError::InvalidIdentityProvenance);
+    }
+    VerifiedIdentity::external_from_allowed_issuers(
+        authenticator,
+        transport_issuer,
+        crate::linear::LINEAR_ISSUER,
+        subject,
+        [crate::linear::LINEAR_ISSUER],
+    )
+}
+
 /// Derive verified transport identity solely from already validated access-token claims.
 pub fn verified_identity_from_access_claims(
     claims: &crate::jwt::AccessClaims,
@@ -310,6 +342,12 @@ pub fn verified_identity_from_access_claims(
         claims.identity_issuer.as_deref(),
         claims.identity_credential_id.as_deref(),
     ) {
+        (Some(crate::linear::LINEAR_ISSUER), None) => verified_linear_identity(
+            Authenticator::OauthBearer,
+            claims.iss.clone(),
+            &claims.sub,
+            config,
+        ),
         (Some(provider_issuer), None) => VerifiedIdentity::external_from_allowed_issuers(
             Authenticator::OauthBearer,
             claims.iss.clone(),
@@ -428,6 +466,38 @@ mod tests {
     }
 
     #[test]
+    fn linear_identity_requires_the_current_workspace_and_a_valid_viewer() {
+        let config = crate::config::AuthConfig {
+            mode: crate::config::AuthMode::OAuth,
+            inbound_provider: Some(crate::config::InboundProviderKind::Linear),
+            linear: Some(crate::config::LinearConfig {
+                client_id: "test-client".into(),
+                workspace_id: "2a5332a8-b7a7-465e-aaae-fc59f8e65566".parse().unwrap(),
+            }),
+            ..Default::default()
+        };
+        let validate = |subject| {
+            verified_linear_identity(
+                Authenticator::OauthBearer,
+                "https://lab.example.com",
+                subject,
+                &config,
+            )
+        };
+        assert!(
+            validate("2a5332a8-b7a7-465e-aaae-fc59f8e65566:c71908ed-cbbe-4563-accb-ad5cd0fe26ea")
+                .is_ok()
+        );
+        for invalid in [
+            "66b3c2d5-8cbd-453c-b271-d6da422baa2d:c71908ed-cbbe-4563-accb-ad5cd0fe26ea",
+            "2a5332a8-b7a7-465e-aaae-fc59f8e65566:00000000-0000-0000-0000-000000000000",
+            "2a5332a8-b7a7-465e-aaae-fc59f8e65566:invalid-viewer",
+        ] {
+            assert!(validate(invalid).is_err());
+        }
+    }
+
+    #[test]
     fn access_claim_identity_derivation_is_exact_and_rejects_ambiguous_provenance() {
         let config = crate::config::AuthConfig::default();
         let claims = |identity_issuer: Option<&str>, credential: Option<&str>, jti: &str| {
@@ -465,6 +535,7 @@ mod tests {
         ));
         for invalid in [
             claims(None, None, "jti"),
+            claims(Some("https://unconfigured.example.com"), None, "jti"),
             claims(
                 Some(crate::google::GOOGLE_ISSUER),
                 Some("credential"),

@@ -707,7 +707,7 @@ async fn complete_claimed_refresh(
 
     if matches!(
         state.inbound_provider.kind(),
-        crate::config::InboundProviderKind::Authelia
+        crate::config::InboundProviderKind::Authelia | crate::config::InboundProviderKind::Linear
     ) {
         return complete_local_policy_refresh(
             state,
@@ -821,7 +821,10 @@ async fn complete_local_policy_refresh(
             "verified provider identity is unavailable; reauthorization required".into(),
         ));
     };
-    if !state.is_email_authorized(&email).await? {
+    let linear_scope_allowed = state.inbound_provider.kind()
+        != crate::config::InboundProviderKind::Linear
+        || state.config.linear_scope_allowed(&email, &stored.scope);
+    if !linear_scope_allowed || !state.is_email_authorized(&email).await? {
         state
             .store
             .revoke_inbound_identity(&provider_binding.identity_issuer, &stored.subject)
@@ -833,7 +836,9 @@ async fn complete_local_policy_refresh(
     let now = now_unix();
     let provider_auth_expires_at = expires_at(
         verified_at,
-        state.config.refresh_token_ttl,
+        state
+            .config
+            .inbound_identity_ttl(state.inbound_provider.kind()),
         &format!("{}_AUTH_REFRESH_TOKEN_TTL_SECS", state.config.env_prefix),
     )?;
     if provider_auth_expires_at <= now {
@@ -885,6 +890,6 @@ async fn complete_local_policy_refresh(
         )
         .await?
         .ok_or_else(|| AuthError::InvalidGrant("refresh token was already used".into()))?;
-    info!(refresh_token_id = %refresh_token_id, provider = "authelia", "local-policy refresh completed");
+    info!(refresh_token_id = %refresh_token_id, provider = ?state.inbound_provider.kind(), "local-policy refresh completed");
     Ok(response)
 }

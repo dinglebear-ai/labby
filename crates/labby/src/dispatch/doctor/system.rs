@@ -1393,9 +1393,10 @@ pub fn run_auth_checks_with_config(
             |provider| match provider {
                 labby_auth::config::InboundProviderKind::Google => "google".into(),
                 labby_auth::config::InboundProviderKind::Authelia => "authelia".into(),
+                labby_auth::config::InboundProviderKind::Linear => "linear".into(),
             },
         );
-    let uses_google = provider != "authelia";
+    let uses_google = provider == "google";
 
     let bearer_token = std::env::var("LABBY_MCP_HTTP_TOKEN").unwrap_or_default();
     let google_id = config.map_or_else(
@@ -1426,7 +1427,7 @@ pub fn run_auth_checks_with_config(
             |config| config.client_secret.clone(),
         );
 
-    let provider_valid = matches!(provider.as_str(), "google" | "authelia");
+    let provider_valid = matches!(provider.as_str(), "google" | "authelia" | "linear");
     findings.push(auth_finding(
         "auth:provider",
         if provider_valid {
@@ -1437,7 +1438,7 @@ pub fn run_auth_checks_with_config(
         if provider_valid {
             format!("selected inbound provider: {provider}")
         } else {
-            "LABBY_AUTH_PROVIDER is invalid; expected google or authelia".to_string()
+            "LABBY_AUTH_PROVIDER is invalid; expected google, authelia, or linear".to_string()
         },
     ));
     let access_ttl = config
@@ -1461,6 +1462,7 @@ pub fn run_auth_checks_with_config(
             && config.google.client_id.is_empty()
             && config.google.client_secret.is_empty()
             && config.authelia.is_none()
+            && config.linear.is_none()
     });
     let config_fingerprint = config
         .filter(|_| !bearer_without_provider)
@@ -1681,6 +1683,33 @@ pub fn run_auth_checks_with_config(
         ] {
             let (severity, message) =
                 oauth_required_env(value, is_oauth && provider == "authelia", ok, fail, warn);
+            findings.push(auth_finding(id, severity, message));
+        }
+    }
+
+    if provider == "linear" {
+        let linear = config.and_then(|config| config.linear.as_ref());
+        let client_id = linear
+            .map(|config| config.client_id.clone())
+            .unwrap_or_else(|| std::env::var("LABBY_LINEAR_CLIENT_ID").unwrap_or_default());
+        let workspace_id = linear
+            .map(|config| config.workspace_id.to_string())
+            .unwrap_or_else(|| std::env::var("LABBY_LINEAR_WORKSPACE_ID").unwrap_or_default());
+        for (id, value, key) in [
+            ("auth:linear-client-id", client_id, "LABBY_LINEAR_CLIENT_ID"),
+            (
+                "auth:linear-workspace-id",
+                workspace_id,
+                "LABBY_LINEAR_WORKSPACE_ID",
+            ),
+        ] {
+            let (severity, message) = oauth_required_env(
+                &value,
+                is_oauth,
+                format!("{key} is set"),
+                &format!("{key} is required for Linear"),
+                &format!("{key} is only required for Linear"),
+            );
             findings.push(auth_finding(id, severity, message));
         }
     }

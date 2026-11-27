@@ -333,7 +333,7 @@ resolved values by digest, so the same token under a second name is refused
 too. A source that fails any check is disabled on both paths and logged once
 with the reason; credential values are never logged.
 
-## Durable Depot Skill Imports
+## Inbound OAuth configuration
 
 For Authelia inbound OAuth, `[auth]` may contain the non-secret provider,
 issuer, client ID, exact private trust origin, and private-CA path shown in
@@ -344,6 +344,15 @@ same effective provider configuration and be restarted together when it
 changes; generation fencing rejects stale callback and token work. See
 [HTTP Auth Modes](./OAUTH.md#authelia-open-beta) for rollout, rollback,
 offboarding, and compromise procedures.
+
+
+For the Linear inbound OAuth provider, `[auth]` accepts `provider = "linear"`,
+`linear_client_id`, and `linear_workspace_id`. If configured by environment, use
+`LABBY_AUTH_PROVIDER`, `LABBY_LINEAR_CLIENT_ID` and
+`LABBY_LINEAR_WORKSPACE_ID`. See [Linear sign-in](OAUTH.md#linear) for access
+requirements and safe rollout. This is separate from upstream tool access.
+
+## Durable Depot Skill Imports
 
 Local Artifact persistence flushes file contents before atomic publication.
 On Unix it also synchronizes the containing directories. Windows validates

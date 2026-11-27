@@ -674,6 +674,7 @@ pub(crate) fn oauth_protocol_descriptors() -> Vec<RouteDescriptor> {
     [
         labby_auth::config::InboundProviderKind::Google,
         labby_auth::config::InboundProviderKind::Authelia,
+        labby_auth::config::InboundProviderKind::Linear,
     ]
     .into_iter()
     .flat_map(oauth_protocol_descriptors_for_provider)
@@ -754,6 +755,9 @@ pub(crate) fn oauth_protocol_routes_for_provider(
                     }
                     labby_auth::config::InboundProviderKind::Authelia => {
                         "mounted only when OAuth is configured with the Authelia provider"
+                    }
+                    labby_auth::config::InboundProviderKind::Linear => {
+                        "mounted only when OAuth is configured with the Linear provider"
                     }
                 }
             } else {

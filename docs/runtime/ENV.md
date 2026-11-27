@@ -188,6 +188,17 @@ LABBY_AUTHELIA_CLIENT_SECRET=replace-me
 LABBY_AUTH_ADMIN_EMAIL=admin@example.com
 ```
 
+Linear alternative ([setup and access policy](OAUTH.md#linear)):
+
+```env
+LABBY_AUTH_MODE=oauth
+LABBY_AUTH_PROVIDER=linear
+LABBY_PUBLIC_URL=https://lab.example.com
+LABBY_LINEAR_CLIENT_ID=linear-oauth-client-id
+LABBY_LINEAR_WORKSPACE_ID=2a5332a8-b7a7-465e-aaae-fc59f8e65566
+LABBY_AUTH_ADMIN_EMAIL=admin@example.com
+```
+
 Optional auth overrides:
 
 ```env

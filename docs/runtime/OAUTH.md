@@ -12,7 +12,7 @@ Labby supports two HTTP auth modes:
   Preserve the existing static bearer-token flow with `LABBY_MCP_HTTP_TOKEN`.
 - `LABBY_AUTH_MODE=oauth`
   Run Labby's authorization server with exactly one inbound human identity
-  provider: Google (stable) or Authelia OpenID Connect (open beta). Labby
+  provider: Google (stable), Authelia OpenID Connect (open beta), or Linear (explicit configuration). Labby
   issues its own JWT access tokens and exposes JWKS plus RFC 9728 metadata.
 
 The first-run setup layer exposes three operator-facing topologies on top of those two runtime modes:
@@ -23,7 +23,7 @@ The first-run setup layer exposes three operator-facing topologies on top of tho
 | OAuth only | `--auth oauth --oauth google|authelia` | `LABBY_AUTH_MODE=oauth` with no static bearer |
 | OAuth + bearer | `--auth both --oauth google|authelia` | `LABBY_AUTH_MODE=oauth` plus a generated static bearer break-glass credential |
 
-Existing setup calls that specify `--oauth google|authelia` but omit `--auth` resolve to OAuth + bearer for backwards compatibility. OAuth selects exactly one inbound provider; Google and Authelia cannot both be active on the same instance.
+Existing setup calls that specify `--oauth google|authelia` but omit `--auth` resolve to OAuth + bearer for backwards compatibility. OAuth selects exactly one inbound provider; Google, Authelia, and Linear cannot be active together on one instance.
 
 This document covers mode selection, startup behavior, registration and token flow, JWT validation, and operator-facing constraints.
 For the complete generated route/auth matrix, see
@@ -43,7 +43,9 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_PUBLIC_URL` | oauth mode | Public base URL for metadata and JWT issuer/audience. It also supplies the Google callback base unless `LABBY_GOOGLE_CALLBACK_URL` is set. Path-prefixed deployments are supported. |
 | `LABBY_GOOGLE_CLIENT_ID` | Google provider | Google OAuth client ID. |
 | `LABBY_GOOGLE_CLIENT_SECRET` | Google provider | Google OAuth client secret. |
-| `LABBY_AUTH_PROVIDER` | no | Select exactly one inbound provider: `google` or `authelia`. Legacy Google-only configuration remains valid. |
+| `LABBY_AUTH_PROVIDER` | no | Select exactly one inbound provider: `google`, `authelia`, or `linear`. Legacy Google-only configuration remains valid. |
+| `LABBY_LINEAR_CLIENT_ID` | Linear | Client ID of the Linear OAuth app configured for PKCE. |
+| `LABBY_LINEAR_WORKSPACE_ID` | Linear | Exact UUID of the Linear workspace allowed to sign in. |
 | `LABBY_AUTHELIA_ISSUER_URL` | Authelia | Exact OIDC issuer URL. Discovery, token, and JWKS endpoints must remain on this origin. |
 | `LABBY_AUTHELIA_CLIENT_ID` | Authelia | Confidential OIDC client ID. |
 | `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia | Confidential OIDC client secret; Labby uses `client_secret_basic`. |
@@ -66,6 +68,37 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_ENTERPRISE_ISSUERS_JSON` | enterprise authorization | JSON array of trusted ID-JAG issuers with inline `jwks` or HTTPS `jwks_uri` and optional `allowed_client_ids`. |
 | `LABBY_AUTH_MAX_PENDING_OAUTH_STATES` | no | Maximum non-expired pending authorization + browser-login states stored at once. Defaults to `1024`. |
 | `LABBY_AUTH_CODEX_ISSUER_COMPATIBILITY` | no | Explicit temporary workaround for [openai/codex#34684](https://github.com/openai/codex/issues/34684). When `true`, Labby neither advertises nor emits the RFC 9207 authorization-response `iss` parameter. Defaults to `false`; remove the override after the affected Codex callback handling is fixed. |
+
+### Linear
+
+Register an OAuth application in Linear with the exact HTTPS callback
+`https://<labby-host>/auth/linear/callback`. Set `LABBY_AUTH_MODE=oauth`,
+`LABBY_AUTH_PROVIDER=linear`, `LABBY_LINEAR_CLIENT_ID` and
+`LABBY_LINEAR_WORKSPACE_ID`, alongside the normal Labby admin email and
+encryption-key settings. The corresponding `[auth]` keys are `provider`,
+`linear_client_id` and `linear_workspace_id`. The interactive setup CLI does not
+provision a Linear OAuth application.
+
+Labby requests only Linear's `read` scope with a user actor and S256 PKCE.
+It uses Linear's authenticated `viewer` to verify membership in the configured
+workspace, and rejects inactive accounts, guests and apps. The workspace UUID
+and viewer UUID form the stable external subject. Workspace membership does
+not grant Labby access by itself: explicitly allow each user in Labby. Admins
+remain explicitly configured; ordinary allowlisted users cannot request an administrative scope.
+Linear roles and email domains do not grant Labby roles.
+
+The Linear access token is transient and no Linear refresh token is stored.
+Labby rechecks its local email policy at browser admission and refresh; removing
+a user locally revokes their browser and refresh access, while an already
+issued access token may remain usable for its configured lifetime. Changes in
+Linear membership are not pushed to Labby: another interactive sign-in is
+required after at most 24 hours for browser sessions and refresh authorization
+(or sooner if the Labby refresh TTL is shorter). An access token minted just
+before that deadline may remain usable until it expires. To promptly offboard a
+user, also remove their Labby admission.
+
+This feature does not provision a gateway or authorize Linear tools. Add and
+authorize the Linear MCP upstream separately using the desired user scope.
 
 ### Authelia open beta
 
@@ -511,7 +544,7 @@ Flow summary:
 3. Labby stores the request state, generates PKCE data, and redirects to the
    selected provider.
 4. The selected provider redirects back to its exclusive callback:
-   `/auth/google/callback` for Google or `/auth/oidc/callback` for Authelia.
+   `/auth/google/callback` for Google `/auth/oidc/callback` for Authelia, or `/auth/linear/callback` for Linear.
 5. Labby enforces the merged allowlist: `LABBY_AUTH_ADMIN_EMAIL`, configured
    Workspace domains, and the current SQLite-backed allowed-user list managed
    through settings. The id_token's `email_verified` claim is required —

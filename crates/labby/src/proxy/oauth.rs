@@ -363,7 +363,10 @@ fn validate_google_callback(
 ) -> Result<()> {
     if matches!(
         config.inbound_provider,
-        Some(labby_auth::config::InboundProviderKind::Authelia)
+        Some(
+            labby_auth::config::InboundProviderKind::Authelia
+                | labby_auth::config::InboundProviderKind::Linear
+        )
     ) {
         return Ok(());
     }

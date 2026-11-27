@@ -841,12 +841,22 @@ async fn authenticate(
                 if !session_csrf_valid(&request, &session) {
                     return Err(csrf_error_response("missing or invalid csrf token"));
                 }
-                let identity = VerifiedIdentity::external(
-                    Authenticator::BrowserSession,
-                    &bound_session.binding.identity_issuer,
-                    session.subject.clone(),
-                )
-                .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
+                let identity =
+                    if bound_session.binding.identity_issuer == crate::linear::LINEAR_ISSUER {
+                        crate::verified_identity::verified_linear_identity(
+                            Authenticator::BrowserSession,
+                            "browser-session",
+                            &session.subject,
+                            &auth_state.config,
+                        )
+                    } else {
+                        VerifiedIdentity::external(
+                            Authenticator::BrowserSession,
+                            &bound_session.binding.identity_issuer,
+                            session.subject.clone(),
+                        )
+                    }
+                    .map_err(|_| auth_error_response("invalid authenticated identity", layer))?;
                 let actor_key =
                     derive_actor_key(layer.actor_key_deriver.as_deref(), &session.subject);
                 let auth = AuthContext {
@@ -1229,7 +1239,7 @@ fn percent_encode_path(s: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use axum::Router;
     use axum::http::{Request as HttpRequest, StatusCode};
@@ -1479,7 +1489,7 @@ mod tests {
             .route_layer(layer)
     }
 
-    fn principal_link_app(layer: AuthLayer) -> Router {
+    pub(crate) fn principal_link_app(layer: AuthLayer) -> Router {
         Router::new()
             .route(
                 "/probe",

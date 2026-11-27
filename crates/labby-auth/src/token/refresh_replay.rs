@@ -50,12 +50,19 @@ pub(super) async fn cached_refresh_response(
             },
             None => false,
         },
-        crate::config::InboundProviderKind::Authelia => match state
+        crate::config::InboundProviderKind::Authelia
+        | crate::config::InboundProviderKind::Linear => match state
             .store
             .current_verified_inbound_email(&binding.identity_issuer, &replacement.subject)
             .await?
         {
-            Some(email) => state.is_email_authorized(&email).await?,
+            Some(email) => {
+                state.is_email_authorized(&email).await?
+                    && (state.inbound_provider.kind() != crate::config::InboundProviderKind::Linear
+                        || state
+                            .config
+                            .linear_scope_allowed(&email, &replacement.scope))
+            }
             None => false,
         },
     };

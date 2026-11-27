@@ -202,7 +202,7 @@
     "env_var": "LABBY_AUTH_PROVIDER",
     "required": false,
     "secret": false,
-    "description": "Inbound identity provider: google or authelia; inferred from credentials when omitted, with exactly one provider configured",
+    "description": "Inbound identity provider: google, authelia, or linear; inferred from credentials when omitted, with exactly one provider configured",
     "example": "authelia",
     "default_port": null
   },
@@ -303,6 +303,24 @@
     "secret": false,
     "description": "Comma-separated Google OAuth scopes",
     "example": "openid,email,profile",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_LINEAR_CLIENT_ID",
+    "required": true,
+    "secret": false,
+    "description": "Linear OAuth application client ID; required when OAuth mode selects Linear",
+    "example": "linear-client-id",
+    "default_port": null
+  },
+  {
+    "service": "auth",
+    "env_var": "LABBY_LINEAR_WORKSPACE_ID",
+    "required": true,
+    "secret": false,
+    "description": "Exact Linear workspace UUID; required when OAuth mode selects Linear",
+    "example": "2a5332a8-b7a7-465e-aaae-fc59f8e65566",
     "default_port": null
   },
   {

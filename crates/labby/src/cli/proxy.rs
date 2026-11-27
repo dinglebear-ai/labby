@@ -729,7 +729,7 @@ fn oauth_credentials_absent_with(config: &LabConfig, env: impl Fn(&str) -> Optio
     let auth = config.auth.as_ref();
     let provider =
         env("LABBY_AUTH_PROVIDER").or_else(|| auth.and_then(|auth| auth.provider.clone()));
-    if provider.as_deref() == Some("authelia") {
+    if matches!(provider.as_deref(), Some("authelia" | "linear")) {
         return false;
     }
     !configured(
@@ -747,6 +747,12 @@ fn oauth_credentials_absent_with(config: &LabConfig, env: impl Fn(&str) -> Optio
     ) && !configured(
         "LABBY_AUTHELIA_ISSUER_URL",
         auth.and_then(|auth| auth.authelia_issuer_url.as_deref()),
+    ) && !configured(
+        "LABBY_LINEAR_CLIENT_ID",
+        auth.and_then(|auth| auth.linear_client_id.as_deref()),
+    ) && !configured(
+        "LABBY_LINEAR_WORKSPACE_ID",
+        auth.and_then(|auth| auth.linear_workspace_id.as_deref()),
     )
 }
 
