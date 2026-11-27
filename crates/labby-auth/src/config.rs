@@ -1867,8 +1867,10 @@ mod tests {
             InboundProviderKind::Linear
         );
         assert_eq!(
-            config.inbound_identity_ttl(InboundProviderKind::Linear),
-            Duration::from_secs(86_400)
+            config
+                .inbound_identity_ttl(InboundProviderKind::Linear)
+                .as_secs(),
+            86_400
         );
         let fingerprint = config.inbound_provider_fingerprint().unwrap();
         let mut missing_workspace = env;
