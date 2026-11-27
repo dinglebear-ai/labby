@@ -88,7 +88,7 @@ labby auth logout --server https://example.invalid
 
 Contexts occupy only the `[cli]` table of the canonical host `config.toml`. Writes reuse its lock and atomic writer and preserve unrelated tables and comments. Names are bounded, URLs cannot contain credentials, query strings, or fragments, and plaintext HTTP is limited to loopback. Active contexts must be cleared or replaced before removal. Repeating the same selection is a no-op. `auth status` reports locally saved session presence without claiming online authentication; `auth logout` removes only that destination's saved session, not its provider account.
 
-`config show` emits a redacted snapshot; `config check` validates it without writing or loading environment overrides. These and context reads work without a daemon. Explicit remote selectors on host-local operations are rejected rather than silently ignored. An implicit saved context does not retarget local host administration.
+`config show` emits a redacted snapshot; `config check` validates it without writing or loading environment overrides, names the key and line of a bad value without repeating the value, and lists keys Labby ignores under `warnings`. These and context reads work without a daemon. Explicit remote selectors on host-local operations are rejected rather than silently ignored. An implicit saved context does not retarget local host administration.
 
 Local snippet operations and local skill reads remain local. Private/shared artifact-backed skills still require the appropriate authenticated HTTP or MCP adapter. Renaming a command does not change its caller scope.
 
