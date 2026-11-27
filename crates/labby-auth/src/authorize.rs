@@ -2762,6 +2762,11 @@ pub mod tests {
         allowed: bool,
         accepted: bool,
     ) {
+        use crate::middleware::{AuthLayer, tests::principal_link_app};
+        use std::sync::Arc;
+
+        const WORKSPACE: &str = "2a5332a8-b7a7-465e-aaae-fc59f8e65566";
+        const VIEWER: &str = "c71908ed-cbbe-4563-accb-ad5cd0fe26ea";
         let upstream_state = "linear-e2e-state";
         use wiremock::{
             Mock, MockServer, ResponseTemplate,
@@ -2772,12 +2777,19 @@ pub mod tests {
             .and(body_string_contains("code_verifier=upstream-verifier"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                "access_token":"linear-test-access", "token_type":"Bearer", "refresh_token":"must-not-be-kept"
-            }))).expect(1).mount(&server).await;
-        Mock::given(method("POST")).and(path("/graphql")).and(match_header("authorization", "Bearer linear-test-access"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data":{"viewer":{
-                "id":"c71908ed-cbbe-4563-accb-ad5cd0fe26ea","email":email,
-                "active":true,"guest":false,"app":false,"organization":{"id":"2a5332a8-b7a7-465e-aaae-fc59f8e65566"}
-            }}}))).expect(1).mount(&server).await;
+            }))).expect(if accepted { 2 } else { 1 }).mount(&server).await;
+        Mock::given(method("POST"))
+            .and(path("/graphql"))
+            .and(match_header("authorization", "Bearer linear-test-access"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(
+                serde_json::json!({"data":{"viewer":{
+                    "id":VIEWER,"email":email,
+                    "active":true,"guest":false,"app":false,"organization":{"id":WORKSPACE}
+                }}}),
+            ))
+            .expect(if accepted { 2 } else { 1 })
+            .mount(&server)
+            .await;
         let provider = crate::linear::mock_provider(&server.uri());
         let base = test_auth_state_with_registered_client().await;
         if allowed {
@@ -2795,8 +2807,15 @@ pub mod tests {
             )
             .await
             .unwrap();
+        let mut config = (*base.config).clone();
+        config.google = GoogleConfig::default();
+        config.inbound_provider = Some(crate::config::InboundProviderKind::Linear);
+        config.linear = Some(crate::config::LinearConfig {
+            client_id: "test-client".into(),
+            workspace_id: WORKSPACE.parse().unwrap(),
+        });
         let state = AuthState::for_tests_with_provider(
-            (*base.config).clone(),
+            config,
             base.store.clone(),
             (*base.signing_keys).clone(),
             crate::oauth_provider::InboundProviderRuntime::Linear(Box::new(provider)),
@@ -2825,7 +2844,7 @@ pub mod tests {
             })
             .await
             .unwrap();
-        let app = router(state);
+        let app = router(state.clone());
         let callback = app
             .clone()
             .oneshot(
@@ -2873,11 +2892,83 @@ pub mod tests {
             .await
             .unwrap();
         assert_ne!(replay.status(), StatusCode::SEE_OTHER);
-        let token = app.oneshot(Request::builder().method("POST").uri("/token")
+        let token = app.clone().oneshot(Request::builder().method("POST").uri("/token")
             .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
             .body(Body::from(format!("grant_type=authorization_code&code={code}&client_id=client&redirect_uri=http://127.0.0.1:7777/callback&code_verifier=downstream-verifier")))
             .unwrap()).await.unwrap();
         assert_eq!(token.status(), StatusCode::OK);
+        let token: crate::types::TokenResponse = serde_json::from_slice(
+            &axum::body::to_bytes(token.into_body(), 16384)
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+
+        state
+            .store
+            .insert_browser_login_state(crate::types::BrowserLoginStateRow {
+                state: "linear-browser-state".into(),
+                return_to: "/probe".into(),
+                provider_code_verifier: "upstream-verifier".into(),
+                created_at: now_unix(),
+                expires_at: now_unix() + 300,
+            })
+            .await
+            .unwrap();
+        let browser = app
+            .oneshot(
+                Request::builder()
+                    .uri("/auth/linear/callback?state=linear-browser-state&code=provider-code")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(browser.status(), StatusCode::SEE_OTHER);
+        assert_eq!(browser.headers()[header::LOCATION], "/probe");
+        let cookie = browser.headers()[header::SET_COOKIE]
+            .to_str()
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        let probe = |auth_header, credential: &str| {
+            Request::builder()
+                .uri("/probe")
+                .header(auth_header, credential)
+                .body(Body::empty())
+                .unwrap()
+        };
+        let protected = principal_link_app(
+            AuthLayer::from_state(Arc::new(state)).with_allow_session_cookie(true),
+        );
+        let bearer = format!("Bearer {}", token.access_token);
+        for request in [
+            probe(header::COOKIE, cookie),
+            probe(header::AUTHORIZATION, &bearer),
+        ] {
+            let response = protected.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(
+                axum::body::to_bytes(response.into_body(), 1024)
+                    .await
+                    .unwrap(),
+                format!("external|https://linear.app|{WORKSPACE}:{VIEWER}")
+            );
+        }
+
+        // The same locally signed token and browser cookie must be rejected by
+        // an instance that has not selected Linear, even with the same keys.
+        let without_linear = principal_link_app(
+            AuthLayer::from_state(Arc::new(base)).with_allow_session_cookie(true),
+        );
+        for request in [
+            probe(header::COOKIE, cookie),
+            probe(header::AUTHORIZATION, &bearer),
+        ] {
+            let response = without_linear.clone().oneshot(request).await.unwrap();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
     }
 
     #[tokio::test]
