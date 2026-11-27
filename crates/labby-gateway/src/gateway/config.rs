@@ -44,7 +44,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
 // The PRODUCTION host store (`lab`'s `config_store`) keeps the full `LabConfig`
 // key list and the verbatim `render_gateway_config` toml_edit logic, so the
 // host preserves the exact foreign-key + non-gateway-section behavior.
-const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
+pub(crate) const KNOWN_LAB_CONFIG_KEYS: &[&str] = &[
     "code_mode",
     "mcp_apps",
     "upstream_request_timeout_ms",

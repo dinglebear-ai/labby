@@ -200,7 +200,7 @@
 # in-sandbox discovery (`codemode.search()` / `codemode.describe()`), raw
 # `callTool(id, params)`, and typed `codemode.<upstream>.<tool>(params)`
 # helpers generated from connected servers' inputSchemas.
-# timeout_ms = 30000                        # valid range: 1..=300000  (wall-clock budget)
+# timeout_ms = 300000                       # valid range: 1..=300000  (wall-clock budget)
 # max_source_bytes = 1048576                # valid range: 1024..=1048576  (JavaScript source)
 # max_response_bytes = 24576                # valid range: 1024..=1048576
 # max_response_tokens = 6000                # valid range: 256..=256000

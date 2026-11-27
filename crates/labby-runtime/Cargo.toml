@@ -25,6 +25,9 @@ thiserror.workspace = true
 jiff.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing.workspace = true
+toml.workspace = true
+# Same version the workspace already locks; names config keys serde skipped.
+serde_ignored = "0.1.14"
 reqwest.workspace = true
 futures.workspace = true
 # Skills extension (SEP-2640): sha2 verifies `sha256:` resource digests;
@@ -39,7 +42,6 @@ base64.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-toml.workspace = true
 tracing-subscriber.workspace = true
 tokio = { workspace = true, features = ["macros"] }
 
