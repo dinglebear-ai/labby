@@ -1706,7 +1706,7 @@ pub fn run_auth_checks_with_config(
             let (severity, message) = oauth_required_env(
                 &value,
                 is_oauth,
-                &format!("{key} is set"),
+                format!("{key} is set"),
                 &format!("{key} is required for Linear"),
                 &format!("{key} is only required for Linear"),
             );
