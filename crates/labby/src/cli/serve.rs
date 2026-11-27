@@ -617,6 +617,7 @@ async fn run_server(
         &config_path,
         crate::config::OWNED_TOP_LEVEL_KEYS,
     );
+    remember_last_good_config(&config_path);
 
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,
@@ -1950,6 +1951,19 @@ async fn reload_on_signal() {
     reload_gateway_on_signal(crate::dispatch::gateway::current_gateway_manager()).await;
 }
 
+/// Keep a copy of `config.toml` once it loads cleanly, so a later broken edit
+/// can fall back to it at startup.
+fn remember_last_good_config(path: &Path) {
+    if let Err(error) = crate::config::remember_last_good_config(path) {
+        tracing::warn!(
+            surface = "cli",
+            action = "config.last_good",
+            error = %format!("{error:#}"),
+            "config.toml was not saved as config.toml.last-good"
+        );
+    }
+}
+
 #[cfg(all(unix, feature = "gateway"))]
 async fn reload_gateway_on_signal(manager: Option<Arc<GatewayManager>>) {
     let Some(manager) = manager else {
@@ -1964,13 +1978,16 @@ async fn reload_gateway_on_signal(manager: Option<Arc<GatewayManager>>) {
         .reload_with_origin_detached(Some("sigusr1"), None, Duration::from_secs(20))
         .await
     {
-        Ok(outcome) => tracing::info!(
-            surface = "api",
-            action = "config.reload",
-            completed = outcome.completed,
-            "SIGUSR1 reload applied gateway settings from config.toml; \
-             other sections still need a restart"
-        ),
+        Ok(outcome) => {
+            tracing::info!(
+                surface = "api",
+                action = "config.reload",
+                completed = outcome.completed,
+                "SIGUSR1 reload applied gateway settings from config.toml; \
+                 other sections still need a restart"
+            );
+            remember_last_good_config(manager.config_path());
+        }
         Err(error) => tracing::warn!(
             surface = "api",
             action = "config.reload",

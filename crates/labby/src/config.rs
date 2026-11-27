@@ -2346,6 +2346,41 @@ pub fn inherited_app_surface_sections(raw: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The copy of `config.toml` that last parsed and validated, kept beside it so
+/// `labby serve` can still start after a bad hand edit.
+pub(crate) fn last_good_config_path(path: &Path) -> PathBuf {
+    path.with_extension("toml.last-good")
+}
+
+/// Save `path` as the last good config, if it parses and validates.
+pub(crate) fn remember_last_good_config(path: &Path) -> Result<()> {
+    let raw = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    parse_snapshot(&raw)?;
+    let last_good = last_good_config_path(path);
+    if std::fs::read_to_string(&last_good).is_ok_and(|saved| saved == raw) {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .with_context(|| format!("{} has no parent directory", path.display()))?;
+    // It can hold secrets, so it gets config.toml's private permissions before any bytes land.
+    let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
+    secret_files::restrict_secret_file_permissions(tmp.path())?;
+    tmp.write_all(raw.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(&last_good)
+        .with_context(|| format!("write {}", last_good.display()))?;
+    Ok(())
+}
+
+/// Load the last good copy of `path`, for a daemon whose `config.toml` is broken.
+pub(crate) fn load_last_good_config(path: &Path) -> Result<LabConfig> {
+    let last_good = last_good_config_path(path);
+    let raw = std::fs::read_to_string(&last_good)
+        .with_context(|| format!("read {}", last_good.display()))?;
+    parse_snapshot(&raw).with_context(|| format!("invalid {}", last_good.display()))
+}
+
 /// Parse and validate an offline snapshot without acquiring a writer or applying environment state.
 pub(crate) fn parse_snapshot(raw: &str) -> Result<LabConfig> {
     validate_top_level_extension_boundary(raw)
@@ -3234,6 +3269,30 @@ mod tests {
 
         std::fs::write(&path, "[external_extension]\nmode = \"custom\"\n").unwrap();
         assert!(load_toml(&[path]).is_ok());
+    }
+
+    #[test]
+    fn broken_config_falls_back_to_the_last_good_copy() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "upstream_request_timeout_ms = 120000\n").unwrap();
+        remember_last_good_config(&path).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            let mode = std::fs::metadata(last_good_config_path(&path))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "last good copy must be private");
+        }
+
+        // A bad edit is refused and leaves the saved copy alone.
+        std::fs::write(&path, "upstream_request_timeout_ms = 0\n").unwrap();
+        assert!(remember_last_good_config(&path).is_err());
+        assert!(load_toml(std::slice::from_ref(&path)).is_err());
+        let fallback = load_last_good_config(&path).unwrap();
+        assert_eq!(fallback.upstream_request_timeout_ms, Some(120_000));
     }
 
     #[test]

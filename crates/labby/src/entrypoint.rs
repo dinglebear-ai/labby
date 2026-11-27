@@ -583,11 +583,29 @@ pub async fn run() -> ExitCode {
 
     // 1. Load config.toml first (lightweight, no tracing needed).
     //    eprintln is intentional — tracing isn't initialized yet.
+    //    A daemon whose config.toml is broken starts on the last good copy
+    //    instead, so a bad hand edit doesn't take the gateway down.
+    let starts_daemon = matches!(&cli.command, cli::Command::Serve(_) | cli::Command::Mcp(_));
+    let mut broken_config_error = None;
     let config = match config::toml_candidates().and_then(|paths| config::load_toml(&paths)) {
         Ok(cfg) => cfg,
         Err(err) => {
-            emit_cli_failure(json_output, command_label, &err, "invalid_param", false);
-            return ExitCode::from(2);
+            match config::config_toml_path().and_then(|path| config::load_last_good_config(&path)) {
+                Ok(cfg) if starts_daemon => {
+                    #[allow(clippy::print_stderr)]
+                    {
+                        eprintln!(
+                            "WARNING: config.toml is invalid, so labby is starting on its last good copy (config.toml.last-good). Fix config.toml and restart or reload. Error: {err:#}"
+                        );
+                    }
+                    broken_config_error = Some(format!("{err:#}"));
+                    cfg
+                }
+                _ => {
+                    emit_cli_failure(json_output, command_label, &err, "invalid_param", false);
+                    return ExitCode::from(2);
+                }
+            }
         }
     };
 
@@ -638,6 +656,15 @@ pub async fn run() -> ExitCode {
         matches!(&cli.command, cli::Command::Serve(args) if args.mcp_events || args.agent_messages)
             || matches!(&cli.command, cli::Command::Mcp(args) if args.claude_channel || args.agent_messages),
     );
+
+    if let Some(error) = broken_config_error {
+        tracing::warn!(
+            surface = "cli",
+            action = "config.load",
+            error = %error,
+            "config.toml is invalid; started on config.toml.last-good until it is fixed"
+        );
+    }
 
     // 3. Load .env files (secrets + URL env vars) for runtime paths.
     // Static docs generation is intentionally metadata-only and must not
