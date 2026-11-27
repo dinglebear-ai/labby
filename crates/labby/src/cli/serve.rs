@@ -613,6 +613,10 @@ async fn run_server(
         "starting labby serve bootstrap"
     );
     log_inherited_app_surface_defaults(&config_path, config);
+    labby_runtime::gateway_config::warn_ignored_config_keys::<LabConfig>(
+        &config_path,
+        crate::config::OWNED_TOP_LEVEL_KEYS,
+    );
 
     crate::registry::set_runtime_built_in_upstream_apis_enabled(
         config.services.built_in_upstream_apis_enabled,

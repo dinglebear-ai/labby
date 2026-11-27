@@ -2336,45 +2336,52 @@ pub(crate) fn parse_snapshot(raw: &str) -> Result<LabConfig> {
     Ok(config)
 }
 
+/// Top-level `config.toml` names Labby owns; any other top-level name must be
+/// an extension table.
+pub(crate) const OWNED_TOP_LEVEL_KEYS: &[&str] = &[
+    "config_version",
+    "depot",
+    "cli",
+    "output",
+    "mcp",
+    "proxy",
+    "tailcat",
+    "log",
+    "local_logs",
+    "api",
+    "web",
+    "workspace",
+    "file_stash",
+    "dev_containers",
+    "oauth",
+    "admin",
+    "services",
+    "setup",
+    "auth",
+    "code_mode",
+    "mcp_apps",
+    "artifacts",
+    "phoenix",
+    "skill_library",
+    "upstream_request_timeout_ms",
+    "upstream_relay_timeout_ms",
+    "upstream",
+    "upstream_import_tombstones",
+    "upstream_pending",
+    "gateway_import_mode",
+    "loadouts",
+    "protected_mcp_routes",
+    "virtual_servers",
+    "quarantined_virtual_servers",
+    "public_urls",
+    "gateway",
+    "openapi",
+];
+
 fn validate_top_level_extension_boundary(raw: &str) -> Result<()> {
     let table = raw.parse::<toml::Table>()?;
-    const OWNED: &[&str] = &[
-        "config_version",
-        "cli",
-        "output",
-        "mcp",
-        "proxy",
-        "log",
-        "local_logs",
-        "api",
-        "web",
-        "workspace",
-        "file_stash",
-        "dev_containers",
-        "oauth",
-        "admin",
-        "services",
-        "setup",
-        "auth",
-        "code_mode",
-        "mcp_apps",
-        "skill_library",
-        "upstream_request_timeout_ms",
-        "upstream_relay_timeout_ms",
-        "upstream",
-        "upstream_import_tombstones",
-        "upstream_pending",
-        "gateway_import_mode",
-        "loadouts",
-        "protected_mcp_routes",
-        "virtual_servers",
-        "quarantined_virtual_servers",
-        "public_urls",
-        "gateway",
-        "openapi",
-    ];
     for (key, value) in table {
-        if !OWNED.contains(&key.as_str()) && !value.is_table() {
+        if !OWNED_TOP_LEVEL_KEYS.contains(&key.as_str()) && !value.is_table() {
             anyhow::bail!("unknown top-level scalar `{key}`; extensions must use a named table")
         }
     }
@@ -3201,6 +3208,30 @@ mod tests {
 
         std::fs::write(&path, "[external_extension]\nmode = \"custom\"\n").unwrap();
         assert!(load_toml(&[path]).is_ok());
+    }
+
+    #[test]
+    fn startup_names_a_timeout_written_under_the_gateway_table() {
+        let ignored = |raw: &str| {
+            labby_runtime::gateway_config::ignored_config_keys::<LabConfig>(
+                raw,
+                OWNED_TOP_LEVEL_KEYS,
+            )
+        };
+        let rendered = toml::to_string(&LabConfig::default()).expect("render defaults");
+        assert_eq!(
+            ignored(&rendered),
+            Vec::<String>::new(),
+            "every key Labby writes must be one it reads"
+        );
+        assert_eq!(
+            ignored("upstream_request_timeout_ms = 300000\n[mcp]\nport = 8765\n"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            ignored("[mcp]\nport = 8765\n\n[gateway]\nupstream_request_timeout_ms = 300000\n"),
+            ["gateway.upstream_request_timeout_ms"]
+        );
     }
 
     #[test]
@@ -5173,7 +5204,7 @@ url = "https://acme.example.com/mcp"
     #[test]
     fn code_mode_is_root_level_config_with_default_limits() {
         let default_cfg = LabConfig::default();
-        assert_eq!(default_cfg.code_mode.timeout_ms, 30_000);
+        assert_eq!(default_cfg.code_mode.timeout_ms, 300_000);
         assert_eq!(default_cfg.code_mode.max_source_bytes, 1024 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_bytes, 24 * 1024);
         assert_eq!(default_cfg.code_mode.max_response_tokens, 6000);
@@ -5778,8 +5809,8 @@ services = ["removed-service"]
         assert!(config.timeout_ms > 0);
         assert!(config.max_response_bytes > 0);
         assert!(config.max_response_tokens > 0);
-        // ABSENCE: not wildly large (sanity bounds)
-        assert!(config.timeout_ms <= 60_000);
+        // ABSENCE: never past the validated ceiling
+        assert!(config.timeout_ms <= labby_runtime::gateway_config::MAX_CODE_MODE_TIMEOUT_MS);
     }
 
     // ── Process-wide atomic flags ─────────────────────────────────────────────

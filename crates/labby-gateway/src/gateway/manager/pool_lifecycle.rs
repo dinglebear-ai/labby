@@ -316,9 +316,19 @@ impl GatewayManager {
             "gateway reconcile"
         );
         let path = self.path.clone();
-        let cfg = tokio::task::spawn_blocking(move || load_gateway_config(&path))
-            .await
-            .map_err(|e| ToolError::internal_message(format!("config read task failed: {e}")))??;
+        let cfg = tokio::task::spawn_blocking(move || {
+            let cfg = load_gateway_config(&path)?;
+            // A key the gateway slice does not read (often a top-level setting
+            // written under `[gateway]` or an `[[upstream]]`) would otherwise
+            // vanish without a trace on every reload.
+            labby_runtime::gateway_config::warn_ignored_config_keys::<GatewayConfig>(
+                &path,
+                crate::gateway::config::KNOWN_LAB_CONFIG_KEYS,
+            );
+            Ok::<_, ToolError>(cfg)
+        })
+        .await
+        .map_err(|e| ToolError::internal_message(format!("config read task failed: {e}")))??;
         // Seed the config.toml fallbacks for the small set of pool-internal
         // env-resolved caches (see `pool/helpers.rs` / `pool/stdio_stderr.rs`
         // doc comments) — a no-op after the first successful reload, since

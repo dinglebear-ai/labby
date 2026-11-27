@@ -51,8 +51,12 @@ The code-owned proxy key inventory lives in
 
 Persisted TOML uses `config_version = 1`. Legacy files without the key migrate
 to version 1 on their next supported mutation; a future/unsupported version
-fails closed. Unknown keys inside Labby-owned sections are errors with the
-offending field path. Unknown top-level scalar keys (for example `mcpp = 1` or
+fails closed. Unknown keys inside most Labby-owned sections are errors with the
+offending field path. Sections that tolerate them, such as `[gateway]` and
+`[[upstream]]`, log one warning per ignored key at startup and on every gateway
+reload. A top-level setting such as `upstream_request_timeout_ms` written below a
+`[table]` header belongs to that table, so its warning says to move it above the
+first header. Unknown top-level scalar keys (for example `mcpp = 1` or
 `config_verzion = 1`) are also errors. Foreign extensions must be explicitly
 namespaced as TOML tables (for example `[vendor.example]`); those sections
 remain accepted and are preserved by supported gateway/settings mutations.

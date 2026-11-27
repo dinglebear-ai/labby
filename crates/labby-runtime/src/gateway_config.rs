@@ -53,8 +53,9 @@ fn default_code_mode_trace_params() -> bool {
 /// editor can never disagree.
 pub const MAX_CODE_MODE_TIMEOUT_MS: u64 = 300_000;
 
+/// Five minutes, so a run can wait out slow upstream tools such as planners.
 fn default_code_mode_timeout_ms() -> u64 {
-    30_000
+    300_000
 }
 
 fn default_code_mode_max_source_bytes() -> usize {
@@ -612,6 +613,73 @@ pub enum UpstreamLifecycle {
     /// Always open with `initialize`. For legacy servers that terminate on an
     /// unknown first request, which leaves no rejection to classify.
     Initialize,
+}
+
+/// Top-level `config.toml` keys that are easy to write under a `[table]` by
+/// mistake: TOML assigns every key below a header to that table, so the value
+/// silently stops applying.
+const TOP_LEVEL_ONLY_KEYS: &[&str] = &[
+    "config_version",
+    "upstream_request_timeout_ms",
+    "upstream_relay_timeout_ms",
+    "gateway_import_mode",
+];
+
+/// Dotted paths of keys in a `config.toml` document that `T` does not read.
+///
+/// Only keys under a top-level name in `owned` are reported, so foreign
+/// extension tables stay quiet. Unparseable input yields nothing; the loader
+/// owns that error.
+#[must_use]
+pub fn ignored_config_keys<T: serde::de::DeserializeOwned>(
+    raw: &str,
+    owned: &[&str],
+) -> Vec<String> {
+    let Ok(deserializer) = toml::Deserializer::parse(raw) else {
+        return Vec::new();
+    };
+    let mut ignored = Vec::new();
+    let parsed = serde_ignored::deserialize::<_, _, T>(deserializer, |path| {
+        // `?.` marks an `Option` level, which means nothing to an operator.
+        ignored.push(path.to_string().replace("?.", ""));
+    });
+    if parsed.is_err() {
+        return Vec::new();
+    }
+    ignored.retain(|path| owned.contains(&path.split('.').next().unwrap_or_default()));
+    ignored
+}
+
+/// Log one warning per key in `path` that `T` ignores, naming the fix when a
+/// top-level setting was written inside a table. Returns the ignored paths.
+pub fn warn_ignored_config_keys<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+    owned: &[&str],
+) -> Vec<String> {
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let ignored = ignored_config_keys::<T>(&raw, owned);
+    for key in &ignored {
+        let leaf = key.rsplit('.').next().unwrap_or(key);
+        if key.contains('.') && TOP_LEVEL_ONLY_KEYS.contains(&leaf) {
+            tracing::warn!(
+                subsystem = "config",
+                config_path = %path.display(),
+                key = %key,
+                "config.toml setting `{leaf}` is inside a table and is ignored; \
+                 move it above the first [table] header"
+            );
+        } else {
+            tracing::warn!(
+                subsystem = "config",
+                config_path = %path.display(),
+                key = %key,
+                "config.toml key `{key}` is not a Labby setting and is ignored"
+            );
+        }
+    }
+    ignored
 }
 
 /// Configuration for a single upstream MCP server.
@@ -2441,6 +2509,42 @@ fn normalize_string_list(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn ignored_config_keys_names_top_level_settings_written_inside_a_table() {
+        let owned = &["upstream_request_timeout_ms", "upstream", "gateway"];
+        let raw = r#"
+upstream_request_timeout_ms = 60000
+
+[gateway]
+auto_reconnect = true
+upstream_request_timeout_ms = 300000
+
+[[upstream]]
+name = "fixture"
+url = "https://mcp.example/mcp"
+upstream_relay_timeout_ms = 600000
+
+[vendor.example]
+anything = "goes"
+"#;
+        assert_eq!(
+            ignored_config_keys::<GatewayConfig>(raw, owned),
+            [
+                "gateway.upstream_request_timeout_ms",
+                "upstream.0.upstream_relay_timeout_ms",
+            ]
+        );
+        assert_eq!(
+            ignored_config_keys::<GatewayConfig>("upstream_request_timeout_ms = 60000\n", owned),
+            Vec::<String>::new(),
+            "a correctly placed setting is read, not ignored"
+        );
+        assert_eq!(
+            ignored_config_keys::<GatewayConfig>("not = [toml", owned),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
     fn workload_identity_requires_public_registration_and_valid_assertion_env() {
         let raw = serde_json::json!({"name":"workload", "url":"https://mcp.example/mcp", "oauth":{
             "mode":{"workload_identity_federation":{"assertion_env":"LABBY_WORKLOAD_ASSERTION"}},
@@ -2965,7 +3069,7 @@ strategy = "dynamic"
         assert!(!cfg.mcp_ui_enabled);
         assert!(cfg.read_tool_enabled);
         assert!(cfg.trace_params);
-        assert_eq!(cfg.timeout_ms, 30_000);
+        assert_eq!(cfg.timeout_ms, 300_000);
         assert_eq!(cfg.token_estimate_divisor, 4);
     }
 
