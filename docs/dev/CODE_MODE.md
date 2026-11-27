@@ -755,7 +755,7 @@ Defaults:
 - `max_response_tokens = 6000`
 - `max_programmatic_response_bytes = 1048576` (`0` disables; otherwise
   1024 through 4194304); see [Programmatic response budgets](#programmatic-response-budgets)
-- `timeout_ms = 30000` (configurable from 1 through 300000 ms)
+- `timeout_ms = 300000` (configurable from 1 through 300000 ms)
 - `max_calls_per_run = 512` (hard ceiling 2048); excess calls reject with
   `call_budget_exceeded` before dispatch
 - `calltool_result_max_mib = 8`; an oversized individual result rejects with

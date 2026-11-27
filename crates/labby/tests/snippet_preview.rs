@@ -128,7 +128,7 @@ fn run(home: &Path) {
         let changed_authority=call(&manager,"snippets.exec",json!({"name":"preview-demo","params":input,"expected_preview_fingerprint":preview["preview_fingerprint"]}),&changed_scope).await.unwrap_err();
         assert_eq!(changed_authority.kind(),"preview_stale");assert_eq!(count(home),0);
         let original_config=manager.code_mode_config().await;
-        let mut changed_config=original_config.clone();changed_config.timeout_ms+=1000;
+        let mut changed_config=original_config.clone();changed_config.timeout_ms-=1000;
         Box::pin(manager.set_code_mode_config(changed_config,None,None)).await.unwrap();
         let changed_runtime=call(&manager,"snippets.exec",json!({"name":"preview-demo","params":input,"expected_preview_fingerprint":preview["preview_fingerprint"]}),&alice).await.unwrap_err();
         assert_eq!(changed_runtime.kind(),"preview_stale");assert_eq!(count(home),0);

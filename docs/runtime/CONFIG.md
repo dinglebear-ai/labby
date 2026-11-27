@@ -51,8 +51,12 @@ The code-owned proxy key inventory lives in
 
 Persisted TOML uses `config_version = 1`. Legacy files without the key migrate
 to version 1 on their next supported mutation; a future/unsupported version
-fails closed. Unknown keys inside Labby-owned sections are errors with the
-offending field path. Unknown top-level scalar keys (for example `mcpp = 1` or
+fails closed. Unknown keys inside most Labby-owned sections are errors with the
+offending field path. Sections that tolerate them, such as `[gateway]` and
+`[[upstream]]`, log one warning per ignored key at startup and on every gateway
+reload. A top-level setting such as `upstream_request_timeout_ms` written below a
+`[table]` header belongs to that table, so its warning says to move it above the
+first header. Unknown top-level scalar keys (for example `mcpp = 1` or
 `config_verzion = 1`) are also errors. Foreign extensions must be explicitly
 namespaced as TOML tables (for example `[vendor.example]`); those sections
 remain accepted and are preserved by supported gateway/settings mutations.
@@ -61,7 +65,8 @@ Gateway bearer-token mutations commit the selected `.env` key with their
 configuration transaction and restore that key on failure, preserving unrelated
 entries. They reconnect upstreams referencing the changed key. A manual
 `gateway.reload` also reconnects bearer upstreams and observes changed
-file-managed credentials. A key supplied by the external process environment
+file-managed credentials. Sending the daemon `SIGUSR1` runs the same reload;
+sections outside the gateway still apply only after a restart. A key supplied by the external process environment
 before startup dotenv loading remains authoritative until process restart;
 gateway mutations do not overwrite that environment authority.
 
