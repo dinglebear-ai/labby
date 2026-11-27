@@ -25,7 +25,7 @@ pub fn load_gateway_config(path: &Path) -> Result<GatewayConfig, ToolError> {
                     message: format!("invalid config {}: {e}", path.display()),
                 })?;
             normalize_config(&mut cfg)?;
-            validate_config(&cfg)?;
+            validate_config(&cfg).map_err(|error| name_config_file(error, path))?;
             Ok(cfg)
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(GatewayConfig::default()),
@@ -684,7 +684,34 @@ pub fn validate_protected_mcp_routes(routes: &[ProtectedMcpRouteConfig]) -> Resu
     Ok(())
 }
 
+/// Prefix a validation error read from disk with the file it came from, so a
+/// failed reload names both the key and the file. The error kind and `param`
+/// stay as they were.
+fn name_config_file(error: ToolError, path: &Path) -> ToolError {
+    match error {
+        ToolError::InvalidParam { message, param } => ToolError::InvalidParam {
+            message: format!("invalid config {}: {message}", path.display()),
+            param,
+        },
+        other => other,
+    }
+}
+
 pub(crate) fn validate_config(cfg: &GatewayConfig) -> Result<(), ToolError> {
+    // Startup checks these in `LabConfig::validate`; a reload must too, or
+    // SIGUSR1 could apply a timeout startup would have refused.
+    cfg.validate_upstream_timeouts().map_err(|error| {
+        let param = match error {
+            labby_runtime::gateway_config::ConfigError::InvalidUpstreamRelayTimeout { .. } => {
+                "upstream_relay_timeout_ms"
+            }
+            _ => "upstream_request_timeout_ms",
+        };
+        ToolError::InvalidParam {
+            message: error.to_string(),
+            param: param.to_string(),
+        }
+    })?;
     validate_code_mode(&cfg.code_mode)?;
     validate_upstreams(&cfg.upstream, &cfg.gateway)?;
     validate_loadouts(cfg)?;
