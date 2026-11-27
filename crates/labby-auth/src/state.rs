@@ -399,7 +399,7 @@ impl AuthState {
                 }
                 #[cfg(not(feature = "http-axum"))]
                 {
-                    let _ = linear_config;
+                    drop(linear_config);
                     return Err(AuthError::Config(
                         "Linear inbound authentication requires the http-axum feature".into(),
                     ));

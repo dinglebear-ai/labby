@@ -348,14 +348,16 @@ impl AuthConfig {
             .map(|domain| domain.to_ascii_lowercase())
     }
     /// Maximum interval before this provider must prove its identity again.
+    #[cfg(any(test, feature = "http-axum"))]
     pub(crate) fn inbound_identity_ttl(&self, kind: InboundProviderKind) -> Duration {
         if kind == InboundProviderKind::Linear {
-            self.refresh_token_ttl.min(Duration::from_secs(86_400))
+            self.refresh_token_ttl.min(Duration::from_hours(24))
         } else {
             self.refresh_token_ttl
         }
     }
 
+    #[cfg(feature = "http-axum")]
     pub(crate) fn linear_scope_allowed(&self, email: &str, scope: &str) -> bool {
         self.is_admin_email(email)
             || !scope
