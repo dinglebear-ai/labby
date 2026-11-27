@@ -376,7 +376,11 @@ fn worktree_identity_readers_collect_their_hermetic_suite() {
         assert_eq!(out["docs_check"], "true", "{path}");
     }
     let workflow = include_str!("../../../.github/workflows/ci.yml");
-    assert!(workflow.contains("run: python3 crates/labby/tests/fixtures/snippets/worktree-identity.test.py"));
+    assert!(
+        workflow.contains(
+            "run: python3 crates/labby/tests/fixtures/snippets/worktree-identity.test.py"
+        )
+    );
 }
 
 #[test]
