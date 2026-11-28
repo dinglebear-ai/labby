@@ -243,14 +243,17 @@ pub async fn authorize(
         } else {
             (None, false)
         };
-    let location = state.inbound_provider.authorize_url(&AuthorizeUrlRequest {
-        state: request_state,
-        scope: scope.clone(),
-        code_challenge: provider_code_challenge,
-        code_challenge_method: "S256".to_string(),
-        offline_access: true,
-        force_consent,
-    })?;
+    let location = state
+        .inbound_provider
+        .authorize_url(&AuthorizeUrlRequest {
+            state: request_state,
+            scope: scope.clone(),
+            code_challenge: provider_code_challenge,
+            code_challenge_method: "S256".to_string(),
+            offline_access: true,
+            force_consent,
+        })
+        .await?;
     info!(
         client_id = %fingerprint(&query.client_id),
         redirect_uri_id = %fingerprint(&query.redirect_uri),
@@ -539,7 +542,8 @@ pub async fn callback(
     } else {
         None
     };
-    let google = match state
+    #[cfg_attr(not(feature = "upstream-oauth-rmcp"), allow(unused_mut))]
+    let mut google = match state
         .inbound_provider
         .exchange_code(
             query.code.as_deref().unwrap_or_default(),
@@ -567,6 +571,10 @@ pub async fn callback(
             );
         }
     };
+
+    // Held aside so only an admitted identity's upstream grant is stored.
+    #[cfg(feature = "upstream-oauth-rmcp")]
+    let upstream_grant = google.upstream_grant.take();
 
     // RFC 6749 §4.1.2.1: errors must redirect to the client's redirect_uri,
     // not surface as a JSON HTTP error. The denial reason is sourced from the
@@ -653,6 +661,18 @@ pub async fn callback(
             }),
         "access_denied"
     );
+    // Only an admitted identity's upstream grant is kept.
+    #[cfg(feature = "upstream-oauth-rmcp")]
+    if let (Some(grant), crate::oauth_provider::InboundProviderRuntime::Linear(provider)) =
+        (upstream_grant, &*state.inbound_provider)
+        && let Some(mcp) = &provider.mcp
+    {
+        callback_try!(
+            mcp.save_grant(&state.store, &google.subject, &request.scope, *grant)
+                .await,
+            "server_error"
+        );
+    }
     if matches!(
         state.inbound_provider.kind(),
         crate::config::InboundProviderKind::Authelia | crate::config::InboundProviderKind::Linear
@@ -2751,9 +2771,18 @@ pub mod tests {
 
     #[tokio::test]
     async fn linear_callback_redeems_a_bound_labby_token_once() {
-        assert_linear_callback_policy("teammate@example.com", "lab", true, true).await;
-        assert_linear_callback_policy("teammate@example.com", "lab:admin", true, false).await;
-        assert_linear_callback_policy("outsider@example.com", "lab", false, false).await;
+        assert_linear_callback_policy("teammate@example.com", "lab", true, true, false).await;
+        assert_linear_callback_policy("teammate@example.com", "lab:admin", true, false, false)
+            .await;
+        assert_linear_callback_policy("outsider@example.com", "lab", false, false, false).await;
+    }
+
+    #[cfg(feature = "upstream-oauth-rmcp")]
+    #[tokio::test]
+    async fn linear_mcp_callback_signs_in_and_keeps_only_admitted_grants() {
+        assert_linear_callback_policy("teammate@example.com", "lab", true, true, true).await;
+        assert_linear_callback_policy("teammate@example.com", "lab:admin", true, false, true).await;
+        assert_linear_callback_policy("outsider@example.com", "lab", false, false, true).await;
     }
 
     async fn assert_linear_callback_policy(
@@ -2761,6 +2790,7 @@ pub mod tests {
         scope: &str,
         allowed: bool,
         accepted: bool,
+        via_mcp: bool,
     ) {
         use crate::middleware::{AuthLayer, tests::principal_link_app};
         use std::sync::Arc;
@@ -2773,24 +2803,38 @@ pub mod tests {
             matchers::{body_string_contains, header as match_header, method, path},
         };
         let server = MockServer::start().await;
-        Mock::given(method("POST")).and(path("/oauth/token"))
-            .and(body_string_contains("code_verifier=upstream-verifier"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-               "access_token":"linear-test-access", "token_type":"Bearer", "refresh_token":"must-not-be-kept"
-            }))).expect(if accepted { 2 } else { 1 }).mount(&server).await;
-        Mock::given(method("POST"))
-            .and(path("/graphql"))
-            .and(match_header("authorization", "Bearer linear-test-access"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!({"data":{"viewer":{
-                    "id":VIEWER,"email":email,
-                    "active":true,"guest":false,"app":false,"organization":{"id":WORKSPACE}
-                }}}),
-            ))
-            .expect(if accepted { 2 } else { 1 })
-            .mount(&server)
-            .await;
-        let provider = crate::linear::mock_provider(&server.uri());
+        if via_mcp {
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            crate::linear_mcp::tests::mount_worker(&server, VIEWER, email).await;
+        } else {
+            Mock::given(method("POST")).and(path("/oauth/token"))
+                .and(body_string_contains("code_verifier=upstream-verifier"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                   "access_token":"linear-test-access", "token_type":"Bearer", "refresh_token":"must-not-be-kept"
+                }))).expect(if accepted { 2 } else { 1 }).mount(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql"))
+                .and(match_header("authorization", "Bearer linear-test-access"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(
+                    serde_json::json!({"data":{"viewer":{
+                        "id":VIEWER,"email":email,
+                        "active":true,"guest":false,"app":false,"organization":{"id":WORKSPACE}
+                    }}}),
+                ))
+                .expect(if accepted { 2 } else { 1 })
+                .mount(&server)
+                .await;
+        }
+        let provider = if via_mcp {
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            {
+                crate::linear_mcp::tests::mock_provider(&server.uri(), WORKSPACE)
+            }
+            #[cfg(not(feature = "upstream-oauth-rmcp"))]
+            unreachable!()
+        } else {
+            crate::linear::mock_provider(&server.uri())
+        };
         let base = test_auth_state_with_registered_client().await;
         if allowed {
             base.store
@@ -2812,6 +2856,7 @@ pub mod tests {
         config.inbound_provider = Some(crate::config::InboundProviderKind::Linear);
         config.linear = Some(crate::config::LinearConfig {
             client_id: "test-client".into(),
+            mcp: None,
             workspace_id: WORKSPACE.parse().unwrap(),
         });
         let state = AuthState::for_tests_with_provider(
@@ -2844,6 +2889,33 @@ pub mod tests {
             })
             .await
             .unwrap();
+        // A grant already stored for this user, as on an installed gateway.
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        let stored = || {
+            crate::upstream::store::SqliteCredentialStore::new(
+                state.store.clone(),
+                crate::linear_mcp::tests::test_key(),
+                "linear-qa",
+                format!("{WORKSPACE}:{VIEWER}"),
+            )
+        };
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        if via_mcp {
+            use rmcp_client::transport::auth::{CredentialStore as _, StoredCredentials};
+            let token = serde_json::from_value(serde_json::json!({
+                "access_token": "existing-access", "token_type": "Bearer"
+            }))
+            .unwrap();
+            stored()
+                .save(StoredCredentials::new(
+                    "existing-client".into(),
+                    Some(token),
+                    Vec::new(),
+                    None,
+                ))
+                .await
+                .unwrap();
+        }
         let app = router(state.clone());
         let callback = app
             .clone()
@@ -2858,6 +2930,20 @@ pub mod tests {
             .await
             .unwrap();
         assert_eq!(callback.status(), StatusCode::SEE_OTHER);
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        if via_mcp {
+            use oauth2::TokenResponse as _;
+            use rmcp_client::transport::auth::CredentialStore as _;
+            let kept = stored().load().await.unwrap().unwrap();
+            let access = kept.token_response.unwrap().access_token().secret().clone();
+            // An admitted sign-in replaces the grant; a rejected one leaves it alone.
+            let expected = if accepted {
+                "worker-access"
+            } else {
+                "existing-access"
+            };
+            assert_eq!(access, expected);
+        }
         let location = callback
             .headers()
             .get(header::LOCATION)

@@ -1343,6 +1343,10 @@ pub struct AuthFileConfig {
     /// The exact Linear workspace UUID admitted by this gateway.
     #[serde(default)]
     pub linear_workspace_id: Option<String>,
+    /// Sign in through this gateway upstream (the Linear MCP connector) and
+    /// keep its grant. Its URL comes from that upstream's own config.
+    #[serde(default)]
+    pub linear_mcp_upstream: Option<String>,
     /// Authelia OpenID Connect issuer URL.
     #[serde(default)]
     pub authelia_issuer_url: Option<String>,
@@ -1443,7 +1447,26 @@ pub fn resolve_auth_for_config(cfg: &LabConfig) -> Result<auth_config::AuthConfi
     if auth.public_url.is_none() {
         auth.public_url = effective_public_url;
     }
-    resolve_auth(Some(&auth))
+    let mut env: Vec<(String, String)> = std::env::vars()
+        .filter(|(key, _)| key != "LABBY_LINEAR_MCP_URL")
+        .collect();
+    let linear_upstream = env
+        .iter()
+        .find(|(key, _)| key == "LABBY_LINEAR_MCP_UPSTREAM")
+        .map(|(_, value)| value.clone())
+        .or_else(|| auth.linear_mcp_upstream.clone());
+    if let Some(name) = linear_upstream.filter(|name| !name.trim().is_empty()) {
+        let url = cfg
+            .upstream
+            .iter()
+            .find(|upstream| upstream.name == name && upstream.oauth.is_some())
+            .and_then(|upstream| upstream.url.clone())
+            .with_context(|| {
+                format!("linear_mcp_upstream `{name}` must be an HTTP upstream with an oauth block")
+            })?;
+        env.push(("LABBY_LINEAR_MCP_URL".into(), url));
+    }
+    resolve_auth_with_env(Some(&auth), env)
 }
 
 /// Resolve auth configuration from config file + environment variables.
@@ -1649,6 +1672,11 @@ pub(crate) fn resolve_auth_with_env(
         );
         insert_if_some(
             &mut merged,
+            "LABBY_LINEAR_MCP_UPSTREAM",
+            config.linear_mcp_upstream.clone(),
+        );
+        insert_if_some(
+            &mut merged,
             "LABBY_AUTHELIA_ISSUER_URL",
             config.authelia_issuer_url.clone(),
         );
@@ -1798,6 +1826,8 @@ pub(crate) fn resolve_auth_with_env(
     if matches!(provider.as_deref(), Some("google" | "authelia")) {
         merged.remove("LABBY_LINEAR_CLIENT_ID");
         merged.remove("LABBY_LINEAR_WORKSPACE_ID");
+        merged.remove("LABBY_LINEAR_MCP_UPSTREAM");
+        merged.remove("LABBY_LINEAR_MCP_URL");
     }
 
     let dynamic_registration = match merged
@@ -3254,6 +3284,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn linear_mcp_upstream_takes_its_url_from_the_named_oauth_upstream() {
+        let cfg: LabConfig = toml::from_str(
+            r#"
+[auth]
+public_url = "https://labby.example"
+provider = "linear"
+linear_workspace_id = "2a5332a8-b7a7-465e-aaae-fc59f8e65566"
+linear_mcp_upstream = "linear-qa"
+
+[[upstream]]
+name = "linear-qa"
+url = "https://worker.example/mcp/linear"
+oauth = { mode = "authorization_code_pkce", registration = { strategy = "dynamic" } }
+"#,
+        )
+        .unwrap();
+        let auth = resolve_auth_for_config(&cfg).unwrap();
+        let mcp = auth.linear.unwrap().mcp.unwrap();
+        assert_eq!(mcp.upstream, "linear-qa");
+        assert_eq!(mcp.url.as_str(), "https://worker.example/mcp/linear");
+
+        let mut missing = cfg.clone();
+        missing.upstream[0].oauth = None;
+        assert!(resolve_auth_for_config(&missing).is_err());
+    }
+
+    #[test]
     fn owned_section_typos_fail_while_foreign_top_level_extensions_survive() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.toml");
@@ -4264,6 +4321,7 @@ future = "keep"
             provider: None,
             linear_client_id: None,
             linear_workspace_id: None,
+            linear_mcp_upstream: None,
             authelia_issuer_url: None,
             authelia_client_id: None,
             authelia_client_secret: None,

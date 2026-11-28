@@ -9,6 +9,17 @@ pub const LINEAR_CALLBACK_PATH: &str = "/auth/linear/callback";
 pub struct LinearConfig {
     pub client_id: String,
     pub workspace_id: uuid::Uuid,
+    /// Sign in through a configured Linear MCP upstream instead of linear.app.
+    #[serde(default)]
+    pub mcp: Option<LinearMcpLogin>,
+}
+
+/// The operator-configured gateway upstream that both signs the user in and
+/// keeps the resulting grant. Its URL always comes from the upstream config.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinearMcpLogin {
+    pub upstream: String,
+    pub url: Url,
 }
 
 pub const GOOGLE_CALLBACK_PATH: &str = "/auth/google/callback";

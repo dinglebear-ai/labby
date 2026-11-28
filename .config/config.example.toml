@@ -322,6 +322,11 @@
 # linear_client_id = "linear-oauth-client-id"
 # linear_workspace_id = "2a5332a8-b7a7-465e-aaae-fc59f8e65566"
 # Register the exact https://<labby-host>/auth/linear/callback with Linear.
+# Or sign in through a Linear MCP upstream (for example the Notification Worker)
+# instead of a Linear OAuth app. One consent signs the user in and stores that
+# upstream's grant for them. The URL comes from the named [[upstream]], which
+# needs an oauth block with dynamic registration; no client ID is needed.
+# linear_mcp_upstream = "linear-qa"
 
 # Optional Google callback path override.
 # Override with LABBY_GOOGLE_CALLBACK_PATH.

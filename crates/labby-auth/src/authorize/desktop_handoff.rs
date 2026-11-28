@@ -187,14 +187,17 @@ pub async fn desktop_authorize(
             "desktop login state is invalid or expired".into(),
         ));
     };
-    let location = state.inbound_provider.authorize_url(&AuthorizeUrlRequest {
-        state: provider_state,
-        scope: state.config.default_scope.clone(),
-        code_challenge: challenge,
-        code_challenge_method: "S256".into(),
-        offline_access: false,
-        force_consent: false,
-    })?;
+    let location = state
+        .inbound_provider
+        .authorize_url(&AuthorizeUrlRequest {
+            state: provider_state,
+            scope: state.config.default_scope.clone(),
+            code_challenge: challenge,
+            code_challenge_method: "S256".into(),
+            offline_access: false,
+            force_consent: false,
+        })
+        .await?;
     Ok(no_store(Redirect::to(location.as_str()).into_response()))
 }
 

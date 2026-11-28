@@ -377,7 +377,12 @@ impl AuthConfig {
             InboundProvider::Linear(config) => (
                 "linear",
                 crate::linear::LINEAR_ISSUER.to_string(),
-                format!("{}:{}", config.client_id, config.workspace_id),
+                match &config.mcp {
+                    Some(mcp) => {
+                        format!("mcp:{}:{}:{}", mcp.upstream, mcp.url, config.workspace_id)
+                    }
+                    None => format!("{}:{}", config.client_id, config.workspace_id),
+                },
                 LINEAR_CALLBACK_PATH,
             ),
             InboundProvider::Authelia(config) => (
@@ -663,13 +668,14 @@ impl AuthConfig {
             }
             Some(InboundProviderKind::Linear)
                 if self.linear.as_ref().is_some_and(|config| {
-                    !config.client_id.trim().is_empty() && !config.workspace_id.is_nil()
+                    (config.mcp.is_some() || !config.client_id.trim().is_empty())
+                        && !config.workspace_id.is_nil()
                 }) =>
             {
                 Ok(InboundProviderKind::Linear)
             }
             Some(InboundProviderKind::Linear) => Err(AuthError::Config(format!(
-                "{prefix}_LINEAR_CLIENT_ID and {prefix}_LINEAR_WORKSPACE_ID must both be set for Linear"
+                "{prefix}_LINEAR_WORKSPACE_ID and either {prefix}_LINEAR_CLIENT_ID or {prefix}_LINEAR_MCP_UPSTREAM must be set for Linear"
             ))),
             Some(InboundProviderKind::Google) => Err(AuthError::Config(format!(
                 "{prefix}_AUTH_PROVIDER selects google but Google credentials are not configured"
@@ -806,7 +812,7 @@ fn valid_viewer_domain(domain: &str) -> bool {
         })
 }
 
-fn is_loopback_http_url(url: &Url) -> bool {
+pub(crate) fn is_loopback_http_url(url: &Url) -> bool {
     url.scheme() == "http"
         && match url.host() {
             Some(url::Host::Ipv4(address)) => address.is_loopback(),
@@ -988,12 +994,29 @@ impl AuthConfigBuilder {
             .transpose()?;
         let key_l_id = env_key(&prefix, "LINEAR_CLIENT_ID");
         let key_l_workspace = env_key(&prefix, "LINEAR_WORKSPACE_ID");
+        let key_l_upstream = env_key(&prefix, "LINEAR_MCP_UPSTREAM");
+        let key_l_url = env_key(&prefix, "LINEAR_MCP_URL");
         let linear_id = read_string(&vars, &key_l_id);
         let linear_workspace = read_string(&vars, &key_l_workspace);
-        let linear = (linear_id.is_some() || linear_workspace.is_some())
+        let linear_mcp = match (
+            read_string(&vars, &key_l_upstream),
+            read_url(&vars, &key_l_url)?,
+        ) {
+            (Some(upstream), Some(url)) => {
+                Some(crate::config_providers::LinearMcpLogin { upstream, url })
+            }
+            (None, None) => None,
+            _ => {
+                return Err(AuthError::Config(format!(
+                    "{key_l_upstream} must name a configured gateway upstream with a URL"
+                )));
+            }
+        };
+        let linear = (linear_id.is_some() || linear_workspace.is_some() || linear_mcp.is_some())
             .then(|| -> Result<LinearConfig, AuthError> {
                 Ok(LinearConfig {
                     client_id: linear_id.unwrap_or_default(),
+                    mcp: linear_mcp,
                     workspace_id: linear_workspace
                         .as_deref()
                         .and_then(|value| value.parse().ok())
@@ -1875,6 +1898,15 @@ mod tests {
             86_400
         );
         let fingerprint = config.inbound_provider_fingerprint().unwrap();
+        // Installed gateways keep their sessions only while this input is
+        // byte-for-byte what it was before Linear MCP sign-in existed.
+        assert!(config.linear.as_ref().unwrap().mcp.is_none());
+        assert_eq!(
+            fingerprint,
+            crate::util::fingerprint(
+                "linear\0https://linear.app\0linear-client:2a5332a8-b7a7-465e-aaae-fc59f8e65566\0/auth/linear/callback"
+            )
+        );
         let mut missing_workspace = env;
         missing_workspace[6].1 = "not-a-uuid";
         assert!(AuthConfig::from_sources(fake_env_with_many(missing_workspace)).is_err());
