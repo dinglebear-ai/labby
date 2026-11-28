@@ -70,9 +70,16 @@ example ``key `mcp.port` (line 2, column 8): wrong type, expected u16``.
 `labby config check` never repeats the rejected value, because `config.toml`
 can hold secrets. Range checks, such as `upstream_request_timeout_ms` in
 `1..=300000` and `upstream_relay_timeout_ms` in `1..=1800000`, run at startup
-and on every gateway reload. A bad value stops startup. A reload that finds
-one, from `gateway.reload` or `SIGUSR1`, fails with the key and the file, and
-the running gateway keeps its previous configuration.
+and on every gateway reload. A bad value stops most commands. A reload that
+finds one, from `gateway.reload` or `SIGUSR1`, fails with the key and the file,
+and the running gateway keeps its previous configuration.
+
+`labby serve` and `labby mcp` copy `config.toml` to `config.toml.last-good`,
+with the same private permissions, each time it loads cleanly at startup or on
+a `SIGUSR1` reload. If `config.toml` is invalid when either one starts, it
+starts on that copy instead, prints a warning to stderr and logs one with the
+error. `config.toml` is left as it is until you fix it. Other commands, such as
+`labby doctor` and `labby config check`, still report the broken file.
 
 Gateway bearer-token mutations commit the selected `.env` key with their
 configuration transaction and restore that key on failure, preserving unrelated

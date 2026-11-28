@@ -339,6 +339,12 @@ impl Drop for ConfigMutationGuard {
 }
 
 impl GatewayManager {
+    /// The `config.toml` this manager reads on reload.
+    #[must_use]
+    pub fn config_path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     /// Persist a gateway config without replacing the live in-memory snapshot.
     ///
     /// Reconcile paths use this when they need the current snapshot to remain the
