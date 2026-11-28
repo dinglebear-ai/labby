@@ -812,7 +812,7 @@ fn valid_viewer_domain(domain: &str) -> bool {
         })
 }
 
-fn is_loopback_http_url(url: &Url) -> bool {
+pub(crate) fn is_loopback_http_url(url: &Url) -> bool {
     url.scheme() == "http"
         && match url.host() {
             Some(url::Host::Ipv4(address)) => address.is_loopback(),

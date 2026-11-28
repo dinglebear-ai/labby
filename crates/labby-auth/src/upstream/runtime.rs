@@ -70,8 +70,8 @@ pub async fn build_upstream_oauth_runtime(
         );
     };
     anyhow::ensure!(
-        public_url.scheme() == "https",
-        "public_url must be absolute https:// when upstream oauth is configured"
+        public_url.scheme() == "https" || crate::config::is_loopback_http_url(public_url),
+        "public_url must be absolute https://, or a loopback http:// origin, when upstream oauth is configured"
     );
     let Some((sqlite, key)) =
         initialize_runtime_parts(upstreams, auth_config, encryption_key_raw).await?
