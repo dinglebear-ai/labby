@@ -37,21 +37,6 @@ struct Registration {
 }
 
 #[derive(Deserialize)]
-struct Metadata {
-    issuer: Option<String>,
-    authorization_endpoint: Url,
-    token_endpoint: Url,
-    registration_endpoint: Option<Url>,
-    #[serde(default)]
-    code_challenge_methods_supported: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct RegistrationReply {
-    client_id: String,
-}
-
-#[derive(Deserialize)]
 struct LinearUser {
     id: Uuid,
     email: String,
@@ -86,71 +71,56 @@ impl McpLogin {
         }
     }
 
+    // Discovery and registration are rmcp's, through the upstream manager's
+    // pinned HTTP client; only the code exchange below is ours, because the
+    // inbound flow owns the state and PKCE verifier.
     async fn registration(&self) -> Result<&Registration, AuthError> {
         self.client
             .get_or_try_init(|| async {
-                let mut well_known = self.url.clone();
-                well_known.set_path("/.well-known/oauth-authorization-server");
-                well_known.set_query(None);
-                let response =
-                    self.http.get(well_known).send().await.map_err(|_| {
-                        AuthError::Network("Linear MCP OAuth discovery failed".into())
-                    })?;
-                if !response.status().is_success() {
-                    return Err(AuthError::Network(
-                        "Linear MCP OAuth discovery failed".into(),
-                    ));
-                }
-                let metadata: Metadata =
-                    bounded_json(response, "Linear MCP OAuth metadata").await?;
-                let registration_endpoint = metadata.registration_endpoint.ok_or_else(|| {
-                    AuthError::Config(
-                        "Linear MCP upstream does not support client registration".into(),
-                    )
-                })?;
+                let failed = |what: &'static str| {
+                    move |error: rmcp::transport::auth::AuthError| {
+                        AuthError::Config(format!("Linear MCP {what} failed: {error}"))
+                    }
+                };
+                let mut manager = crate::upstream::http_client::authorization_manager_for_upstream(
+                    self.url.as_str(),
+                )
+                .await
+                .map_err(|error| AuthError::Config(error.to_string()))?;
+                let metadata = manager
+                    .resolve_metadata()
+                    .await
+                    .map_err(failed("OAuth discovery"))?
+                    .metadata;
                 if !metadata
                     .code_challenge_methods_supported
                     .iter()
-                    .any(|m| m == "S256")
+                    .flatten()
+                    .any(|method| method == "S256")
                 {
                     return Err(AuthError::Config(
                         "Linear MCP upstream does not support S256 PKCE".into(),
                     ));
                 }
-                for endpoint in [
-                    &metadata.authorization_endpoint,
-                    &metadata.token_endpoint,
-                    &registration_endpoint,
-                ] {
-                    self.same_origin(endpoint)?;
-                }
-                let response = self
-                    .http
-                    .post(registration_endpoint)
-                    .json(&serde_json::json!({
-                        "client_name": "Labby",
-                        "redirect_uris": [self.redirect_uri.as_str()],
-                        "grant_types": ["authorization_code", "refresh_token"],
-                        "response_types": ["code"],
-                        "token_endpoint_auth_method": "none",
-                    }))
-                    .send()
+                let parse = |value: &str| {
+                    Url::parse(value)
+                        .map_err(|_| AuthError::Config("invalid Linear MCP OAuth endpoint".into()))
+                };
+                let authorization_endpoint = parse(&metadata.authorization_endpoint)?;
+                let token_endpoint = parse(&metadata.token_endpoint)?;
+                self.same_origin(&authorization_endpoint)?;
+                self.same_origin(&token_endpoint)?;
+                let issuer = metadata.issuer.clone();
+                manager.set_metadata(metadata);
+                let client = manager
+                    .register_client("Labby", self.redirect_uri.as_str(), &[])
                     .await
-                    .map_err(|_| {
-                        AuthError::Network("Linear MCP client registration failed".into())
-                    })?;
-                if !response.status().is_success() {
-                    return Err(AuthError::Config(
-                        "Linear MCP upstream rejected client registration".into(),
-                    ));
-                }
-                let reply: RegistrationReply =
-                    bounded_json(response, "Linear MCP registration").await?;
+                    .map_err(failed("client registration"))?;
                 Ok(Registration {
-                    client_id: reply.client_id,
-                    issuer: metadata.issuer,
-                    authorization_endpoint: metadata.authorization_endpoint,
-                    token_endpoint: metadata.token_endpoint,
+                    client_id: client.client_id,
+                    issuer,
+                    authorization_endpoint,
+                    token_endpoint,
                 })
             })
             .await
@@ -384,10 +354,11 @@ pub(crate) mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/register"))
-            .respond_with(
-                ResponseTemplate::new(201)
-                    .set_body_json(serde_json::json!({"client_id": "worker-client"})),
-            )
+            .respond_with(ResponseTemplate::new(201).set_body_json(serde_json::json!({
+                "client_id": "worker-client",
+                "redirect_uris": ["https://labby.example/auth/linear/callback"],
+                "token_endpoint_auth_method": "none",
+            })))
             .expect(1)
             .mount(server)
             .await;

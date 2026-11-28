@@ -2892,7 +2892,6 @@ pub mod tests {
         // A grant already stored for this user, as on an installed gateway.
         #[cfg(feature = "upstream-oauth-rmcp")]
         let stored = || {
-            use rmcp_client::transport::auth::CredentialStore as _;
             crate::upstream::store::SqliteCredentialStore::new(
                 state.store.clone(),
                 crate::linear_mcp::tests::test_key(),
