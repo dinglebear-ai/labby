@@ -472,6 +472,7 @@ mod tests {
             inbound_provider: Some(crate::config::InboundProviderKind::Linear),
             linear: Some(crate::config::LinearConfig {
                 client_id: "test-client".into(),
+                mcp: None,
                 workspace_id: "2a5332a8-b7a7-465e-aaae-fc59f8e65566".parse().unwrap(),
             }),
             ..Default::default()

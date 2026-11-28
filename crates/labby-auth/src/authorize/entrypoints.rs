@@ -45,14 +45,17 @@ pub async fn browser_login(
             state.inbound_provider_binding(),
         )
         .await?;
-    let location = state.inbound_provider.authorize_url(&AuthorizeUrlRequest {
-        state: request_state,
-        scope: state.config.default_scope.clone(),
-        code_challenge: provider_code_challenge,
-        code_challenge_method: "S256".to_string(),
-        offline_access: false,
-        force_consent: false,
-    })?;
+    let location = state
+        .inbound_provider
+        .authorize_url(&AuthorizeUrlRequest {
+            state: request_state,
+            scope: state.config.default_scope.clone(),
+            code_challenge: provider_code_challenge,
+            code_challenge_method: "S256".to_string(),
+            offline_access: false,
+            force_consent: false,
+        })
+        .await?;
     info!(oauth_state_id = %oauth_state_id, "browser login redirected to upstream provider");
     Ok((
         StatusCode::FOUND,

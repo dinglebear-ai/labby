@@ -24,6 +24,17 @@ pub struct ProviderExchange {
     pub granted_scopes: Vec<String>,
     #[serde(skip_serializing)]
     pub id_token: Option<String>,
+    /// Upstream MCP grant kept only until admission passes, then stored.
+    #[serde(skip)]
+    pub upstream_grant: Option<Box<UpstreamGrant>>,
+}
+
+/// A grant obtained while signing in through an MCP upstream.
+#[derive(Clone, PartialEq, Eq)]
+pub struct UpstreamGrant {
+    pub client_id: String,
+    pub issuer: Option<String>,
+    pub token: serde_json::Value,
 }
 
 impl std::fmt::Debug for ProviderExchange {
@@ -45,6 +56,10 @@ impl std::fmt::Debug for ProviderExchange {
             .field("expires_in", &self.expires_in)
             .field("granted_scopes", &self.granted_scopes)
             .field("id_token", &self.id_token.as_ref().map(|_| "<redacted>"))
+            .field(
+                "upstream_grant",
+                &self.upstream_grant.as_ref().map(|_| "<redacted>"),
+            )
             .finish()
     }
 }
@@ -132,11 +147,11 @@ impl InboundProviderRuntime {
     }
 
     #[cfg(feature = "http-axum")]
-    pub fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
+    pub async fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
         match self {
             Self::Google(provider) => provider.authorize_url(request),
             Self::Authelia(provider) => provider.authorize_url(request),
-            Self::Linear(provider) => provider.authorize_url(request),
+            Self::Linear(provider) => provider.authorize_url(request).await,
         }
     }
 
@@ -162,6 +177,7 @@ impl InboundProviderRuntime {
                         expires_in: exchange.expires_in,
                         granted_scopes: exchange.granted_scopes,
                         id_token: exchange.id_token,
+                        upstream_grant: None,
                     })
             }
             Self::Linear(provider) => provider.exchange_code(code, verifier).await,

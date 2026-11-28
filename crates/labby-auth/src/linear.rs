@@ -22,6 +22,8 @@ mod client {
         token_endpoint: Url,
         graphql_endpoint: Url,
         http: reqwest::Client,
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        pub(crate) mcp: Option<Box<crate::linear_mcp::McpLogin>>,
     }
 
     #[derive(Deserialize)]
@@ -62,7 +64,15 @@ mod client {
     }
 
     impl LinearProvider {
-        pub fn new(config: LinearConfig, redirect_uri: Url) -> Result<Self, AuthError> {
+        /// `mcp_key` encrypts the upstream grant; it is required when the
+        /// config signs in through a Linear MCP upstream.
+        pub fn new(
+            config: LinearConfig,
+            redirect_uri: Url,
+            #[cfg(feature = "upstream-oauth-rmcp")] mcp_key: Option<
+                crate::upstream::encryption::EncryptionKey,
+            >,
+        ) -> Result<Self, AuthError> {
             install_rustls_default_once();
             let http = reqwest::Client::builder()
                 .no_proxy()
@@ -72,7 +82,30 @@ mod client {
                 .map_err(|_| {
                     AuthError::Config("could not create the Linear OAuth client".into())
                 })?;
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            let mcp = match (config.mcp, mcp_key) {
+                (Some(mcp), Some(key)) => Some(Box::new(crate::linear_mcp::McpLogin::new(
+                    mcp,
+                    redirect_uri.clone(),
+                    key,
+                    http.clone(),
+                ))),
+                (Some(_), None) => {
+                    return Err(AuthError::Config(
+                        "LABBY_OAUTH_ENCRYPTION_KEY is required for Linear sign-in through an MCP upstream".into(),
+                    ));
+                }
+                (None, _) => None,
+            };
+            #[cfg(not(feature = "upstream-oauth-rmcp"))]
+            if config.mcp.is_some() {
+                return Err(AuthError::Config(
+                    "Linear sign-in through an MCP upstream requires upstream OAuth support".into(),
+                ));
+            }
             Ok(Self {
+                #[cfg(feature = "upstream-oauth-rmcp")]
+                mcp,
                 client_id: config.client_id,
                 workspace_id: config.workspace_id,
                 redirect_uri,
@@ -82,7 +115,7 @@ mod client {
             })
         }
 
-        pub fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
+        pub async fn authorize_url(&self, request: &AuthorizeUrlRequest) -> Result<Url, AuthError> {
             if request.code_challenge_method != "S256"
                 || request.code_challenge.is_empty()
                 || request.state.is_empty()
@@ -90,6 +123,10 @@ mod client {
                 return Err(AuthError::Validation(
                     "Linear OAuth requires state and S256 PKCE".into(),
                 ));
+            }
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            if let Some(mcp) = &self.mcp {
+                return mcp.authorize_url(request).await;
             }
             let mut url = endpoint("https://linear.app/oauth/authorize")?;
             url.query_pairs_mut()
@@ -113,6 +150,10 @@ mod client {
                 return Err(AuthError::InvalidGrant(
                     "Linear authorization code or verifier is missing".into(),
                 ));
+            }
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            if let Some(mcp) = &self.mcp {
+                return mcp.exchange_code(code, verifier, self.workspace_id).await;
             }
             let response = self
                 .http
@@ -192,6 +233,7 @@ mod client {
                 expires_in: None,
                 granted_scopes: Vec::new(),
                 id_token: None,
+                upstream_grant: None,
             })
         }
     }
@@ -201,9 +243,12 @@ mod client {
         let mut provider = LinearProvider::new(
             LinearConfig {
                 client_id: "test-client".into(),
+                mcp: None,
                 workspace_id: "2a5332a8-b7a7-465e-aaae-fc59f8e65566".parse().unwrap(),
             },
             Url::parse("https://labby.example/auth/linear/callback").unwrap(),
+            #[cfg(feature = "upstream-oauth-rmcp")]
+            None,
         )
         .unwrap();
         provider.token_endpoint = Url::parse(&format!("{origin}/oauth/token")).unwrap();
@@ -225,8 +270,8 @@ mod tests {
         matchers::{method, path},
     };
 
-    #[test]
-    fn authorization_requests_only_read_scope_user_actor_and_s256() {
+    #[tokio::test]
+    async fn authorization_requests_only_read_scope_user_actor_and_s256() {
         let provider = mock_provider("http://127.0.0.1:3000");
         let mut request = crate::google::AuthorizeUrlRequest {
             scope: "lab:admin".into(),
@@ -236,7 +281,7 @@ mod tests {
             offline_access: true,
             force_consent: true,
         };
-        let url = provider.authorize_url(&request).unwrap();
+        let url = provider.authorize_url(&request).await.unwrap();
         assert_eq!(url.host_str(), Some("linear.app"));
         let params: std::collections::BTreeMap<_, _> = url.query_pairs().collect();
         assert_eq!(params["scope"], "read");
@@ -246,7 +291,7 @@ mod tests {
         assert_eq!(params["code_challenge"], "s256-challenge");
         assert!(!params.contains_key("access_type"));
         request.code_challenge_method = "plain".into();
-        assert!(provider.authorize_url(&request).is_err());
+        assert!(provider.authorize_url(&request).await.is_err());
     }
 
     #[tokio::test]

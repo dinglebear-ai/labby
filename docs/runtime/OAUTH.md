@@ -46,6 +46,7 @@ OAuth mode is configured through env vars and/or `config.toml`. Env vars take pr
 | `LABBY_AUTH_PROVIDER` | no | Select exactly one inbound provider: `google`, `authelia`, or `linear`. Legacy Google-only configuration remains valid. |
 | `LABBY_LINEAR_CLIENT_ID` | Linear | Client ID of the Linear OAuth app configured for PKCE. |
 | `LABBY_LINEAR_WORKSPACE_ID` | Linear | Exact UUID of the Linear workspace allowed to sign in. |
+| `LABBY_LINEAR_MCP_UPSTREAM` | Linear | Name of a gateway upstream to sign in through instead of a Linear OAuth app. |
 | `LABBY_AUTHELIA_ISSUER_URL` | Authelia | Exact OIDC issuer URL. Discovery, token, and JWKS endpoints must remain on this origin. |
 | `LABBY_AUTHELIA_CLIENT_ID` | Authelia | Confidential OIDC client ID. |
 | `LABBY_AUTHELIA_CLIENT_SECRET` | Authelia | Confidential OIDC client secret; Labby uses `client_secret_basic`. |
@@ -86,6 +87,24 @@ and viewer UUID form the stable external subject. Workspace membership does
 not grant Labby access by itself: explicitly allow each user in Labby. Admins
 remain explicitly configured; ordinary allowlisted users cannot request an administrative scope.
 Linear roles and email domains do not grant Labby roles.
+
+#### Linear through an MCP upstream
+
+A Linear MCP upstream that is its own OAuth server, such as a notification
+worker that wraps Linear, can stand in for the Linear OAuth app. Set
+`linear_mcp_upstream` (`LABBY_LINEAR_MCP_UPSTREAM`) to the name of an HTTP
+`[[upstream]]` with an `oauth` block that uses dynamic registration, and drop
+`linear_client_id`. Labby takes the URL from that upstream, so a browser can
+never choose the server. `LABBY_OAUTH_ENCRYPTION_KEY` is required.
+
+Labby registers itself with that server, sends the user through its consent
+with S256 PKCE, then calls Linear's `get_user` tool with `me` through the same
+upstream to learn the user ID and email. The upstream must admit only the
+configured workspace: Labby cannot check workspace or account status on this
+path and uses `linear_workspace_id` as the operator's statement of it. After
+Labby's own admission passes, the upstream grant is stored encrypted for the
+gateway. Grants from `lab:admin` sign-ins become the shared gateway credential.
+Other users get their own grant. A rejected sign-in stores nothing.
 
 The Linear access token is transient and no Linear refresh token is stored.
 Labby rechecks its local email policy at browser admission and refresh; removing

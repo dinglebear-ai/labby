@@ -293,6 +293,7 @@ impl OidcVerifier {
             expires_in: payload.expires_in,
             granted_scopes: Vec::new(),
             id_token: Some(payload.id_token),
+            upstream_grant: None,
         })
     }
 

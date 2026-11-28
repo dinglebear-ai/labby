@@ -27,6 +27,8 @@ pub mod jwt;
 mod linear;
 #[cfg(feature = "http-axum")]
 pub use linear::LinearProvider;
+#[cfg(all(feature = "http-axum", feature = "upstream-oauth-rmcp"))]
+pub(crate) mod linear_mcp;
 pub mod managed_depot_delegation;
 #[cfg(feature = "http-axum")]
 pub mod metadata;

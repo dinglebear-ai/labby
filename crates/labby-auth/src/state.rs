@@ -392,9 +392,24 @@ impl AuthState {
                 {
                     let redirect_uri =
                         build_google_redirect_uri(&public_url, crate::config::LINEAR_CALLBACK_PATH);
+                    #[cfg(feature = "upstream-oauth-rmcp")]
+                    let mcp_key = match &linear_config.mcp {
+                        Some(_) => std::env::var("LABBY_OAUTH_ENCRYPTION_KEY")
+                            .ok()
+                            .map(|raw| crate::upstream::encryption::load_key(&raw))
+                            .transpose()
+                            .map_err(|error| {
+                                AuthError::Config(format!(
+                                    "invalid LABBY_OAUTH_ENCRYPTION_KEY: {error}"
+                                ))
+                            })?,
+                        None => None,
+                    };
                     InboundProviderRuntime::Linear(Box::new(crate::linear::LinearProvider::new(
                         linear_config,
                         redirect_uri,
+                        #[cfg(feature = "upstream-oauth-rmcp")]
+                        mcp_key,
                     )?))
                 }
                 #[cfg(not(feature = "http-axum"))]
