@@ -1898,6 +1898,15 @@ mod tests {
             86_400
         );
         let fingerprint = config.inbound_provider_fingerprint().unwrap();
+        // Installed gateways keep their sessions only while this input is
+        // byte-for-byte what it was before Linear MCP sign-in existed.
+        assert!(config.linear.as_ref().unwrap().mcp.is_none());
+        assert_eq!(
+            fingerprint,
+            crate::util::fingerprint(
+                "linear\0https://linear.app\0linear-client:2a5332a8-b7a7-465e-aaae-fc59f8e65566\0/auth/linear/callback"
+            )
+        );
         let mut missing_workspace = env;
         missing_workspace[6].1 = "not-a-uuid";
         assert!(AuthConfig::from_sources(fake_env_with_many(missing_workspace)).is_err());

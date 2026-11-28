@@ -2889,6 +2889,34 @@ pub mod tests {
             })
             .await
             .unwrap();
+        // A grant already stored for this user, as on an installed gateway.
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        let stored = || {
+            use rmcp_client::transport::auth::CredentialStore as _;
+            crate::upstream::store::SqliteCredentialStore::new(
+                state.store.clone(),
+                crate::linear_mcp::tests::test_key(),
+                "linear-qa",
+                format!("{WORKSPACE}:{VIEWER}"),
+            )
+        };
+        #[cfg(feature = "upstream-oauth-rmcp")]
+        if via_mcp {
+            use rmcp_client::transport::auth::{CredentialStore as _, StoredCredentials};
+            let token = serde_json::from_value(serde_json::json!({
+                "access_token": "existing-access", "token_type": "Bearer"
+            }))
+            .unwrap();
+            stored()
+                .save(StoredCredentials::new(
+                    "existing-client".into(),
+                    Some(token),
+                    Vec::new(),
+                    None,
+                ))
+                .await
+                .unwrap();
+        }
         let app = router(state.clone());
         let callback = app
             .clone()
@@ -2905,16 +2933,17 @@ pub mod tests {
         assert_eq!(callback.status(), StatusCode::SEE_OTHER);
         #[cfg(feature = "upstream-oauth-rmcp")]
         if via_mcp {
-            let kept = state
-                .store
-                .find_upstream_oauth_credentials("linear-qa", &format!("{WORKSPACE}:{VIEWER}"))
-                .await
-                .unwrap();
-            assert_eq!(
-                kept.is_some(),
-                accepted,
-                "only an admitted sign-in keeps the grant"
-            );
+            use oauth2::TokenResponse as _;
+            use rmcp_client::transport::auth::CredentialStore as _;
+            let kept = stored().load().await.unwrap().unwrap();
+            let access = kept.token_response.unwrap().access_token().secret().clone();
+            // An admitted sign-in replaces the grant; a rejected one leaves it alone.
+            let expected = if accepted {
+                "worker-access"
+            } else {
+                "existing-access"
+            };
+            assert_eq!(access, expected);
         }
         let location = callback
             .headers()
